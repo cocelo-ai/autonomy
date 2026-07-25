@@ -67,16 +67,21 @@ the external `ROS_DOMAIN_ID` (the default configuration uses `17`) and set the
 PointCloud2 display durability to `Transient Local` when opening RViz after
 autonomy-light has already started.
 
-To view the accumulated live Point-LIO global map as well, enable it at launch:
+The accumulated live Point-LIO global map is always enabled during a normal
+`launch.sh` run and is the only live source for height-map construction.  Its
+visualization domain is independent of the control-output domain:
 
 ```bash
-./launch.sh --real -- -p point_lio_global_map.enabled:=true
+ROS_DOMAIN_ID=17 rviz2
 ```
 
-It publishes `/point_lio/global_map` at 1 Hz by default. This is an accumulated,
-voxelized stream of Point-LIO registered scans, capped at 500,000 points; tune
-`point_lio_global_map` in the config if the map is larger or the visualization
-traffic is too heavy.
+Set `point_lio_global_map.ros_domain_id` in `config/autonomy_light.yaml` to the
+same ID used by RViz. It publishes `/point_lio/global_map` with transient-local
+QoS at 1 Hz by default, so RViz can display the current accumulated map even if
+it starts later. The visual map is voxelized at 5 cm; the separate 1 cm global
+terrain store is used for height-map extraction and is not downsampled to the
+visualization resolution. Saved PCD operation continues to use that saved global
+map, after relocalization, because it is the highest-fidelity global source.
 
 Global scan matching needs stable 3D geometry. Repetitive corridors, featureless
 floors, or a map that was made with different sensor extrinsics can produce no

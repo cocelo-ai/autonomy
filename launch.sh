@@ -51,7 +51,7 @@ Examples:
   ./launch.sh --real
   ./launch.sh --real --vis
   ./launch.sh --real --map maps/lab_mapping.pcd
-  ./launch.sh --real -- -p point_lio_global_map.enabled:=true
+  ROS_DOMAIN_ID=17 rviz2                  # global map (set matching config domain)
   ./launch.sh --real --mid360
   ./launch.sh --real --mid360s
   ./launch.sh --sim

@@ -15,7 +15,7 @@ autonomy_light:
     target_to_lidar2_rpy: [3.1416, 0.0, 0.0]
 
     # User-facing setup: robot-centric elevation map geometry.
-    elevation_resolution: 0.025
+    elevation_resolution: 0.01
     elevation_x_length: 1.6
     elevation_y_length: 0.8
     height_origin:
@@ -67,10 +67,12 @@ autonomy_light:
       min_scan_points: 80
 
     # ROS 2 domain split: keep heavy perception internal, publish only control-facing
-    # outputs on the external domain. Set debug_local_map_ros_domain_id to the
-    # internal domain to keep local_map private, or to the external domain to view it there.
+    # outputs on the external domain.  point_lio_global_map.ros_domain_id below
+    # independently selects the RViz/debug domain for the global map.
     internal_ros_domain_id: 0
     external_ros_domain_id: 0
+    # Legacy local-map debug settings. Point-LIO local-map publication is disabled;
+    # live height maps are built from point_lio_global_map only.
     debug_local_map_ros_domain_id: 17
     debug_local_map_topic: "/point_lio/local_map"
     
@@ -115,12 +117,18 @@ autonomy_light:
     point_lio_map_topic: "/point_lio/local_map"
     point_lio_path_topic: "/path"
     point_lio_registered_topic: "/cloud_registered"
-    # Optional full trajectory map built from Point-LIO registered scans.
-    # Enable at launch with: -- -p point_lio_global_map.enabled:=true
+    # Full trajectory map built from Point-LIO registered scans. This is the
+    # only live source used to construct the height map.
     point_lio_global_map:
-      enabled: false
+      enabled: true
       topic: "/point_lio/global_map"
-      voxel_leaf_size: 0.10
+      # Change this ID to view only the global map from a separate RViz domain.
+      # For example: ROS_DOMAIN_ID=17 rviz2
+      ros_domain_id: 17
+      use_for_height_map: true
+      height_voxel_leaf_size: 0.01
+      height_max_points: 4000000
+      voxel_leaf_size: 0.05
       publish_interval_sec: 1.0
       max_points: 500000
     odom_output_topic: "/autonomy_light/odom"
@@ -170,7 +178,9 @@ autonomy_light:
         enabled: false
         percentile: 0.15
         min_points_per_cell: 2
-        initial_floor_fill_enabled: true
+        # Disabled with the local registered-scan fallback. Missing cells are
+        # handled from the stable global map instead.
+        initial_floor_fill_enabled: false
         initial_floor_max_local_coverage: 0.25
         floor_min_points: 20
         floor_support_band: 0.08
