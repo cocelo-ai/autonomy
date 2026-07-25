@@ -67,10 +67,12 @@ Point-LIO map is preserved. Wait for the `Mapping pose graph optimized` or
 
 The first 2 seconds of registered Point-LIO scans are accumulated into an odom
 submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.
-Accepted transforms correct the published odometry into `saved_map_frame`
-(default: `odom`); GICP then tracks the map pose every 0.5 seconds. Height maps
-are withheld until relocalization succeeds and are extracted from the saved PCD
-around that corrected pose. Check
+After initialization, a five-second rolling Point-LIO submap is aligned to a
+local ROI of the saved PCD at 1 Hz. Accepted measurements are low-pass filtered
+into `map -> odom`; Point-LIO remains the high-rate `odom -> base_link` source.
+`saved_map_frame` defaults to `map`. Height maps are withheld until saved-map
+relocalization succeeds and are extracted from the saved PCD around that
+corrected pose. Check
 `/autonomy_light/heartbeat` for `waiting_for_saved_map_relocalization` or a
 `ready:...:relocalization_fitness=...` state.
 
@@ -78,11 +80,16 @@ During initialization, heartbeat reports the active phase and accumulated-point
 count, for example `relocalizing:phase=collecting_submap:submap_points=...`.
 The console also logs collection, global FPFH/RANSAC matching, and GICP
 refinement. The saved PCD is published with transient-local QoS on
-`/autonomy_light/saved_map` in `saved_map_frame` (default: `odom`) and is
+`/autonomy_light/saved_map` in `saved_map_frame` (default: `map`) and is
 republished every 2 seconds. It uses the same visualization `ROS_DOMAIN_ID` as
 the Point-LIO global map, configured by `point_lio_global_map.ros_domain_id`.
-In RViz, set the Fixed Frame to `odom` (or your configured `saved_map_frame`)
+In RViz, set the Fixed Frame to `map` (or your configured `saved_map_frame`)
 and add `/autonomy_light/saved_map` as a `PointCloud2` display.
+
+The same rolling-submap and filtered `map -> odom` path is enabled without
+`--map`; in that mode the target is the accumulated refined Point-LIO global
+map. This improves local consistency, but it cannot establish an absolute
+global position before a prior map or a verified loop closure exists.
 
 The accumulated live Point-LIO global map is always enabled during a normal
 `launch.sh` run and is the only live source for height-map construction.  Its

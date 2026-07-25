@@ -71,7 +71,8 @@ autonomy_light:
     point_lio_pcd_save_interval: -1
     child_shutdown_grace_sec: 0.8
     saved_map_file: ""
-    saved_map_frame: "odom"
+    # Global map frame. `map -> odom` is published after runtime localization.
+    saved_map_frame: "map"
     saved_map_topic: "/autonomy_light/saved_map"
     # Voxel size for the latched RViz/debug copy of the saved map.
     saved_map_publish_voxel_leaf_size: 0.10
@@ -84,15 +85,17 @@ autonomy_light:
     saved_map_localization:
       enabled: true
       global_initialization: true
-      update_interval_sec: 0.5
+      # Only for the coarse global initialization. Steady tracking uses the
+      # independent runtime_localization cadence below.
+      update_interval_sec: 1.0
       # Accumulate registered scans in Point-LIO's odom frame before the first
       # global search. Moving through the scene during this window gives the
       # initializer substantially more stable geometry than one scan.
       initial_submap_duration_sec: 2.0
       initial_submap_min_points: 500
       initial_submap_max_points: 30000
-      scan_voxel_leaf_size: 0.10
-      map_voxel_leaf_size: 0.10
+      scan_voxel_leaf_size: 0.05
+      map_voxel_leaf_size: 0.05
       normal_radius: 0.45
       feature_radius: 0.75
       global_max_iterations: 5000
@@ -102,6 +105,19 @@ autonomy_light:
       max_fitness: 0.01
       max_tracking_translation_step: 1.0
       min_scan_points: 80
+    # Low-rate global correction. Point-LIO stays the high-rate odom source;
+    # this aligns a rolling submap to the saved map, or to the live refined
+    # global map when launch.sh is used without --map.
+    runtime_localization:
+      enabled: true
+      update_interval_sec: 1.0
+      submap_duration_sec: 5.0
+      submap_voxel_leaf_size: 0.05
+      submap_max_points: 60000
+      target_radius_m: 15.0
+      filter_alpha: 0.20
+      max_translation_innovation_m: 0.50
+      max_yaw_innovation_deg: 5.0
 
     # ROS 2 domain split: keep heavy perception internal, publish only control-facing
     # outputs on the external domain. point_lio_global_map.ros_domain_id below
