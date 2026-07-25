@@ -160,14 +160,14 @@ Default domain split:
 ```yaml
 internal_ros_domain_id: 42
 external_ros_domain_id: 0
-debug_local_map_ros_domain_id: 42
+point_lio_global_map:
+  ros_domain_id: 17
 ```
 
-- Internal domain `42`: Livox driver, Point-LIO, odometry input, local map input,
-  and debug local map.
+- Internal domain `42`: Livox driver, Point-LIO, odometry input, and registered scans.
 - External domain `0`: control-facing outputs only.
-- Keep `debug_local_map_ros_domain_id` equal to the internal domain unless you
-  intentionally want `/point_lio/local_map` on the control network.
+- Global-map debug domain `17`: `/point_lio/global_map` and
+  `/point_lio/global_map_refined` for RViz.
 
 Check the external control output:
 
@@ -265,8 +265,8 @@ These topics normally stay on `internal_ros_domain_id`.
 | `/livox/lidar` | `livox_ros_driver2/msg/CustomMsg` | Livox ROS Driver2 | MID360/MID360s raw LiDAR input to Point-LIO. |
 | `/livox/imu` | `sensor_msgs/msg/Imu` | Livox ROS Driver2 | MID360/MID360s internal IMU input to Point-LIO. |
 | `/aft_mapped_to_init` | `nav_msgs/msg/Odometry` | Point-LIO | Mapping odometry consumed by autonomy-light. |
-| `/point_lio/local_map` | `sensor_msgs/msg/PointCloud2` | Point-LIO | Local map sampled into the control height map. |
-| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | Point-LIO | Optional fill source when `cloud_registered_fill.enabled` is true. |
+| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | Point-LIO | Registered scans fused into `/point_lio/global_map_refined`. |
+| `/point_lio/global_map_refined` | `sensor_msgs/msg/PointCloud2` | autonomy-light | Edge-preserving refined global map used for live height extraction. |
 
 ## Key Parameters
 

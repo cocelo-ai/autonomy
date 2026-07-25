@@ -1018,8 +1018,10 @@ int main(int argc, char **argv) {
                 ("/cloud_effected", 10);
         pubLaserCloudMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
                 ("/Laser_map", 1);
-        pubLocalMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                (local_map_topic, 2);
+        if (local_map_pub_en) {
+            pubLocalMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+                    (local_map_topic, 2);
+        }
         pubPath = nh->create_publisher<nav_msgs::msg::Path>
                 ("/path", 10);
     }
@@ -1491,7 +1493,7 @@ int main(int argc, char **argv) {
             if (path_en) publish_path(pubPath);
             if (scan_pub_en || pcd_save_en) publish_frame_world(pubLaserCloudFullRes);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFullRes_body);
-            publish_local_map(pubLocalMap);
+            if (local_map_pub_en) publish_local_map(pubLocalMap);
 
             /*** Debug variables Logging ***/
             if (runtime_pos_log) {

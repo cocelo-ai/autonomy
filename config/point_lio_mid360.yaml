@@ -63,12 +63,6 @@
       path_en: true
       scan_publish_en: false
       scan_bodyframe_pub_en: false
-      local_map_en: true
-      local_map_topic: "/point_lio/local_map"
-      local_map_x_length: 4.0
-      local_map_y_length: 4.0
-      local_map_z_length: 3.0
-      local_map_every_n_frames: 1
 
     pcd_save:
       pcd_save_en: false

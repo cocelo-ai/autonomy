@@ -35,7 +35,7 @@ std::vector<double> extrinT;
 std::vector<double> extrinR;
 bool runtime_pos_log, pcd_save_en, path_en, extrinsic_est_en = true;
 bool scan_pub_en, scan_body_pub_en;
-bool local_map_pub_en = true;
+bool local_map_pub_en = false;
 std::string local_map_topic;
 double local_map_x_length = 4.0, local_map_y_length = 4.0, local_map_z_length = 3.0;
 int local_map_publish_every_n_frames = 1;
@@ -115,7 +115,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<bool>("publish.path_en", true);
     nh->declare_parameter<bool>("publish.scan_publish_en", true);
     nh->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
-    nh->declare_parameter<bool>("publish.local_map_en", true);
+    nh->declare_parameter<bool>("publish.local_map_en", false);
     nh->declare_parameter<std::string>("publish.local_map_topic", "/point_lio/local_map");
     nh->declare_parameter<double>("publish.local_map_x_length", 4.0);
     nh->declare_parameter<double>("publish.local_map_y_length", 4.0);

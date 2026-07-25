@@ -69,14 +69,10 @@ autonomy_light:
       min_scan_points: 80
 
     # ROS 2 domain split: keep heavy perception internal, publish only control-facing
-    # outputs on the external domain.  point_lio_global_map.ros_domain_id below
-    # independently selects the RViz/debug domain for the global map.
+    # outputs on the external domain. point_lio_global_map.ros_domain_id below
+    # independently selects the RViz/debug domain for the refined global map.
     internal_ros_domain_id: 0
     external_ros_domain_id: 0
-    # Legacy local-map debug settings. Point-LIO local-map publication is disabled;
-    # live height maps are built from point_lio_global_map only.
-    debug_local_map_ros_domain_id: 17
-    debug_local_map_topic: "/point_lio/local_map"
     
     # Livox driver setup.
     livox_model: "mid360"
@@ -116,7 +112,6 @@ autonomy_light:
       max_queue_size: 8
       publish_lidar1_on_sync_miss: false
     point_lio_odom_topic: "/aft_mapped_to_init"
-    point_lio_map_topic: "/point_lio/local_map"
     point_lio_path_topic: "/path"
     point_lio_registered_topic: "/cloud_registered"
     # Full trajectory map built from Point-LIO registered scans. This is the

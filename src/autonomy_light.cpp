@@ -489,8 +489,11 @@ public:
   ~AutonomyLightNode() override
   {
     child_processes_.stopAll(child_shutdown_grace_sec_);
-    if (debug_executor_) {
-      debug_executor_->cancel();
+    if (height_builder_executor_) {
+      height_builder_executor_->cancel();
+    }
+    if (height_publisher_executor_) {
+      height_publisher_executor_->cancel();
     }
     if (global_map_executor_) {
       global_map_executor_->cancel();
@@ -498,8 +501,11 @@ public:
     if (output_executor_) {
       output_executor_->cancel();
     }
-    if (debug_spin_thread_.joinable()) {
-      debug_spin_thread_.join();
+    if (height_builder_spin_thread_.joinable()) {
+      height_builder_spin_thread_.join();
+    }
+    if (height_publisher_spin_thread_.joinable()) {
+      height_publisher_spin_thread_.join();
     }
     if (global_map_spin_thread_.joinable()) {
       global_map_spin_thread_.join();
@@ -507,7 +513,6 @@ public:
     if (output_spin_thread_.joinable()) {
       output_spin_thread_.join();
     }
-    debug_local_map_pub_.reset();
     point_lio_global_map_pub_.reset();
     point_lio_global_map_refined_pub_.reset();
     height_map_pub_.reset();
@@ -516,11 +521,15 @@ public:
     path_pub_.reset();
     output_static_tf_broadcaster_.reset();
     output_tf_broadcaster_.reset();
-    debug_node_.reset();
+    height_builder_node_.reset();
+    height_publisher_node_.reset();
     global_map_node_.reset();
     output_node_.reset();
-    if (debug_context_ && debug_context_->is_valid()) {
-      debug_context_->shutdown("autonomy_light shutdown");
+    if (height_builder_context_ && height_builder_context_->is_valid()) {
+      height_builder_context_->shutdown("autonomy_light shutdown");
+    }
+    if (height_publisher_context_ && height_publisher_context_->is_valid()) {
+      height_publisher_context_->shutdown("autonomy_light shutdown");
     }
     if (global_map_context_ && global_map_context_->is_valid()) {
       global_map_context_->shutdown("autonomy_light shutdown");
@@ -542,12 +551,6 @@ private:
       declare_parameter<int>("internal_ros_domain_id", internal_ros_domain_id_));
     external_ros_domain_id_ = static_cast<int>(
       declare_parameter<int>("external_ros_domain_id", external_ros_domain_id_));
-    debug_local_map_ros_domain_id_ = static_cast<int>(
-      declare_parameter<int>(
-        "debug_local_map_ros_domain_id", debug_local_map_ros_domain_id_));
-    debug_local_map_topic_ = declare_parameter<std::string>(
-      "debug_local_map_topic", debug_local_map_topic_);
-
     target_to_lidar_xyz_ = declareVectorParameter(
       "target_to_lidar_xyz", target_to_lidar_xyz_, 3);
     target_to_lidar_rpy_ = declareVectorParameter(
@@ -690,8 +693,6 @@ private:
       lidar_merge_publish_lidar1_on_sync_miss_);
     point_lio_odom_topic_ = declare_parameter<std::string>(
       "point_lio_odom_topic", point_lio_odom_topic_);
-    point_lio_map_topic_ = declare_parameter<std::string>(
-      "point_lio_map_topic", point_lio_map_topic_);
     point_lio_path_topic_ = declare_parameter<std::string>(
       "point_lio_path_topic", point_lio_path_topic_);
     point_lio_registered_topic_ = declare_parameter<std::string>(
@@ -973,13 +974,6 @@ private:
     if (point_lio_global_map_ros_domain_id_ < 0) {
       point_lio_global_map_ros_domain_id_ = external_ros_domain_id_;
     }
-    if (debug_local_map_ros_domain_id_ < 0) {
-      debug_local_map_ros_domain_id_ = internal_ros_domain_id_;
-    }
-    if (debug_local_map_topic_.empty()) {
-      debug_local_map_topic_ = point_lio_map_topic_;
-    }
-
     latest_grid_ = ElevationGrid(grid_spec_);
     latest_ground_grid_ = ElevationGrid(grid_spec_);
   }
@@ -1067,9 +1061,7 @@ private:
     {
       std::lock_guard<std::mutex> lock(map_mutex_);
       saved_map_points_ = points;
-      latest_map_frame_ = saved_map_frame_;
       saved_map_loaded_ = true;
-      has_map_ = true;
     }
     initializeSavedMapLocalization(cloud_xyz);
     saved_map_visualization_cloud_ = voxelDownsample(
@@ -1697,40 +1689,35 @@ private:
     output_tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(output_node);
 
-    if (debug_local_map_ros_domain_id_ != internal_ros_domain_id_) {
-      rclcpp::Node * debug_output_node = nullptr;
-      if (debug_local_map_ros_domain_id_ == external_ros_domain_id_) {
-        debug_output_node = output_node;
-      } else {
-        debug_node_ = createDomainNode(
-          "autonomy_light_debug_local_map",
-          debug_local_map_ros_domain_id_,
-          debug_context_);
-        startAuxiliaryExecutor(
-          debug_node_,
-          debug_executor_,
-          debug_spin_thread_,
-          "debug local map");
-        debug_output_node = debug_node_.get();
-      }
-      debug_local_map_pub_ = debug_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
-        debug_local_map_topic_,
-        rclcpp::SensorDataQoS());
-      RCLCPP_INFO(
-        get_logger(),
-        "Debug local map republish enabled: %s on ROS_DOMAIN_ID=%d",
-        debug_local_map_topic_.c_str(),
-        debug_local_map_ros_domain_id_);
-    }
+    const auto height_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / publish_rate_hz_));
+    height_builder_node_ = createDomainNode(
+      "autonomy_light_height_builder",
+      external_ros_domain_id_,
+      height_builder_context_);
+    height_publisher_node_ = createDomainNode(
+      "autonomy_light_height_publisher",
+      external_ros_domain_id_,
+      height_publisher_context_);
+    height_builder_timer_ = height_builder_node_->create_wall_timer(
+      height_period,
+      [this]() { refreshHeightGridFromRefinedMap(); });
+    height_publisher_timer_ = height_publisher_node_->create_wall_timer(
+      height_period,
+      [this]() { publishCachedHeightMap(); });
+    startAuxiliaryExecutor(
+      height_builder_node_, height_builder_executor_, height_builder_spin_thread_, "height grid builder");
+    startAuxiliaryExecutor(
+      height_publisher_node_, height_publisher_executor_, height_publisher_spin_thread_,
+      "height map publisher");
 
     RCLCPP_INFO(
       get_logger(),
-      "ROS domains: internal=%d external=%d global_map=%d debug_local_map=%d%s",
+      "ROS domains: internal=%d external=%d global_map=%d height_map_publish=%.1fHz",
       internal_ros_domain_id_,
       external_ros_domain_id_,
       point_lio_global_map_ros_domain_id_,
-      debug_local_map_ros_domain_id_,
-      debug_local_map_pub_ ? "" : " (not republished)");
+      publish_rate_hz_);
   }
 
   int currentRosDomainId()
@@ -1789,11 +1776,6 @@ private:
       }
     }
 
-    if (!mapping_only_) {
-      const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(1.0 / publish_rate_hz_));
-      publish_timer_ = create_wall_timer(period, [this]() { publishLatest(); });
-    }
     heartbeat_timer_ = create_wall_timer(
       std::chrono::milliseconds(500),
       [this]() { publishHeartbeat(); });
@@ -2235,7 +2217,6 @@ private:
     const auto child_to_body_r = lidarMergeEnabled() ?
       tf2::Matrix3x3(tf2::Quaternion::getIdentity()) :
       target_to_point_lio_body.rotation;
-    const bool point_lio_local_map_en = false;
     const bool point_lio_scan_publish_en =
       !mapping_only_ &&
       (cloud_registered_fill_enabled_ || savedMapRelocalizationActive() || point_lio_global_map_enabled_);
@@ -2260,12 +2241,6 @@ private:
       "-p", std::string("publish.scan_publish_en:=") +
         (point_lio_scan_publish_en ? "true" : "false"),
       "-p", "publish.scan_bodyframe_pub_en:=false",
-      "-p", std::string("publish.local_map_en:=") + (point_lio_local_map_en ? "true" : "false"),
-      "-p", "publish.local_map_topic:=" + point_lio_map_topic_,
-      "-p", "publish.local_map_x_length:=" + shortDouble(pointLioLocalMapXLength()),
-      "-p", "publish.local_map_y_length:=" + shortDouble(pointLioLocalMapYLength()),
-      "-p", "publish.local_map_z_length:=" + shortDouble(pointLioLocalMapZLength()),
-      "-p", "publish.local_map_every_n_frames:=1",
       "-p", std::string("pcd_save.pcd_save_en:=") + (point_lio_pcd_save_en_ ? "true" : "false"),
       "-p", "pcd_save.interval:=" + std::to_string(point_lio_pcd_save_interval_),
       "-p", "runtime_pos_log_enable:=false",
@@ -2281,23 +2256,6 @@ private:
       command.push_back("mapping.extrinsic_R:=[1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0]");
     }
     return command;
-  }
-
-  double pointLioLocalMapXLength() const
-  {
-    return std::max(1.0, grid_spec_.x_length + 2.0 * std::abs(target_to_lidar_translation_.x()) + 1.0);
-  }
-
-  double pointLioLocalMapYLength() const
-  {
-    return std::max(1.0, grid_spec_.y_length + 2.0 * std::abs(target_to_lidar_translation_.y()) + 1.0);
-  }
-
-  double pointLioLocalMapZLength() const
-  {
-    return std::max(
-      1.0,
-      (grid_spec_.max_z - grid_spec_.min_z) + 2.0 * std::abs(target_to_lidar_translation_.z()) + 1.0);
   }
 
   RigidTransform pointLioTargetToBodyTransform(const std::string & config_file) const
@@ -2324,46 +2282,6 @@ private:
     (void)msg;
     last_lidar_time_ = now();
     ++lidar_count_;
-  }
-
-  void onPointLioMap(sensor_msgs::msg::PointCloud2::SharedPtr msg)
-  {
-    if (debug_local_map_pub_) {
-      auto debug_msg = *msg;
-      debug_local_map_pub_->publish(debug_msg);
-    }
-
-    auto points = std::make_shared<std::vector<MapPoint>>();
-    points->reserve(static_cast<std::size_t>(msg->width) * msg->height);
-    try {
-      sensor_msgs::PointCloud2ConstIterator<float> x_it(*msg, "x");
-      sensor_msgs::PointCloud2ConstIterator<float> y_it(*msg, "y");
-      sensor_msgs::PointCloud2ConstIterator<float> z_it(*msg, "z");
-
-      for (; x_it != x_it.end(); ++x_it, ++y_it, ++z_it) {
-        if (!std::isfinite(*x_it) || !std::isfinite(*y_it) || !std::isfinite(*z_it)) {
-          continue;
-        }
-        points->push_back({*x_it, *y_it, *z_it});
-      }
-    } catch (const std::runtime_error & ex) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(),
-        *get_clock(),
-        2000,
-        "Point-LIO map cloud cannot be sampled: %s",
-        ex.what());
-      return;
-    }
-
-    {
-      std::lock_guard<std::mutex> lock(map_mutex_);
-      latest_map_points_ = std::move(points);
-      latest_map_frame_ = msg->header.frame_id;
-      has_map_ = true;
-    }
-    last_map_time_ = now();
-    ++map_count_;
   }
 
   void onPointLioRegistered(sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -2490,12 +2408,16 @@ private:
         }
         point_lio_global_map_height_points_ = std::move(capped_fine);
       }
+      // Publish an immutable refined-map snapshot for the independent height
+      // builder. The next registered scan may continue fusion without racing
+      // the high-rate height-map query thread.
+      PclCloud::Ptr refined_height_snapshot(new PclCloud(*point_lio_global_map_height_points_));
       pcl::search::KdTree<pcl::PointXYZ>::Ptr fine_tree(
         new pcl::search::KdTree<pcl::PointXYZ>());
-      fine_tree->setInputCloud(point_lio_global_map_height_points_);
+      fine_tree->setInputCloud(refined_height_snapshot);
       {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        point_lio_global_map_height_cloud_ = point_lio_global_map_height_points_;
+        point_lio_global_map_height_cloud_ = refined_height_snapshot;
         point_lio_global_map_height_tree_ = std::move(fine_tree);
       }
       refined_visual_cloud = voxelDownsample(
@@ -2537,6 +2459,8 @@ private:
       refined_message.header.frame_id = frame_id;
       point_lio_global_map_refined_pub_->publish(refined_message);
     }
+    last_map_time_ = message.header.stamp;
+    ++map_count_;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Point-LIO global map refined: scan=%zu->%zu raw=%zu refined=%zu frame=%s",
@@ -3743,7 +3667,7 @@ private:
     }
   }
 
-  void publishLatest()
+  void refreshHeightGridFromRefinedMap()
   {
     ElevationGrid grid;
     if (height_map_manual_mode_) {
@@ -3755,16 +3679,34 @@ private:
         has_grid_ = true;
         has_ground_grid_ = true;
       }
-      height_map_pub_->publish(gridToPointCloud(grid));
-      height_map_msg_pub_->publish(manualHeightMapMsg(grid));
     } else if (buildElevationGridFromMap(grid)) {
       {
         std::lock_guard<std::mutex> lock(grid_mutex_);
         latest_grid_ = grid;
         has_grid_ = true;
       }
+    }
+  }
+
+  void publishCachedHeightMap()
+  {
+    ElevationGrid grid;
+    bool has_grid = false;
+    {
+      std::lock_guard<std::mutex> lock(grid_mutex_);
+      if (has_grid_) {
+        grid = latest_grid_;
+        has_grid = true;
+      }
+    }
+    if (has_grid && height_map_pub_ && height_map_msg_pub_) {
+      // Each publication uses terrain reconstructed from the immutable refined
+      // global-map snapshot; only the ROS timestamp is refreshed between grid
+      // builds so output remains at publish_rate_hz even during map fusion.
+      grid.header.stamp = now();
       height_map_pub_->publish(gridToPointCloud(grid));
-      height_map_msg_pub_->publish(gridToHeightMapMsg(grid));
+      height_map_msg_pub_->publish(
+        height_map_manual_mode_ ? manualHeightMapMsg(grid) : gridToHeightMapMsg(grid));
     }
 
     nav_msgs::msg::Odometry odom;
@@ -3777,7 +3719,9 @@ private:
       }
     }
     if (publish_odom) {
-      odom_pub_->publish(odom);
+      if (odom_pub_) {
+        odom_pub_->publish(odom);
+      }
       publishTargetFrameTransform(odom);
       publishHeightMapFrameTransform(odom);
     }
@@ -3944,8 +3888,6 @@ private:
   std::string odom_frame_{"odom"};
   int internal_ros_domain_id_{-1};
   int external_ros_domain_id_{-1};
-  int debug_local_map_ros_domain_id_{-1};
-  std::string debug_local_map_topic_{"/point_lio/local_map"};
   std::vector<double> target_to_lidar_xyz_{0.0, 0.0, 0.3};
   std::vector<double> target_to_lidar_rpy_{0.0, 0.0, 0.0};
   std::vector<double> target_to_lidar2_xyz_{0.0, 0.0, 0.3};
@@ -3984,7 +3926,6 @@ private:
   int lidar_merge_max_queue_size_{8};
   bool lidar_merge_publish_lidar1_on_sync_miss_{false};
   std::string point_lio_odom_topic_{"/aft_mapped_to_init"};
-  std::string point_lio_map_topic_{"/point_lio/local_map"};
   std::string point_lio_path_topic_{"/path"};
   std::string point_lio_registered_topic_{"/cloud_registered"};
   bool point_lio_global_map_enabled_{true};
@@ -4079,9 +4020,6 @@ private:
   std::mutex lidar_merge_mutex_;
   std::deque<TimedCloud> lidar1_queue_;
   std::deque<TimedCloud> lidar2_queue_;
-  std::shared_ptr<const std::vector<MapPoint>> latest_map_points_;
-  std::string latest_map_frame_;
-  bool has_map_{false};
   std::shared_ptr<const std::vector<MapPoint>> saved_map_points_;
   bool saved_map_loaded_{false};
   std::string saved_map_file_;
@@ -4141,15 +4079,19 @@ private:
   ChildProcesses child_processes_;
   rclcpp::Context::SharedPtr output_context_;
   rclcpp::Node::SharedPtr output_node_;
-  rclcpp::Context::SharedPtr debug_context_;
-  rclcpp::Node::SharedPtr debug_node_;
+  rclcpp::Context::SharedPtr height_builder_context_;
+  rclcpp::Node::SharedPtr height_builder_node_;
+  rclcpp::Context::SharedPtr height_publisher_context_;
+  rclcpp::Node::SharedPtr height_publisher_node_;
   rclcpp::Context::SharedPtr global_map_context_;
   rclcpp::Node::SharedPtr global_map_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> output_executor_;
-  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> debug_executor_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> height_builder_executor_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> height_publisher_executor_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> global_map_executor_;
   std::thread output_spin_thread_;
-  std::thread debug_spin_thread_;
+  std::thread height_builder_spin_thread_;
+  std::thread height_publisher_spin_thread_;
   std::thread global_map_spin_thread_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr merged_lidar_pub_;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> output_static_tf_broadcaster_;
@@ -4161,9 +4103,7 @@ private:
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar2_custom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr map_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_sub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_local_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_refined_pub_;
@@ -4172,7 +4112,8 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
-  rclcpp::TimerBase::SharedPtr publish_timer_;
+  rclcpp::TimerBase::SharedPtr height_builder_timer_;
+  rclcpp::TimerBase::SharedPtr height_publisher_timer_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
 };
 
