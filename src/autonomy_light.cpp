@@ -1918,19 +1918,42 @@ private:
 
   void publishHeightMapFrameTransform(const nav_msgs::msg::Odometry & odom)
   {
-    const std::string & parent_frame = odom.header.frame_id.empty() ? odom_frame_ : odom.header.frame_id;
-    if (height_map_frame_.empty() || height_map_frame_ == parent_frame) {
+    // Keep a single external TF tree: map/odom -> target(base_link) ->
+    // base_link_gravity.  Publishing gravity directly from odom creates a
+    // separate branch that can look localized while base_link's other children
+    // remain in a different tree.
+    if (height_map_frame_.empty() || target_frame_.empty() || height_map_frame_ == target_frame_) {
       return;
     }
 
+    tf2::Quaternion q_map_target;
+    tf2::fromMsg(odom.pose.pose.orientation, q_map_target);
+    q_map_target.normalize();
+    const tf2::Quaternion q_map_height = yawOnlyQuaternion(odom.pose.pose.orientation);
+    const tf2::Vector3 p_map_target(
+      odom.pose.pose.position.x,
+      odom.pose.pose.position.y,
+      odom.pose.pose.position.z);
+    const tf2::Vector3 p_map_height(
+      odom.pose.pose.position.x,
+      odom.pose.pose.position.y,
+      latest_height_origin_z_);
+    tf2::Quaternion q_target_height = q_map_target.inverse() * q_map_height;
+    q_target_height.normalize();
+    const tf2::Vector3 p_target_height = tf2::quatRotate(
+      q_map_target.inverse(), p_map_height - p_map_target);
+
     geometry_msgs::msg::TransformStamped msg;
-    msg.header.stamp = now();
-    msg.header.frame_id = parent_frame;
+    msg.header.stamp = odom.header.stamp;
+    if (msg.header.stamp.sec == 0 && msg.header.stamp.nanosec == 0) {
+      msg.header.stamp = now();
+    }
+    msg.header.frame_id = target_frame_;
     msg.child_frame_id = height_map_frame_;
-    msg.transform.translation.x = odom.pose.pose.position.x;
-    msg.transform.translation.y = odom.pose.pose.position.y;
-    msg.transform.translation.z = latest_height_origin_z_;
-    msg.transform.rotation = tf2::toMsg(yawOnlyQuaternion(odom.pose.pose.orientation));
+    msg.transform.translation.x = p_target_height.x();
+    msg.transform.translation.y = p_target_height.y();
+    msg.transform.translation.z = p_target_height.z();
+    msg.transform.rotation = tf2::toMsg(q_target_height);
     if (output_tf_broadcaster_) {
       output_tf_broadcaster_->sendTransform(msg);
     }
