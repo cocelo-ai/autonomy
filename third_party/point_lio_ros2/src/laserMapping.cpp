@@ -68,8 +68,8 @@ PointCloudXYZI::Ptr init_feats_world(new PointCloudXYZI());
 // The regular pcl::VoxelGrid converts the full scan bounding box into a dense
 // integer index space.  At centimetre-scale leaves this can overflow on a
 // wide-range LiDAR scan. ApproximateVoxelGrid keeps a sparse hash instead.
-pcl::ApproximateVoxelGrid<PointType> downSizeFilterSurf;
-pcl::ApproximateVoxelGrid<PointType> downSizeFilterMap;
+pcl::VoxelGrid<PointType> downSizeFilterSurf;
+pcl::VoxelGrid<PointType> downSizeFilterMap;
 
 V3D euler_cur;
 
