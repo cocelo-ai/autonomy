@@ -124,6 +124,10 @@ autonomy_light:
     point_lio_global_map:
       enabled: true
       topic: "/point_lio/global_map"
+      # Refined, edge-preserving surfel map. This is the live map used for
+      # height extraction; publish it as a separate RViz topic to compare with
+      # the lighter raw visualization map above.
+      refined_topic: "/point_lio/global_map_refined"
       # Change this ID to view only the global map from a separate RViz domain.
       # For example: ROS_DOMAIN_ID=17 rviz2
       ros_domain_id: 17
@@ -133,6 +137,16 @@ autonomy_light:
       voxel_leaf_size: 0.05
       publish_interval_sec: 1.0
       max_points: 500000
+      # RViz copy of the high-resolution refined map. The internal height-map
+      # store remains at height_voxel_leaf_size (1 cm).
+      refined_visual_voxel_leaf_size: 0.02
+      refined_visual_max_points: 1500000
+      refinement:
+        # Per registered scan: discard statistically isolated returns before
+        # centimetre-level surfel fusion. This removes flying points without
+        # fitting across stair edges.
+        mean_k: 16
+        stddev_multiplier: 0.8
     odom_output_topic: "/autonomy_light/odom"
     height_map_topic: "/autonomy_light/height_map"
     height_map_msg_topic: "/autonomy_light/height_map_data"

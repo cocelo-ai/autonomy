@@ -17,6 +17,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -64,8 +65,11 @@ PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body_space(new PointCloudXYZI());
 PointCloudXYZI::Ptr init_feats_world(new PointCloudXYZI());
 
-pcl::VoxelGrid<PointType> downSizeFilterSurf;
-pcl::VoxelGrid<PointType> downSizeFilterMap;
+// The regular pcl::VoxelGrid converts the full scan bounding box into a dense
+// integer index space.  At centimetre-scale leaves this can overflow on a
+// wide-range LiDAR scan. ApproximateVoxelGrid keeps a sparse hash instead.
+pcl::ApproximateVoxelGrid<PointType> downSizeFilterSurf;
+pcl::ApproximateVoxelGrid<PointType> downSizeFilterMap;
 
 V3D euler_cur;
 

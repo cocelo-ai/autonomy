@@ -80,7 +80,10 @@
     init_map_size: 10
     point_filter_num: 1
     space_down_sample: true
-    filter_size_surf: 0.05
-    filter_size_map: 0.05
+    # Precision-first Point-LIO input/map resolution.  The refined global map
+    # and 1 cm height map cannot recover geometry discarded here; 2 cm retains
+    # stair treads/risers much better than the prior 5 cm setting.
+    filter_size_surf: 0.02
+    filter_size_map: 0.02
     cube_side_length: 1000.0
     runtime_pos_log_enable: false

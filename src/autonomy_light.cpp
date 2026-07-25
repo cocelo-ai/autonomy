@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/features/fpfh.h>
 #include <pcl/features/normal_3d.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
@@ -507,6 +509,7 @@ public:
     }
     debug_local_map_pub_.reset();
     point_lio_global_map_pub_.reset();
+    point_lio_global_map_refined_pub_.reset();
     height_map_pub_.reset();
     height_map_msg_pub_.reset();
     odom_pub_.reset();
@@ -697,6 +700,8 @@ private:
       "point_lio_global_map.enabled", point_lio_global_map_enabled_);
     point_lio_global_map_topic_ = declare_parameter<std::string>(
       "point_lio_global_map.topic", point_lio_global_map_topic_);
+    point_lio_global_map_refined_topic_ = declare_parameter<std::string>(
+      "point_lio_global_map.refined_topic", point_lio_global_map_refined_topic_);
     point_lio_global_map_ros_domain_id_ = static_cast<int>(declare_parameter<int>(
       "point_lio_global_map.ros_domain_id", point_lio_global_map_ros_domain_id_));
     const bool requested_global_height_map = declare_parameter<bool>(
@@ -734,6 +739,25 @@ private:
       1000,
       static_cast<int>(declare_parameter<int>(
         "point_lio_global_map.max_points", point_lio_global_map_max_points_)));
+    point_lio_global_map_refined_visual_voxel_leaf_size_ = std::max(
+      0.01,
+      declare_parameter<double>(
+        "point_lio_global_map.refined_visual_voxel_leaf_size",
+        point_lio_global_map_refined_visual_voxel_leaf_size_));
+    point_lio_global_map_refined_visual_max_points_ = std::max(
+      1000,
+      static_cast<int>(declare_parameter<int>(
+        "point_lio_global_map.refined_visual_max_points",
+        point_lio_global_map_refined_visual_max_points_)));
+    point_lio_global_map_refine_mean_k_ = std::max(
+      2,
+      static_cast<int>(declare_parameter<int>(
+        "point_lio_global_map.refinement.mean_k", point_lio_global_map_refine_mean_k_)));
+    point_lio_global_map_refine_stddev_multiplier_ = std::max(
+      0.05,
+      declare_parameter<double>(
+        "point_lio_global_map.refinement.stddev_multiplier",
+        point_lio_global_map_refine_stddev_multiplier_));
     odom_output_topic_ = declare_parameter<std::string>("odom_output_topic", odom_output_topic_);
     height_map_topic_ = declare_parameter<std::string>("height_map_topic", height_map_topic_);
     height_map_msg_topic_ = declare_parameter<std::string>(
@@ -1096,11 +1120,95 @@ private:
     const double leaf_size)
   {
     PclCloud::Ptr result(new PclCloud());
-    pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
-    voxel_grid.setInputCloud(cloud);
-    const float leaf = static_cast<float>(leaf_size);
-    voxel_grid.setLeafSize(leaf, leaf, leaf);
-    voxel_grid.filter(*result);
+    if (!cloud || cloud->empty() || !std::isfinite(leaf_size) || leaf_size <= 0.0) {
+      return result;
+    }
+
+    // pcl::VoxelGrid allocates a dense integer grid over the full bounding box.
+    // A centimetre leaf on a large global map can overflow that index space even
+    // though only a small number of voxels actually contain a point.  Sparse
+    // hashing has no bounding-box-dependent allocation and therefore preserves
+    // the requested high resolution.
+    struct VoxelKey
+    {
+      std::int64_t x;
+      std::int64_t y;
+      std::int64_t z;
+
+      bool operator==(const VoxelKey & other) const
+      {
+        return x == other.x && y == other.y && z == other.z;
+      }
+    };
+    struct VoxelKeyHash
+    {
+      std::size_t operator()(const VoxelKey & key) const
+      {
+        const auto h1 = std::hash<std::int64_t>{}(key.x);
+        const auto h2 = std::hash<std::int64_t>{}(key.y);
+        const auto h3 = std::hash<std::int64_t>{}(key.z);
+        return h1 ^ (h2 << 1U) ^ (h3 << 7U);
+      }
+    };
+    struct VoxelAccumulator
+    {
+      double x{0.0};
+      double y{0.0};
+      double z{0.0};
+      std::uint32_t count{0};
+    };
+
+    std::unordered_map<VoxelKey, VoxelAccumulator, VoxelKeyHash> voxels;
+    voxels.reserve(cloud->size());
+    constexpr double kMaxCoordinateMagnitudeM = 1.0e6;
+    for (const auto & point : cloud->points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
+        std::abs(static_cast<double>(point.x)) > kMaxCoordinateMagnitudeM ||
+        std::abs(static_cast<double>(point.y)) > kMaxCoordinateMagnitudeM ||
+        std::abs(static_cast<double>(point.z)) > kMaxCoordinateMagnitudeM)
+      {
+        continue;
+      }
+      const VoxelKey key{
+        static_cast<std::int64_t>(std::floor(static_cast<double>(point.x) / leaf_size)),
+        static_cast<std::int64_t>(std::floor(static_cast<double>(point.y) / leaf_size)),
+        static_cast<std::int64_t>(std::floor(static_cast<double>(point.z) / leaf_size))};
+      auto & accumulator = voxels[key];
+      accumulator.x += point.x;
+      accumulator.y += point.y;
+      accumulator.z += point.z;
+      ++accumulator.count;
+    }
+
+    result->reserve(voxels.size());
+    for (const auto & entry : voxels) {
+      const auto & accumulator = entry.second;
+      if (accumulator.count == 0U) {
+        continue;
+      }
+      const double inverse_count = 1.0 / static_cast<double>(accumulator.count);
+      result->push_back(pcl::PointXYZ(
+        static_cast<float>(accumulator.x * inverse_count),
+        static_cast<float>(accumulator.y * inverse_count),
+        static_cast<float>(accumulator.z * inverse_count)));
+    }
+    return result;
+  }
+
+  static PclCloud::Ptr removeStatisticalOutliers(
+    const PclCloud::ConstPtr & cloud,
+    const int mean_k,
+    const double stddev_multiplier)
+  {
+    if (!cloud || cloud->size() < 4U || mean_k < 2 || stddev_multiplier <= 0.0) {
+      return cloud ? PclCloud::Ptr(new PclCloud(*cloud)) : PclCloud::Ptr(new PclCloud());
+    }
+    PclCloud::Ptr result(new PclCloud());
+    pcl::StatisticalOutlierRemoval<pcl::PointXYZ> filter;
+    filter.setInputCloud(cloud);
+    filter.setMeanK(std::min<int>(mean_k, static_cast<int>(cloud->size()) - 1));
+    filter.setStddevMulThresh(stddev_multiplier);
+    filter.filter(*result);
     return result;
   }
 
@@ -1573,10 +1681,15 @@ private:
       point_lio_global_map_pub_ = global_map_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
         point_lio_global_map_topic_,
         rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+      point_lio_global_map_refined_pub_ =
+        global_map_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
+        point_lio_global_map_refined_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
       RCLCPP_INFO(
         get_logger(),
-        "Global map enabled: %s on ROS_DOMAIN_ID=%d (height-map source)",
+        "Global map enabled: raw=%s refined=%s on ROS_DOMAIN_ID=%d (height-map source)",
         point_lio_global_map_topic_.c_str(),
+        point_lio_global_map_refined_topic_.c_str(),
         point_lio_global_map_ros_domain_id_);
     }
     output_static_tf_broadcaster_ =
@@ -2323,17 +2436,27 @@ private:
     for (const auto & point : points) {
       incoming->push_back(pcl::PointXYZ(point.x, point.y, point.z));
     }
-    incoming = voxelDownsample(incoming, point_lio_global_map_voxel_leaf_size_);
+    const auto incoming_count = incoming->size();
+    PclCloud::Ptr refined_incoming = removeStatisticalOutliers(
+      incoming,
+      point_lio_global_map_refine_mean_k_,
+      point_lio_global_map_refine_stddev_multiplier_);
+    if (refined_incoming->empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Global-map refinement rejected an entire registered scan (%zu input points)",
+        incoming_count);
+      return;
+    }
+    incoming = voxelDownsample(refined_incoming, point_lio_global_map_voxel_leaf_size_);
     if (!point_lio_global_map_points_) {
       point_lio_global_map_points_.reset(new PclCloud());
     }
     *point_lio_global_map_points_ += *incoming;
     if (point_lio_global_map_use_for_height_map_) {
       PclCloud::Ptr fine_incoming(new PclCloud());
-      fine_incoming->reserve(points.size());
-      for (const auto & point : points) {
-        fine_incoming->push_back(pcl::PointXYZ(point.x, point.y, point.z));
-      }
+      fine_incoming->reserve(refined_incoming->size());
+      *fine_incoming = *refined_incoming;
       fine_incoming = voxelDownsample(
         fine_incoming, point_lio_global_map_height_voxel_leaf_size_);
       if (!point_lio_global_map_height_points_) {
@@ -2352,6 +2475,7 @@ private:
     last_point_lio_global_map_publish_ = publish_time;
     point_lio_global_map_points_ = voxelDownsample(
       point_lio_global_map_points_, point_lio_global_map_voxel_leaf_size_);
+    PclCloud::Ptr refined_visual_cloud;
     if (point_lio_global_map_use_for_height_map_ && point_lio_global_map_height_points_) {
       point_lio_global_map_height_points_ = voxelDownsample(
         point_lio_global_map_height_points_, point_lio_global_map_height_voxel_leaf_size_);
@@ -2374,6 +2498,21 @@ private:
         point_lio_global_map_height_cloud_ = point_lio_global_map_height_points_;
         point_lio_global_map_height_tree_ = std::move(fine_tree);
       }
+      refined_visual_cloud = voxelDownsample(
+        point_lio_global_map_height_points_,
+        point_lio_global_map_refined_visual_voxel_leaf_size_);
+      const auto refined_limit =
+        static_cast<std::size_t>(point_lio_global_map_refined_visual_max_points_);
+      if (refined_visual_cloud->size() > refined_limit) {
+        PclCloud::Ptr capped_refined(new PclCloud());
+        capped_refined->reserve(refined_limit);
+        const std::size_t stride =
+          (refined_visual_cloud->size() + refined_limit - 1) / refined_limit;
+        for (std::size_t index = 0; index < refined_visual_cloud->size(); index += stride) {
+          capped_refined->push_back(refined_visual_cloud->points[index]);
+        }
+        refined_visual_cloud = std::move(capped_refined);
+      }
     }
     const auto max_points = static_cast<std::size_t>(point_lio_global_map_max_points_);
     if (point_lio_global_map_points_->size() > max_points) {
@@ -2391,10 +2530,21 @@ private:
     message.header.stamp = now();
     message.header.frame_id = frame_id;
     point_lio_global_map_pub_->publish(message);
+    if (point_lio_global_map_refined_pub_ && refined_visual_cloud) {
+      sensor_msgs::msg::PointCloud2 refined_message;
+      pcl::toROSMsg(*refined_visual_cloud, refined_message);
+      refined_message.header.stamp = message.header.stamp;
+      refined_message.header.frame_id = frame_id;
+      point_lio_global_map_refined_pub_->publish(refined_message);
+    }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
-      "Point-LIO global map published: %zu points frame=%s",
-      point_lio_global_map_points_->size(), frame_id.c_str());
+      "Point-LIO global map refined: scan=%zu->%zu raw=%zu refined=%zu frame=%s",
+      incoming_count,
+      refined_incoming->size(),
+      point_lio_global_map_points_->size(),
+      refined_visual_cloud ? refined_visual_cloud->size() : 0U,
+      frame_id.c_str());
   }
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
@@ -3839,6 +3989,7 @@ private:
   std::string point_lio_registered_topic_{"/cloud_registered"};
   bool point_lio_global_map_enabled_{true};
   std::string point_lio_global_map_topic_{"/point_lio/global_map"};
+  std::string point_lio_global_map_refined_topic_{"/point_lio/global_map_refined"};
   int point_lio_global_map_ros_domain_id_{-1};
   bool point_lio_global_map_use_for_height_map_{true};
   double point_lio_global_map_height_voxel_leaf_size_{0.025};
@@ -3846,6 +3997,10 @@ private:
   double point_lio_global_map_voxel_leaf_size_{0.10};
   double point_lio_global_map_publish_interval_sec_{1.0};
   int point_lio_global_map_max_points_{500000};
+  double point_lio_global_map_refined_visual_voxel_leaf_size_{0.02};
+  int point_lio_global_map_refined_visual_max_points_{1500000};
+  int point_lio_global_map_refine_mean_k_{16};
+  double point_lio_global_map_refine_stddev_multiplier_{0.8};
   PclCloud::Ptr point_lio_global_map_points_;
   PclCloud::Ptr point_lio_global_map_height_points_;
   PclCloud::Ptr point_lio_global_map_height_cloud_;
@@ -4011,6 +4166,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_local_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_refined_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr height_map_pub_;
   rclcpp::Publisher<::autonomy_light::msg::HeightMap>::SharedPtr height_map_msg_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

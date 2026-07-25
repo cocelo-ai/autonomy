@@ -83,6 +83,13 @@ terrain store is used for height-map extraction and is not downsampled to the
 visualization resolution. Saved PCD operation continues to use that saved global
 map, after relocalization, because it is the highest-fidelity global source.
 
+`/point_lio/global_map_refined` is the precision map used by the live height-map
+pipeline. Each registered scan receives statistical isolated-point rejection,
+then centimetre-level sparse-voxel surfel fusion; this keeps sharp stair edges
+because no moving-least-squares fit is allowed across a height discontinuity.
+Use this topic in RViz to inspect the terrain input. `refinement.mean_k` and
+`refinement.stddev_multiplier` control only isolated-point rejection.
+
 Global scan matching needs stable 3D geometry. Repetitive corridors, featureless
 floors, or a map that was made with different sensor extrinsics can produce no
 acceptable match; the quality gates deliberately keep height-map output stopped
