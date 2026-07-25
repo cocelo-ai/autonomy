@@ -55,6 +55,16 @@ saved alongside it as `*.raw.pcd`. Use `--raw-output FILE` to choose another
 raw-map path. The refined output applies isolated-point rejection and 1 cm
 voxel fusion, while the raw output is retained for diagnostics and recovery.
 
+During `mapping.sh`, Point-LIO remains the high-rate local odometry. The node
+captures 0.5 m / 7.5° keyframes, finds temporally distant loop candidates with
+Scan Context, verifies each candidate with FPFH/RANSAC followed by GICP, and
+optimizes an anchored XYZ+yaw pose graph after `Ctrl+C`. Point-LIO IMU
+roll/pitch are retained rather than re-estimated by the graph. The final
+`--output` PCD is reconstructed from optimized keyframes only when at least one
+loop closure passes its fitness and overlap gates; otherwise the dense refined
+Point-LIO map is preserved. Wait for the `Mapping pose graph optimized` or
+`found no verified loop closures` log before considering the map complete.
+
 The first 2 seconds of registered Point-LIO scans are accumulated into an odom
 submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.
 Accepted transforms correct the published odometry into `saved_map_frame`

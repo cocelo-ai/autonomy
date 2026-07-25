@@ -38,6 +38,35 @@ autonomy_light:
     # Set only by mapping.sh. In mapping-only mode this enables the refined
     # global-map accumulator and writes that precision map on shutdown.
     mapping_refined_pcd_file: ""
+    # Offline full-SLAM refinement used by mapping.sh. Point-LIO supplies the
+    # high-rate local odometry; loop closures are verified before a 4-DoF
+    # (XYZ + yaw) pose-graph optimization reconstructs the final refined PCD.
+    # IMU roll/pitch are deliberately retained from Point-LIO for stability.
+    mapping_slam:
+      enabled: true
+      keyframe_distance_m: 0.5
+      keyframe_yaw_deg: 7.5
+      keyframe_voxel_leaf_size: 0.03
+      keyframe_max_points: 15000
+      scan_context:
+        rings: 20
+        sectors: 60
+        max_radius: 40.0
+        max_distance: 0.18
+        candidate_count: 10
+      loop:
+        min_keyframe_separation: 30
+        # Verify every fifth keyframe; keyframes remain 0.5 m apart, so this
+        # still tests loop opportunities about every 2.5 m without making
+        # shutdown optimization unnecessarily slow.
+        query_stride: 5
+        submap_neighbors: 3
+        voxel_leaf_size: 0.05
+        max_correspondence_distance: 0.75
+        max_fitness: 0.025
+        min_inlier_fraction: 0.35
+      optimizer_iterations: 20
+      loop_weight: 20.0
     point_lio_pcd_save_en: false
     point_lio_pcd_save_interval: -1
     child_shutdown_grace_sec: 0.8

@@ -24,7 +24,8 @@ Examples:
   ./mapping.sh --real --output maps/lab_mapping.pcd
   ./mapping.sh --real --livox-lidar2-ip 192.168.2.166 --livox2-interface enx123
 
-Stop mapping with Ctrl+C. The script then waits for Point-LIO to save the PCD.
+Stop mapping with Ctrl+C. The script then waits for Point-LIO to save the raw
+PCD and for the refined-map loop-closure pose graph to finish.
 EOF
 }
 
@@ -158,7 +159,7 @@ COMMAND=(
 echo "mapping mode: refined output=${OUTPUT_FILE}"
 echo "mapping mode: raw output=${RAW_OUTPUT_FILE}"
 echo "mapping mode: Point-LIO internal raw PCD=${PCD_SOURCE}"
-echo "mapping mode: stop with Ctrl+C, then wait for PCD save"
+echo "mapping mode: stop with Ctrl+C, then wait for raw save and pose-graph optimization"
 
 if [[ "${DRY_RUN}" == "true" ]]; then
   printf 'dry-run command:'

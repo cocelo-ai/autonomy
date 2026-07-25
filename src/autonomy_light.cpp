@@ -24,6 +24,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <Eigen/Sparse>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -35,6 +36,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/PCLPointCloud2.h>
+#include <pcl/common/transforms.h>
 #include <pcl/conversions.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/features/fpfh.h>
@@ -481,9 +483,10 @@ public:
     if (mapping_only_) {
       RCLCPP_WARN(
         get_logger(),
-        "Mapping-only mode enabled: height-map IO is disabled; Point-LIO raw PCD save=%s refined PCD=%s",
+        "Mapping-only mode enabled: height-map IO is disabled; Point-LIO raw PCD save=%s refined PCD=%s pose_graph=%s",
         point_lio_pcd_save_en_ ? "true" : "false",
-        mapping_refined_pcd_save_enabled_ ? mapping_refined_pcd_file_.c_str() : "disabled");
+        mapping_refined_pcd_save_enabled_ ? mapping_refined_pcd_file_.c_str() : "disabled",
+        mapping_slam_active_ ? "enabled" : "disabled");
     }
   }
 
@@ -595,6 +598,83 @@ private:
     mapping_refined_pcd_file_ = declare_parameter<std::string>(
       "mapping_refined_pcd_file", mapping_refined_pcd_file_);
     mapping_refined_pcd_save_enabled_ = mapping_only_ && !mapping_refined_pcd_file_.empty();
+    mapping_slam_enabled_ = declare_parameter<bool>("mapping_slam.enabled", mapping_slam_enabled_);
+    mapping_slam_keyframe_distance_m_ = std::max(
+      0.1,
+      declare_parameter<double>(
+        "mapping_slam.keyframe_distance_m", mapping_slam_keyframe_distance_m_));
+    constexpr double kRadiansPerDegree = 3.14159265358979323846 / 180.0;
+    mapping_slam_keyframe_yaw_rad_ = std::max(
+      0.01,
+      declare_parameter<double>(
+        "mapping_slam.keyframe_yaw_deg", mapping_slam_keyframe_yaw_rad_ / kRadiansPerDegree)) *
+      kRadiansPerDegree;
+    mapping_slam_keyframe_voxel_leaf_size_ = std::max(
+      0.01,
+      declare_parameter<double>(
+        "mapping_slam.keyframe_voxel_leaf_size", mapping_slam_keyframe_voxel_leaf_size_));
+    mapping_slam_keyframe_max_points_ = std::max(
+      1000,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.keyframe_max_points", mapping_slam_keyframe_max_points_)));
+    mapping_slam_scan_context_rings_ = std::max(
+      4,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.scan_context.rings", mapping_slam_scan_context_rings_)));
+    mapping_slam_scan_context_sectors_ = std::max(
+      12,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.scan_context.sectors", mapping_slam_scan_context_sectors_)));
+    mapping_slam_scan_context_max_radius_ = std::max(
+      5.0,
+      declare_parameter<double>(
+        "mapping_slam.scan_context.max_radius", mapping_slam_scan_context_max_radius_));
+    mapping_slam_scan_context_max_distance_ = std::clamp(
+      declare_parameter<double>(
+        "mapping_slam.scan_context.max_distance", mapping_slam_scan_context_max_distance_),
+      0.01,
+      1.0);
+    mapping_slam_scan_context_candidate_count_ = std::max(
+      1,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.scan_context.candidate_count", mapping_slam_scan_context_candidate_count_)));
+    mapping_slam_loop_min_keyframe_separation_ = std::max(
+      5,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.loop.min_keyframe_separation", mapping_slam_loop_min_keyframe_separation_)));
+    mapping_slam_loop_query_stride_ = std::max(
+      1,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.loop.query_stride", mapping_slam_loop_query_stride_)));
+    mapping_slam_loop_submap_neighbors_ = std::max(
+      0,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.loop.submap_neighbors", mapping_slam_loop_submap_neighbors_)));
+    mapping_slam_loop_voxel_leaf_size_ = std::max(
+      0.02,
+      declare_parameter<double>(
+        "mapping_slam.loop.voxel_leaf_size", mapping_slam_loop_voxel_leaf_size_));
+    mapping_slam_loop_max_correspondence_distance_ = std::max(
+      mapping_slam_loop_voxel_leaf_size_,
+      declare_parameter<double>(
+        "mapping_slam.loop.max_correspondence_distance",
+        mapping_slam_loop_max_correspondence_distance_));
+    mapping_slam_loop_max_fitness_ = std::max(
+      1.0e-4,
+      declare_parameter<double>("mapping_slam.loop.max_fitness", mapping_slam_loop_max_fitness_));
+    mapping_slam_loop_min_inlier_fraction_ = std::clamp(
+      declare_parameter<double>(
+        "mapping_slam.loop.min_inlier_fraction", mapping_slam_loop_min_inlier_fraction_),
+      0.05,
+      1.0);
+    mapping_slam_optimizer_iterations_ = std::max(
+      1,
+      static_cast<int>(declare_parameter<int>(
+        "mapping_slam.optimizer_iterations", mapping_slam_optimizer_iterations_)));
+    mapping_slam_loop_weight_ = std::max(
+      1.0,
+      declare_parameter<double>("mapping_slam.loop_weight", mapping_slam_loop_weight_));
+    mapping_slam_active_ = mapping_refined_pcd_save_enabled_ && mapping_slam_enabled_;
     point_lio_pcd_save_en_ = declare_parameter<bool>(
       "point_lio_pcd_save_en", point_lio_pcd_save_en_);
     point_lio_pcd_save_interval_ = declare_parameter<int>(
@@ -1092,6 +1172,32 @@ private:
   using PclCloud = pcl::PointCloud<pcl::PointXYZ>;
   using PclNormals = pcl::PointCloud<pcl::Normal>;
   using PclFeatures = pcl::PointCloud<pcl::FPFHSignature33>;
+
+  // Mapping-only SLAM state. Point-LIO remains the high-rate local odometry;
+  // these keyframes are optimized only to build the persistent global map.
+  struct MappingKeyframe
+  {
+    PclCloud::Ptr local_cloud;
+    Eigen::Matrix4f raw_pose{Eigen::Matrix4f::Identity()};
+    Eigen::Matrix4f optimized_pose{Eigen::Matrix4f::Identity()};
+    std::vector<float> scan_context;
+    std::vector<float> ring_key;
+  };
+
+  struct MappingPoseGraphEdge
+  {
+    std::size_t from{0};
+    std::size_t to{0};
+    // Transform from `to` keyframe coordinates into `from` coordinates.
+    Eigen::Matrix4f from_T_to{Eigen::Matrix4f::Identity()};
+    bool loop_closure{false};
+  };
+
+  struct PoseGraphState
+  {
+    Eigen::Vector3d translation{Eigen::Vector3d::Zero()};
+    double yaw{0.0};
+  };
 
   bool savedMapRelocalizationActive() const
   {
@@ -1774,19 +1880,21 @@ private:
           onLidarCloud(std::move(msg));
         });
     }
-    if (!mapping_only_) {
+    if (!mapping_only_ || mapping_slam_active_) {
       odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         point_lio_odom_topic_,
         rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile(),
         [this](nav_msgs::msg::Odometry::SharedPtr msg) {
           onPointLioOdom(std::move(msg));
         });
-      path_sub_ = create_subscription<nav_msgs::msg::Path>(
-        point_lio_path_topic_,
-        rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile(),
-        [this](nav_msgs::msg::Path::SharedPtr msg) {
-          onPointLioPath(std::move(msg));
-        });
+      if (!mapping_only_) {
+        path_sub_ = create_subscription<nav_msgs::msg::Path>(
+          point_lio_path_topic_,
+          rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile(),
+          [this](nav_msgs::msg::Path::SharedPtr msg) {
+            onPointLioPath(std::move(msg));
+          });
+      }
     }
     if (savedMapRelocalizationActive() || point_lio_global_map_enabled_) {
       registered_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -2332,6 +2440,9 @@ private:
       return;
     }
 
+    if (mapping_slam_active_) {
+      captureMappingKeyframe(registration_cloud);
+    }
     tryRelocalize(registration_cloud);
     bool registered_cloud_relocalized = false;
     if (savedMapRelocalizationActive()) {
@@ -2497,14 +2608,566 @@ private:
       frame_id.c_str());
   }
 
+  static double wrapAngle(const double angle)
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    double wrapped = std::fmod(angle + kPi, 2.0 * kPi);
+    if (wrapped < 0.0) {
+      wrapped += 2.0 * kPi;
+    }
+    return wrapped - kPi;
+  }
+
+  static double yawFromTransform(const Eigen::Matrix4f & transform)
+  {
+    return std::atan2(
+      static_cast<double>(transform(1, 0)),
+      static_cast<double>(transform(0, 0)));
+  }
+
+  static Eigen::Matrix4f poseMatrixFromOdom(const nav_msgs::msg::Odometry & odom)
+  {
+    Eigen::Quaternionf orientation(
+      static_cast<float>(odom.pose.pose.orientation.w),
+      static_cast<float>(odom.pose.pose.orientation.x),
+      static_cast<float>(odom.pose.pose.orientation.y),
+      static_cast<float>(odom.pose.pose.orientation.z));
+    if (orientation.squaredNorm() < 1.0e-6F) {
+      orientation = Eigen::Quaternionf::Identity();
+    } else {
+      orientation.normalize();
+    }
+    Eigen::Matrix4f pose = Eigen::Matrix4f::Identity();
+    pose.block<3, 3>(0, 0) = orientation.toRotationMatrix();
+    pose(0, 3) = static_cast<float>(odom.pose.pose.position.x);
+    pose(1, 3) = static_cast<float>(odom.pose.pose.position.y);
+    pose(2, 3) = static_cast<float>(odom.pose.pose.position.z);
+    return pose;
+  }
+
+  std::pair<std::vector<float>, std::vector<float>> makeScanContext(
+    const PclCloud & cloud) const
+  {
+    const int rings = mapping_slam_scan_context_rings_;
+    const int sectors = mapping_slam_scan_context_sectors_;
+    constexpr double kPi = 3.14159265358979323846;
+    std::vector<float> descriptor(static_cast<std::size_t>(rings * sectors), -std::numeric_limits<float>::infinity());
+    for (const auto & point : cloud) {
+      const double radius = std::hypot(static_cast<double>(point.x), static_cast<double>(point.y));
+      if (!std::isfinite(radius) || radius <= 0.1 || radius >= mapping_slam_scan_context_max_radius_) {
+        continue;
+      }
+      const int ring = std::min(
+        rings - 1,
+        static_cast<int>(radius / mapping_slam_scan_context_max_radius_ * rings));
+      const double angle = std::atan2(static_cast<double>(point.y), static_cast<double>(point.x));
+      const int sector = std::min(
+        sectors - 1,
+        std::max(0, static_cast<int>((angle + kPi) / (2.0 * kPi) * sectors)));
+      float & value = descriptor[static_cast<std::size_t>(ring * sectors + sector)];
+      // The offset makes flat ground informative without changing relative
+      // vertical structure.  It is invariant to the keyframe's global pose.
+      value = std::max(value, point.z + 2.0F);
+    }
+    std::vector<float> ring_key(static_cast<std::size_t>(rings), 0.0F);
+    for (int ring = 0; ring < rings; ++ring) {
+      float sum = 0.0F;
+      for (int sector = 0; sector < sectors; ++sector) {
+        float & value = descriptor[static_cast<std::size_t>(ring * sectors + sector)];
+        if (!std::isfinite(value)) {
+          value = 0.0F;
+        }
+        sum += value;
+      }
+      ring_key[static_cast<std::size_t>(ring)] = sum / static_cast<float>(sectors);
+    }
+    return {std::move(descriptor), std::move(ring_key)};
+  }
+
+  double scanContextDistance(
+    const MappingKeyframe & query,
+    const MappingKeyframe & candidate) const
+  {
+    const int rings = mapping_slam_scan_context_rings_;
+    const int sectors = mapping_slam_scan_context_sectors_;
+    if (query.scan_context.size() != candidate.scan_context.size() || query.scan_context.empty()) {
+      return std::numeric_limits<double>::infinity();
+    }
+    double best = std::numeric_limits<double>::infinity();
+    for (int shift = 0; shift < sectors; ++shift) {
+      double distance_sum = 0.0;
+      int valid_rings = 0;
+      for (int ring = 0; ring < rings; ++ring) {
+        double dot = 0.0;
+        double query_norm = 0.0;
+        double candidate_norm = 0.0;
+        for (int sector = 0; sector < sectors; ++sector) {
+          const double a = query.scan_context[static_cast<std::size_t>(ring * sectors + sector)];
+          const double b = candidate.scan_context[
+            static_cast<std::size_t>(ring * sectors + (sector + shift) % sectors)];
+          dot += a * b;
+          query_norm += a * a;
+          candidate_norm += b * b;
+        }
+        if (query_norm > 1.0e-6 && candidate_norm > 1.0e-6) {
+          distance_sum += 1.0 - dot / std::sqrt(query_norm * candidate_norm);
+          ++valid_rings;
+        }
+      }
+      if (valid_rings > 0) {
+        best = std::min(best, distance_sum / static_cast<double>(valid_rings));
+      }
+    }
+    return best;
+  }
+
+  int findMappingLoopCandidate(const std::size_t query_index) const
+  {
+    if (query_index < static_cast<std::size_t>(mapping_slam_loop_min_keyframe_separation_)) {
+      return -1;
+    }
+    const auto & query = mapping_keyframes_[query_index];
+    int best_index = -1;
+    double best_distance = std::numeric_limits<double>::infinity();
+    const std::size_t last_candidate =
+      query_index - static_cast<std::size_t>(mapping_slam_loop_min_keyframe_separation_);
+    std::vector<std::pair<double, std::size_t>> ring_candidates;
+    ring_candidates.reserve(last_candidate + 1U);
+    for (std::size_t index = 0; index <= last_candidate; ++index) {
+      const auto & candidate = mapping_keyframes_[index];
+      if (query.ring_key.size() != candidate.ring_key.size()) {
+        continue;
+      }
+      double ring_distance2 = 0.0;
+      for (std::size_t ring = 0; ring < query.ring_key.size(); ++ring) {
+        const double delta = static_cast<double>(query.ring_key[ring] - candidate.ring_key[ring]);
+        ring_distance2 += delta * delta;
+      }
+      ring_candidates.emplace_back(ring_distance2, index);
+    }
+    const auto selected_count = std::min(
+      ring_candidates.size(), static_cast<std::size_t>(mapping_slam_scan_context_candidate_count_));
+    std::partial_sort(
+      ring_candidates.begin(), ring_candidates.begin() + static_cast<std::ptrdiff_t>(selected_count),
+      ring_candidates.end(),
+      [](const auto & left, const auto & right) { return left.first < right.first; });
+    for (std::size_t rank = 0; rank < selected_count; ++rank) {
+      const std::size_t index = ring_candidates[rank].second;
+      const double descriptor_distance = scanContextDistance(query, mapping_keyframes_[index]);
+      if (descriptor_distance < best_distance) {
+        best_distance = descriptor_distance;
+        best_index = static_cast<int>(index);
+      }
+    }
+    return best_distance <= mapping_slam_scan_context_max_distance_ ? best_index : -1;
+  }
+
+  PclCloud::Ptr buildMappingSubmap(const std::size_t center_index) const
+  {
+    if (center_index >= mapping_keyframes_.size()) {
+      return PclCloud::Ptr(new PclCloud());
+    }
+    const int begin = std::max(0, static_cast<int>(center_index) - mapping_slam_loop_submap_neighbors_);
+    const int end = std::min(
+      static_cast<int>(mapping_keyframes_.size()) - 1,
+      static_cast<int>(center_index) + mapping_slam_loop_submap_neighbors_);
+    const Eigen::Matrix4f center_inverse = mapping_keyframes_[center_index].raw_pose.inverse();
+    PclCloud::Ptr submap(new PclCloud());
+    for (int index = begin; index <= end; ++index) {
+      const auto & keyframe = mapping_keyframes_[static_cast<std::size_t>(index)];
+      if (!keyframe.local_cloud || keyframe.local_cloud->empty()) {
+        continue;
+      }
+      PclCloud transformed;
+      pcl::transformPointCloud(
+        *keyframe.local_cloud, transformed, center_inverse * keyframe.raw_pose);
+      *submap += transformed;
+    }
+    return voxelDownsample(submap, mapping_slam_loop_voxel_leaf_size_);
+  }
+
+  bool computeMappingFeatures(const PclCloud::ConstPtr & cloud, PclFeatures::Ptr & features) const
+  {
+    if (!cloud || cloud->size() < 80U) {
+      return false;
+    }
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+    pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> normal_estimation;
+    PclNormals::Ptr normals(new PclNormals());
+    normal_estimation.setInputCloud(cloud);
+    normal_estimation.setSearchMethod(tree);
+    normal_estimation.setRadiusSearch(std::max(0.20, 4.0 * mapping_slam_loop_voxel_leaf_size_));
+    normal_estimation.compute(*normals);
+    if (normals->size() != cloud->size()) {
+      return false;
+    }
+    features.reset(new PclFeatures());
+    pcl::FPFHEstimation<pcl::PointXYZ, pcl::Normal, pcl::FPFHSignature33> fpfh;
+    fpfh.setInputCloud(cloud);
+    fpfh.setInputNormals(normals);
+    fpfh.setSearchMethod(tree);
+    fpfh.setRadiusSearch(std::max(0.50, 10.0 * mapping_slam_loop_voxel_leaf_size_));
+    fpfh.compute(*features);
+    return features->size() == cloud->size() && !features->empty();
+  }
+
+  bool estimateMappingLoop(
+    const std::size_t target_index,
+    const std::size_t source_index,
+    MappingPoseGraphEdge & edge,
+    double & fitness,
+    double & inlier_fraction) const
+  {
+    PclCloud::Ptr source = buildMappingSubmap(source_index);
+    PclCloud::Ptr target = buildMappingSubmap(target_index);
+    if (!source || !target || source->size() < 80U || target->size() < 80U) {
+      return false;
+    }
+    Eigen::Matrix4f initial_guess =
+      mapping_keyframes_[target_index].raw_pose.inverse() * mapping_keyframes_[source_index].raw_pose;
+    PclFeatures::Ptr source_features;
+    PclFeatures::Ptr target_features;
+    if (computeMappingFeatures(source, source_features) && computeMappingFeatures(target, target_features)) {
+      pcl::SampleConsensusPrerejective<pcl::PointXYZ, pcl::PointXYZ, pcl::FPFHSignature33> ransac;
+      ransac.setInputSource(source);
+      ransac.setSourceFeatures(source_features);
+      ransac.setInputTarget(target);
+      ransac.setTargetFeatures(target_features);
+      ransac.setNumberOfSamples(3);
+      ransac.setCorrespondenceRandomness(5);
+      ransac.setSimilarityThreshold(0.85F);
+      ransac.setMaxCorrespondenceDistance(
+        static_cast<float>(3.0 * mapping_slam_loop_max_correspondence_distance_));
+      ransac.setInlierFraction(0.20F);
+      ransac.setMaximumIterations(2500);
+      PclCloud coarse_aligned;
+      ransac.align(coarse_aligned);
+      if (ransac.hasConverged() && isFiniteTransform(ransac.getFinalTransformation())) {
+        initial_guess = ransac.getFinalTransformation();
+      }
+    }
+
+    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp;
+    gicp.setInputSource(source);
+    gicp.setInputTarget(target);
+    gicp.setMaximumIterations(80);
+    gicp.setMaxCorrespondenceDistance(
+      static_cast<float>(mapping_slam_loop_max_correspondence_distance_));
+    gicp.setTransformationEpsilon(1.0e-6);
+    gicp.setEuclideanFitnessEpsilon(1.0e-6);
+    gicp.setCorrespondenceRandomness(20);
+    PclCloud aligned;
+    gicp.align(aligned, initial_guess);
+    const Eigen::Matrix4f candidate = gicp.getFinalTransformation();
+    fitness = gicp.getFitnessScore(
+      mapping_slam_loop_max_correspondence_distance_ * mapping_slam_loop_max_correspondence_distance_);
+    if (!gicp.hasConverged() || !isFiniteTransform(candidate) || !std::isfinite(fitness) ||
+      fitness > mapping_slam_loop_max_fitness_)
+    {
+      return false;
+    }
+
+    pcl::search::KdTree<pcl::PointXYZ> target_tree;
+    target_tree.setInputCloud(target);
+    PclCloud transformed;
+    pcl::transformPointCloud(*source, transformed, candidate);
+    std::vector<int> indices(1);
+    std::vector<float> squared_distances(1);
+    std::size_t inliers = 0;
+    const float max_distance2 = static_cast<float>(
+      mapping_slam_loop_max_correspondence_distance_ * mapping_slam_loop_max_correspondence_distance_);
+    for (const auto & point : transformed) {
+      if (target_tree.nearestKSearch(point, 1, indices, squared_distances) == 1 &&
+        squared_distances.front() <= max_distance2)
+      {
+        ++inliers;
+      }
+    }
+    inlier_fraction = static_cast<double>(inliers) / static_cast<double>(std::max<std::size_t>(1, transformed.size()));
+    if (inlier_fraction < mapping_slam_loop_min_inlier_fraction_) {
+      return false;
+    }
+    edge.from = target_index;
+    edge.to = source_index;
+    edge.from_T_to = candidate;
+    edge.loop_closure = true;
+    return true;
+  }
+
+  Eigen::Vector4d poseGraphResidual(
+    const PoseGraphState & from,
+    const PoseGraphState & to,
+    const MappingPoseGraphEdge & edge) const
+  {
+    const double cosine = std::cos(from.yaw);
+    const double sine = std::sin(from.yaw);
+    const Eigen::Vector3d delta = to.translation - from.translation;
+    const Eigen::Vector3d predicted(
+      cosine * delta.x() + sine * delta.y(),
+      -sine * delta.x() + cosine * delta.y(),
+      delta.z());
+    const Eigen::Vector3d measured = edge.from_T_to.block<3, 1>(0, 3).cast<double>();
+    Eigen::Vector4d residual;
+    residual.head<3>() = predicted - measured;
+    residual[3] = wrapAngle((to.yaw - from.yaw) - yawFromTransform(edge.from_T_to));
+    return residual;
+  }
+
+  void optimizeMappingPoseGraph(std::vector<MappingPoseGraphEdge> & edges)
+  {
+    const std::size_t node_count = mapping_keyframes_.size();
+    if (node_count < 2U || edges.empty()) {
+      return;
+    }
+    std::vector<PoseGraphState> states(node_count);
+    for (std::size_t index = 0; index < node_count; ++index) {
+      states[index].translation = mapping_keyframes_[index].raw_pose.block<3, 1>(0, 3).cast<double>();
+      states[index].yaw = yawFromTransform(mapping_keyframes_[index].raw_pose);
+    }
+    const int dimension = static_cast<int>(4U * (node_count - 1U));
+    for (int iteration = 0; iteration < mapping_slam_optimizer_iterations_; ++iteration) {
+      std::vector<Eigen::Triplet<double>> triplets;
+      triplets.reserve(edges.size() * 64U + static_cast<std::size_t>(dimension));
+      Eigen::VectorXd gradient = Eigen::VectorXd::Zero(dimension);
+      for (const auto & edge : edges) {
+        Eigen::Vector4d residual = poseGraphResidual(states[edge.from], states[edge.to], edge);
+        const double normalized_error = std::sqrt(
+          residual.head<3>().squaredNorm() + 0.25 * residual[3] * residual[3]);
+        const double huber_weight = normalized_error > 0.5 ? 0.5 / normalized_error : 1.0;
+        const double weight = huber_weight * (edge.loop_closure ? mapping_slam_loop_weight_ : 1.0);
+        Eigen::Matrix4d jacobians[2] = {Eigen::Matrix4d::Zero(), Eigen::Matrix4d::Zero()};
+        const std::size_t nodes[2] = {edge.from, edge.to};
+        for (int endpoint = 0; endpoint < 2; ++endpoint) {
+          if (nodes[endpoint] == 0U) {
+            continue;
+          }
+          for (int column = 0; column < 4; ++column) {
+            const double epsilon = column == 3 ? 1.0e-5 : 1.0e-4;
+            double * value = column == 3 ? &states[nodes[endpoint]].yaw :
+              &states[nodes[endpoint]].translation[column];
+            *value += epsilon;
+            const Eigen::Vector4d plus = poseGraphResidual(states[edge.from], states[edge.to], edge);
+            *value -= 2.0 * epsilon;
+            const Eigen::Vector4d minus = poseGraphResidual(states[edge.from], states[edge.to], edge);
+            *value += epsilon;
+            jacobians[endpoint].col(column) = (plus - minus) / (2.0 * epsilon);
+          }
+        }
+        for (int left = 0; left < 2; ++left) {
+          if (nodes[left] == 0U) {
+            continue;
+          }
+          const int left_offset = static_cast<int>(4U * (nodes[left] - 1U));
+          gradient.segment<4>(left_offset) += weight * jacobians[left].transpose() * residual;
+          for (int right = 0; right < 2; ++right) {
+            if (nodes[right] == 0U) {
+              continue;
+            }
+            const int right_offset = static_cast<int>(4U * (nodes[right] - 1U));
+            const Eigen::Matrix4d block = weight * jacobians[left].transpose() * jacobians[right];
+            for (int row = 0; row < 4; ++row) {
+              for (int column = 0; column < 4; ++column) {
+                triplets.emplace_back(left_offset + row, right_offset + column, block(row, column));
+              }
+            }
+          }
+        }
+      }
+      for (int diagonal = 0; diagonal < dimension; ++diagonal) {
+        triplets.emplace_back(diagonal, diagonal, 1.0e-5);
+      }
+      Eigen::SparseMatrix<double> hessian(dimension, dimension);
+      hessian.setFromTriplets(
+        triplets.begin(), triplets.end(), [](const double a, const double b) { return a + b; });
+      Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
+      solver.compute(hessian);
+      if (solver.info() != Eigen::Success) {
+        RCLCPP_WARN(get_logger(), "Mapping pose graph optimization stopped: singular Hessian");
+        break;
+      }
+      const Eigen::VectorXd increment = solver.solve(-gradient);
+      if (solver.info() != Eigen::Success || !increment.allFinite()) {
+        RCLCPP_WARN(get_logger(), "Mapping pose graph optimization stopped: solve failure");
+        break;
+      }
+      double largest_increment = 0.0;
+      for (std::size_t index = 1; index < node_count; ++index) {
+        const int offset = static_cast<int>(4U * (index - 1U));
+        states[index].translation += increment.segment<3>(offset);
+        states[index].yaw = wrapAngle(states[index].yaw + increment[offset + 3]);
+        largest_increment = std::max(largest_increment, increment.segment<4>(offset).norm());
+      }
+      if (largest_increment < 1.0e-4) {
+        break;
+      }
+    }
+    for (std::size_t index = 0; index < node_count; ++index) {
+      const auto raw_rotation = mapping_keyframes_[index].raw_pose.block<3, 3>(0, 0);
+      const double raw_roll = std::atan2(static_cast<double>(raw_rotation(2, 1)), static_cast<double>(raw_rotation(2, 2)));
+      const double raw_pitch = std::asin(std::clamp(-static_cast<double>(raw_rotation(2, 0)), -1.0, 1.0));
+      const Eigen::Matrix3f rotation =
+        (Eigen::AngleAxisf(static_cast<float>(states[index].yaw), Eigen::Vector3f::UnitZ()) *
+        Eigen::AngleAxisf(static_cast<float>(raw_pitch), Eigen::Vector3f::UnitY()) *
+        Eigen::AngleAxisf(static_cast<float>(raw_roll), Eigen::Vector3f::UnitX())).toRotationMatrix();
+      mapping_keyframes_[index].optimized_pose = Eigen::Matrix4f::Identity();
+      mapping_keyframes_[index].optimized_pose.block<3, 3>(0, 0) = rotation;
+      mapping_keyframes_[index].optimized_pose.block<3, 1>(0, 3) = states[index].translation.cast<float>();
+    }
+  }
+
+  PclCloud::Ptr buildOptimizedMappingMap()
+  {
+    std::lock_guard<std::mutex> lock(mapping_slam_mutex_);
+    mapping_slam_keyframe_count_ = mapping_keyframes_.size();
+    if (mapping_keyframes_.size() < 2U) {
+      return PclCloud::Ptr();
+    }
+    std::vector<MappingPoseGraphEdge> edges;
+    edges.reserve(mapping_keyframes_.size() * 2U);
+    for (std::size_t index = 1; index < mapping_keyframes_.size(); ++index) {
+      MappingPoseGraphEdge edge;
+      edge.from = index - 1U;
+      edge.to = index;
+      edge.from_T_to = mapping_keyframes_[index - 1U].raw_pose.inverse() * mapping_keyframes_[index].raw_pose;
+      edges.push_back(edge);
+    }
+    mapping_slam_accepted_loop_count_ = 0;
+    for (std::size_t source_index = 0; source_index < mapping_keyframes_.size(); ++source_index) {
+      if (source_index % static_cast<std::size_t>(mapping_slam_loop_query_stride_) != 0U) {
+        continue;
+      }
+      const int target_index = findMappingLoopCandidate(source_index);
+      if (target_index < 0) {
+        continue;
+      }
+      MappingPoseGraphEdge loop_edge;
+      double fitness = std::numeric_limits<double>::infinity();
+      double inlier_fraction = 0.0;
+      if (estimateMappingLoop(
+          static_cast<std::size_t>(target_index), source_index, loop_edge, fitness, inlier_fraction))
+      {
+        edges.push_back(loop_edge);
+        ++mapping_slam_accepted_loop_count_;
+        RCLCPP_INFO(
+          get_logger(),
+          "Mapping loop accepted: keyframe=%zu candidate=%d fitness=%.4f inliers=%.2f",
+          source_index, target_index, fitness, inlier_fraction);
+      }
+    }
+    if (mapping_slam_accepted_loop_count_ == 0U) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Mapping pose graph found no verified loop closures; keeping the dense Point-LIO refined map");
+      return PclCloud::Ptr();
+    }
+    optimizeMappingPoseGraph(edges);
+    PclCloud::Ptr optimized_map(new PclCloud());
+    for (std::size_t index = 0; index < mapping_keyframes_.size(); ++index) {
+      const auto & keyframe = mapping_keyframes_[index];
+      if (!keyframe.local_cloud || keyframe.local_cloud->empty()) {
+        continue;
+      }
+      PclCloud transformed;
+      pcl::transformPointCloud(*keyframe.local_cloud, transformed, keyframe.optimized_pose);
+      *optimized_map += transformed;
+      if ((index + 1U) % 16U == 0U) {
+        optimized_map = voxelDownsample(optimized_map, point_lio_global_map_height_voxel_leaf_size_);
+      }
+    }
+    optimized_map = voxelDownsample(optimized_map, point_lio_global_map_height_voxel_leaf_size_);
+    const auto point_limit = static_cast<std::size_t>(point_lio_global_map_height_max_points_);
+    if (optimized_map->size() > point_limit) {
+      PclCloud::Ptr capped(new PclCloud());
+      capped->reserve(point_limit);
+      const std::size_t stride = (optimized_map->size() + point_limit - 1U) / point_limit;
+      for (std::size_t index = 0; index < optimized_map->size(); index += stride) {
+        capped->push_back(optimized_map->points[index]);
+      }
+      optimized_map = std::move(capped);
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "Mapping pose graph optimized: keyframes=%zu loops=%zu final_points=%zu",
+      mapping_keyframes_.size(), mapping_slam_accepted_loop_count_, optimized_map->size());
+    return optimized_map;
+  }
+
+  void captureMappingKeyframe(const PclCloud::ConstPtr & registered_cloud)
+  {
+    if (!registered_cloud || registered_cloud->empty()) {
+      return;
+    }
+    nav_msgs::msg::Odometry odom;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      if (!has_raw_odom_) {
+        return;
+      }
+      odom = latest_raw_odom_;
+    }
+    const Eigen::Matrix4f raw_pose = poseMatrixFromOdom(odom);
+    {
+      std::lock_guard<std::mutex> lock(mapping_slam_mutex_);
+      if (!mapping_keyframes_.empty()) {
+        const Eigen::Vector3f delta = raw_pose.block<3, 1>(0, 3) -
+          mapping_keyframes_.back().raw_pose.block<3, 1>(0, 3);
+        const double yaw_delta = std::abs(wrapAngle(
+          yawFromTransform(raw_pose) - yawFromTransform(mapping_keyframes_.back().raw_pose)));
+        if (delta.norm() < mapping_slam_keyframe_distance_m_ &&
+          yaw_delta < mapping_slam_keyframe_yaw_rad_)
+        {
+          return;
+        }
+      }
+      PclCloud world_filtered = *removeStatisticalOutliers(
+        registered_cloud,
+        point_lio_global_map_refine_mean_k_,
+        point_lio_global_map_refine_stddev_multiplier_);
+      if (world_filtered.empty()) {
+        return;
+      }
+      PclCloud::Ptr local_cloud(new PclCloud());
+      pcl::transformPointCloud(world_filtered, *local_cloud, raw_pose.inverse());
+      local_cloud = voxelDownsample(local_cloud, mapping_slam_keyframe_voxel_leaf_size_);
+      if (local_cloud->size() > static_cast<std::size_t>(mapping_slam_keyframe_max_points_)) {
+        PclCloud::Ptr capped(new PclCloud());
+        capped->reserve(static_cast<std::size_t>(mapping_slam_keyframe_max_points_));
+        const std::size_t stride =
+          (local_cloud->size() + static_cast<std::size_t>(mapping_slam_keyframe_max_points_) - 1U) /
+          static_cast<std::size_t>(mapping_slam_keyframe_max_points_);
+        for (std::size_t index = 0; index < local_cloud->size(); index += stride) {
+          capped->push_back(local_cloud->points[index]);
+        }
+        local_cloud = std::move(capped);
+      }
+      if (local_cloud->size() < 80U) {
+        return;
+      }
+      MappingKeyframe keyframe;
+      keyframe.local_cloud = std::move(local_cloud);
+      keyframe.raw_pose = raw_pose;
+      keyframe.optimized_pose = raw_pose;
+      auto [scan_context, ring_key] = makeScanContext(*keyframe.local_cloud);
+      keyframe.scan_context = std::move(scan_context);
+      keyframe.ring_key = std::move(ring_key);
+      mapping_keyframes_.push_back(std::move(keyframe));
+      mapping_slam_keyframe_count_ = mapping_keyframes_.size();
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Mapping SLAM: captured keyframe=%zu points=%zu",
+        mapping_keyframes_.size() - 1U,
+        mapping_keyframes_.back().local_cloud->size());
+    }
+  }
+
   void saveMappingRefinedPcd()
   {
     if (!mapping_refined_pcd_save_enabled_) {
       return;
     }
 
-    PclCloud::Ptr refined_map;
-    {
+    PclCloud::Ptr refined_map = mapping_slam_active_ ? buildOptimizedMappingMap() : nullptr;
+    if (!refined_map || refined_map->empty()) {
       std::lock_guard<std::mutex> lock(map_mutex_);
       if (point_lio_global_map_height_points_ && !point_lio_global_map_height_points_->empty()) {
         refined_map.reset(new PclCloud(*point_lio_global_map_height_points_));
@@ -2529,10 +3192,12 @@ private:
     }
     RCLCPP_INFO(
       get_logger(),
-      "Saved refined mapping PCD: %s (%zu points, %.3fm voxel)",
+      "Saved refined mapping PCD: %s (%zu points, %.3fm voxel, keyframes=%zu loops=%zu)",
       mapping_refined_pcd_file_.c_str(),
       refined_map->size(),
-      point_lio_global_map_height_voxel_leaf_size_);
+      point_lio_global_map_height_voxel_leaf_size_,
+      mapping_slam_keyframe_count_,
+      mapping_slam_accepted_loop_count_);
   }
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
@@ -3968,6 +4633,30 @@ private:
   bool mapping_only_{false};
   std::string mapping_refined_pcd_file_;
   bool mapping_refined_pcd_save_enabled_{false};
+  bool mapping_slam_enabled_{true};
+  bool mapping_slam_active_{false};
+  double mapping_slam_keyframe_distance_m_{0.5};
+  double mapping_slam_keyframe_yaw_rad_{7.5 * 3.14159265358979323846 / 180.0};
+  double mapping_slam_keyframe_voxel_leaf_size_{0.03};
+  int mapping_slam_keyframe_max_points_{15000};
+  int mapping_slam_scan_context_rings_{20};
+  int mapping_slam_scan_context_sectors_{60};
+  double mapping_slam_scan_context_max_radius_{40.0};
+  double mapping_slam_scan_context_max_distance_{0.18};
+  int mapping_slam_scan_context_candidate_count_{10};
+  int mapping_slam_loop_min_keyframe_separation_{30};
+  int mapping_slam_loop_query_stride_{5};
+  int mapping_slam_loop_submap_neighbors_{3};
+  double mapping_slam_loop_voxel_leaf_size_{0.05};
+  double mapping_slam_loop_max_correspondence_distance_{0.75};
+  double mapping_slam_loop_max_fitness_{0.025};
+  double mapping_slam_loop_min_inlier_fraction_{0.35};
+  int mapping_slam_optimizer_iterations_{20};
+  double mapping_slam_loop_weight_{20.0};
+  std::mutex mapping_slam_mutex_;
+  std::vector<MappingKeyframe> mapping_keyframes_;
+  std::size_t mapping_slam_keyframe_count_{0};
+  std::size_t mapping_slam_accepted_loop_count_{0};
   bool point_lio_pcd_save_en_{false};
   int point_lio_pcd_save_interval_{-1};
   double child_shutdown_grace_sec_{0.8};
