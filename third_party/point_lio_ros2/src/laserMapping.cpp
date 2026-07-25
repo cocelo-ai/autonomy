@@ -364,6 +364,24 @@ void imu_cbk(const sensor_msgs::msg::Imu::SharedPtr msg_in) {
 }
 
 bool sync_packages(MeasureGroup &meas) {
+    static rclcpp::Clock buffer_throttle_clock(RCL_SYSTEM_TIME);
+    if (!lidar_pushed) {
+        std::size_t dropped = 0;
+        while (lidar_buffer.size() > static_cast<std::size_t>(max_lidar_buffer_size)) {
+            lidar_buffer.pop_front();
+            time_buffer.pop_front();
+            ++dropped;
+        }
+        if (dropped > 0) {
+            RCLCPP_WARN_THROTTLE(
+                logger,
+                buffer_throttle_clock,
+                2000,
+                "Point-LIO dropped %zu stale LiDAR scans to keep the input buffer at %d",
+                dropped,
+                max_lidar_buffer_size);
+        }
+    }
     if (!imu_en) {
         if (!lidar_buffer.empty()) {
             meas.lidar = lidar_buffer.front();
@@ -915,11 +933,22 @@ void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPa
     msg_body_pose.header.frame_id = odom_header_frame_id;
     static int jjj = 0;
     jjj++;
-    // if (jjj % 2 == 0) // if path is too large, the rvis will crash
-    {
-        path.poses.emplace_back(msg_body_pose);
-        pubPath->publish(path);
+    if (jjj % path_publish_stride != 0) {
+        return;
     }
+
+    // Path is a visualization/debug output. Sample it at the configured
+    // stride and cap its history so neither serialization nor memory grows
+    // without bound during long deployments.
+    if (path.poses.size() >= static_cast<std::size_t>(max_path_pose_count)) {
+        const std::size_t erase_count = std::max<std::size_t>(
+            1U, static_cast<std::size_t>(max_path_pose_count) / 10U);
+        path.poses.erase(
+            path.poses.begin(),
+            path.poses.begin() + std::min(erase_count, path.poses.size()));
+    }
+    path.poses.emplace_back(msg_body_pose);
+    pubPath->publish(path);
 }
 
 int main(int argc, char **argv) {

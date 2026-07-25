@@ -17,7 +17,8 @@ std::string lid_topic, imu_topic;
 std::string lidar_msg_type;
 bool prop_at_freq_of_imu, check_satu, con_frame, cut_frame;
 bool use_imu_as_input, space_down_sample, publish_odometry_without_downsample;
-int init_map_size, con_frame_num;
+int init_map_size, con_frame_num, max_lidar_buffer_size;
+int path_publish_stride, max_path_pose_count;
 double match_s, satu_acc, satu_gyro, cut_frame_time_interval;
 float plane_thr;
 double filter_size_surf_min, filter_size_map_min, fov_deg;
@@ -78,6 +79,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<std::string>("common.lidar_msg_type", "pointcloud2");
     nh->declare_parameter<bool>("common.con_frame", false);
     nh->declare_parameter<int>("common.con_frame_num", 1);
+    nh->declare_parameter<int>("common.max_lidar_buffer_size", 2);
     nh->declare_parameter<bool>("common.cut_frame", false);
     nh->declare_parameter<double>("common.cut_frame_time_interval", 0.1);
     nh->declare_parameter<double>("common.time_lag_imu_to_lidar", 0.0);
@@ -113,6 +115,8 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<std::vector<double>>("mapping.extrinsic_R", {1, 0, 0, 0, 1, 0, 0, 0, 1});
     nh->declare_parameter<bool>("odometry.publish_odometry_without_downsample", false);
     nh->declare_parameter<bool>("publish.path_en", true);
+    nh->declare_parameter<int>("publish.path_publish_stride", 10);
+    nh->declare_parameter<int>("publish.max_path_pose_count", 10000);
     nh->declare_parameter<bool>("publish.scan_publish_en", true);
     nh->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
     nh->declare_parameter<bool>("publish.local_map_en", false);
@@ -159,6 +163,8 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("common.lidar_msg_type", lidar_msg_type);
     nh->get_parameter("common.con_frame", con_frame);
     nh->get_parameter("common.con_frame_num", con_frame_num);
+    nh->get_parameter("common.max_lidar_buffer_size", max_lidar_buffer_size);
+    max_lidar_buffer_size = std::max(1, max_lidar_buffer_size);
     nh->get_parameter("common.cut_frame", cut_frame);
     nh->get_parameter("common.cut_frame_time_interval", cut_frame_time_interval);
     nh->get_parameter("common.time_lag_imu_to_lidar", time_lag_imu_to_lidar);
@@ -194,6 +200,10 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("mapping.extrinsic_R", extrinR);
     nh->get_parameter("odometry.publish_odometry_without_downsample", publish_odometry_without_downsample);
     nh->get_parameter("publish.path_en", path_en);
+    nh->get_parameter("publish.path_publish_stride", path_publish_stride);
+    nh->get_parameter("publish.max_path_pose_count", max_path_pose_count);
+    path_publish_stride = std::max(1, path_publish_stride);
+    max_path_pose_count = std::max(1, max_path_pose_count);
     nh->get_parameter("publish.scan_publish_en", scan_pub_en);
     nh->get_parameter("publish.scan_bodyframe_pub_en", scan_body_pub_en);
     nh->get_parameter("publish.local_map_en", local_map_pub_en);

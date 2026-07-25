@@ -208,8 +208,8 @@ These topics are published on `external_ros_domain_id`.
 | `/autonomy_light/height_map_data` | `autonomy_light/msg/HeightMap` | Compact sim-to-real height map for control. |
 | `/autonomy_light/height_map` | `sensor_msgs/msg/PointCloud2` | Debug point cloud generated from the height grid. |
 | `/autonomy_light/odom` | `nav_msgs/msg/Odometry` | Point-LIO odometry remapped to the configured target frame. |
-| `/path` | `nav_msgs/msg/Path` | Point-LIO path republished for consumers that need it. |
-| `/tf`, `/tf_static` | `tf2_msgs` | `odom -> base_link`, `odom -> base_link_gravity`, and static LiDAR transform. |
+| `/autonomy_light/path` | `nav_msgs/msg/Path` | Corrected Point-LIO path republished on a topic distinct from the internal `/path` input. |
+| `/tf`, `/tf_static` | `tf2_msgs` | Point-LIO owns `odom -> base_link`; autonomy-light publishes `map -> odom`, `base_link -> base_link_gravity`, and static LiDAR transforms. |
 
 The custom height map message is:
 

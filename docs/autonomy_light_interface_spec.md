@@ -117,7 +117,7 @@ ROS_DOMAIN_ID=0 autonomy-light-heightmap-example
 | `/autonomy_light/height_map_data` | `autonomy_light/msg/HeightMap` | Reliable, Volatile, KeepLast depth 2 | 제어용 height map |
 | `/autonomy_light/height_map` | `sensor_msgs/msg/PointCloud2` | Reliable, Volatile, KeepLast depth 2 | RViz/debug용 height map point cloud |
 | `/autonomy_light/odom` | `nav_msgs/msg/Odometry` | Reliable, Volatile, KeepLast depth 10 | 로봇 odometry |
-| `/path` | `nav_msgs/msg/Path` | Reliable, Volatile, KeepLast depth 10 | 로봇 path |
+| `/autonomy_light/path` | `nav_msgs/msg/Path` | Reliable, Volatile, KeepLast depth 10 | Point-LIO의 내부 `/path` 입력과 분리된 보정 로봇 path |
 | `/tf` | `tf2_msgs/msg/TFMessage` | ROS 2 TF QoS | 동적 TF |
 | `/tf_static` | `tf2_msgs/msg/TFMessage` | ROS 2 static TF QoS | 정적 TF |
 

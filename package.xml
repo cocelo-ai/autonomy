@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>autonomy_light</name>
-  <version>0.1.0</version>
+  <version>0.3.0</version>
   <description>Lightweight MID360 Point-LIO and elevation-map runtime.</description>
   <maintainer email="todo@example.com">autonomy_light maintainer</maintainer>
   <license>Apache-2.0</license>

@@ -270,7 +270,8 @@ LiDAR, Point-LIO, local map 등 heavy perception 내부 domain이다. 현재값:
 
 제어용 SBC가 보는 출력 domain이다. 현재값: `0`.
 
-- 이 domain에는 `/autonomy_light/odom`, `/autonomy_light/height_map`, `/tf`, `/tf_static`, `/path` 정도만 남기는 것이 좋다.
+- 이 domain에는 `/autonomy_light/odom`, `/autonomy_light/height_map`, `/autonomy_light/path`,
+  `/tf`, `/tf_static` 정도만 남기는 것이 좋다.
 
 ### `debug_local_map_ros_domain_id`
 
@@ -304,6 +305,10 @@ height map 입력으로 쓰는 Point-LIO local map topic이다. 현재값: `/poi
 ### `odom_output_topic`, `height_map_topic`, `path_output_topic`
 
 외부 domain으로 내보내는 제어용 출력 topic이다.
+
+- `path_output_topic`의 현재값은 `/autonomy_light/path`이다.
+- 같은 ROS domain에서는 Point-LIO 입력인 `point_lio_path_topic`(`/path`)과 반드시 달라야 한다.
+  두 값이 같은 경우 path 재발행 feedback loop를 막기 위해 노드가 시작을 거부한다.
 
 ### `height_map_msg_topic`
 

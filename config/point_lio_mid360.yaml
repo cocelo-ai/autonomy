@@ -6,6 +6,9 @@
       lidar_msg_type: "livox_custom"
       con_frame: false
       con_frame_num: 1
+      # Bound sensor-time latency. If estimation briefly falls behind, retain
+      # only the newest scans instead of replaying an ever-growing FIFO.
+      max_lidar_buffer_size: 2
       cut_frame: false
       cut_frame_time_interval: 0.1
       time_lag_imu_to_lidar: 0.0
@@ -61,6 +64,10 @@
 
     publish:
       path_en: true
+      # Path is visualization-only: sample at ~1 Hz and bound long-run message
+      # size/memory. Odometry and TF remain at the estimator rate.
+      path_publish_stride: 10
+      max_path_pose_count: 10000
       scan_publish_en: false
       scan_bodyframe_pub_en: false
 

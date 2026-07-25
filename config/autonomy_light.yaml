@@ -96,9 +96,14 @@ autonomy_light:
       initial_submap_max_points: 30000
       scan_voxel_leaf_size: 0.05
       map_voxel_leaf_size: 0.05
+      # FPFH/RANSAC is only a coarse global initializer. Run it on a bounded
+      # 15 cm representation, then retain the 5 cm clouds for precise GICP.
+      global_feature_voxel_leaf_size: 0.15
+      global_feature_max_points: 6000
+      global_source_max_points: 6000
       normal_radius: 0.45
       feature_radius: 0.75
-      global_max_iterations: 5000
+      global_max_iterations: 1500
       global_inlier_fraction: 0.20
       max_correspondence_distance: 0.75
       gicp_max_iterations: 50
@@ -106,8 +111,9 @@ autonomy_light:
       max_tracking_translation_step: 1.0
       min_scan_points: 80
     # Low-rate global correction. Point-LIO stays the high-rate odom source;
-    # this aligns a rolling submap to the saved map, or to the live refined
-    # global map when launch.sh is used without --map.
+    # With a saved map this aligns a rolling submap to the immutable map. Without
+    # a map, Scan Context + verified loop closures update map -> odom instead of
+    # continuously registering against the node's own growing live map.
     runtime_localization:
       enabled: true
       update_interval_sec: 1.0
@@ -130,7 +136,7 @@ autonomy_light:
 
     # LiDAR 1: default single-LiDAR path. For one physical LiDAR, only these
     # fields need to be set.
-    livox_interface: "eno1"
+    livox_interface: "enP8p1s0"
     livox_host_ip: "192.168.1.50/24" 
     livox_lidar_ip: "192.168.1.166"
 
@@ -196,7 +202,9 @@ autonomy_light:
     odom_output_topic: "/autonomy_light/odom"
     height_map_topic: "/autonomy_light/height_map"
     height_map_msg_topic: "/autonomy_light/height_map_data"
-    path_output_topic: "/path"
+    # Keep this distinct from point_lio_path_topic. Using the same topic in the
+    # same ROS domain makes autonomy-light receive and republish its own path.
+    path_output_topic: "/autonomy_light/path"
     height_map_debug:
       # When enabled, publish a constant height map for receiver/control debugging
       # without requiring Point-LIO map input. /autonomy_light/height_map_data is
