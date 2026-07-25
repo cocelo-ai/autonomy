@@ -105,6 +105,12 @@ if [[ -z "${OUTPUT_FILE}" ]]; then
   OUTPUT_FILE="${OUTPUT_DIR}/point_lio_map_${TIMESTAMP}.pcd"
 fi
 
+# ROS 2 infers a bare value such as "120" as an integer.  This parameter is
+# declared as double by autonomy_light, so retain or add a decimal point.
+if [[ "${SAVE_GRACE_SEC}" =~ ^[+-]?[0-9]+$ ]]; then
+  SAVE_GRACE_SEC="${SAVE_GRACE_SEC}.0"
+fi
+
 COMMAND=(
   "${SCRIPT_DIR}/launch.sh"
   "${LAUNCH_ARGS[@]}"
