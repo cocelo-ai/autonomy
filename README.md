@@ -58,6 +58,15 @@ around that corrected pose. Check
 `/autonomy_light/heartbeat` for `waiting_for_saved_map_relocalization` or a
 `ready:...:relocalization_fitness=...` state.
 
+During initialization, heartbeat reports the active phase and accumulated-point
+count, for example `relocalizing:phase=collecting_submap:submap_points=...`.
+The console also logs collection, global FPFH/RANSAC matching, and GICP
+refinement. The saved PCD is published once with transient-local QoS on
+`/autonomy_light/saved_map` in `saved_map_frame`; use that topic in RViz with
+the external `ROS_DOMAIN_ID` (the default configuration uses `17`) and set the
+PointCloud2 display durability to `Transient Local` when opening RViz after
+autonomy-light has already started.
+
 Global scan matching needs stable 3D geometry. Repetitive corridors, featureless
 floors, or a map that was made with different sensor extrinsics can produce no
 acceptable match; the quality gates deliberately keep height-map output stopped

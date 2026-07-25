@@ -50,6 +50,7 @@ ament_target_dependencies(autonomy_light_node
   geometry_msgs
   livox_ros_driver2
   nav_msgs
+  pcl_conversions
   rclcpp
   sensor_msgs
   std_msgs

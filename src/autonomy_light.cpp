@@ -35,6 +35,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/PCLPointCloud2.h>
 #include <pcl/conversions.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <pcl/features/fpfh.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/filters/voxel_grid.h>
@@ -581,6 +582,11 @@ private:
       declare_parameter<double>("child_shutdown_grace_sec", child_shutdown_grace_sec_));
     saved_map_file_ = declare_parameter<std::string>("saved_map_file", saved_map_file_);
     saved_map_frame_ = declare_parameter<std::string>("saved_map_frame", saved_map_frame_);
+    saved_map_topic_ = declare_parameter<std::string>("saved_map_topic", saved_map_topic_);
+    saved_map_publish_voxel_leaf_size_ = std::max(
+      0.02,
+      declare_parameter<double>(
+        "saved_map_publish_voxel_leaf_size", saved_map_publish_voxel_leaf_size_));
     saved_map_localization_enabled_ = declare_parameter<bool>(
       "saved_map_localization.enabled", saved_map_localization_enabled_);
     saved_map_global_initialization_ = declare_parameter<bool>(
@@ -972,6 +978,8 @@ private:
       has_map_ = true;
     }
     initializeSavedMapLocalization(cloud_xyz);
+    saved_map_visualization_cloud_ = voxelDownsample(
+      cloud_xyz.makeShared(), saved_map_publish_voxel_leaf_size_);
     last_map_time_ = now();
     ++map_count_;
 
@@ -992,6 +1000,25 @@ private:
   bool savedMapRelocalizationActive() const
   {
     return saved_map_loaded_ && saved_map_localization_enabled_;
+  }
+
+  void publishSavedMap()
+  {
+    if (!saved_map_pub_ || !saved_map_visualization_cloud_ || saved_map_visualization_cloud_->empty()) {
+      return;
+    }
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(*saved_map_visualization_cloud_, message);
+    message.header.stamp = now();
+    message.header.frame_id = saved_map_frame_;
+    saved_map_pub_->publish(message);
+    RCLCPP_INFO(
+      get_logger(),
+      "Published saved map for visualization: topic=%s frame=%s points=%zu voxel=%.3fm",
+      saved_map_topic_.c_str(),
+      saved_map_frame_.c_str(),
+      saved_map_visualization_cloud_->size(),
+      saved_map_publish_voxel_leaf_size_);
   }
 
   static PclCloud::Ptr voxelDownsample(
@@ -1076,6 +1103,17 @@ private:
       std::abs(transform(3, 3) - 1.0F) < 1.0e-4F;
   }
 
+  void setSavedMapRelocalizationProgress(
+    const std::string & phase,
+    const std::size_t submap_points = 0,
+    const double elapsed_sec = 0.0)
+  {
+    std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+    saved_map_relocalization_phase_ = phase;
+    saved_map_relocalization_submap_points_ = submap_points;
+    saved_map_relocalization_elapsed_sec_ = elapsed_sec;
+  }
+
   void resetInitialRelocalizationSubmap()
   {
     initial_relocalization_submap_.reset();
@@ -1093,17 +1131,27 @@ private:
       initial_relocalization_submap_, saved_map_scan_voxel_leaf_size_);
 
     const auto max_points = static_cast<std::size_t>(saved_map_initial_submap_max_points_);
-    if (initial_relocalization_submap_->size() <= max_points) {
-      return;
+    if (initial_relocalization_submap_->size() > max_points) {
+      PclCloud::Ptr capped(new PclCloud());
+      capped->reserve(max_points);
+      const std::size_t stride = (initial_relocalization_submap_->size() + max_points - 1) /
+        max_points;
+      for (std::size_t index = 0; index < initial_relocalization_submap_->size(); index += stride) {
+        capped->push_back(initial_relocalization_submap_->points[index]);
+      }
+      initial_relocalization_submap_ = std::move(capped);
     }
-    PclCloud::Ptr capped(new PclCloud());
-    capped->reserve(max_points);
-    const std::size_t stride = (initial_relocalization_submap_->size() + max_points - 1) /
-      max_points;
-    for (std::size_t index = 0; index < initial_relocalization_submap_->size(); index += stride) {
-      capped->push_back(initial_relocalization_submap_->points[index]);
-    }
-    initial_relocalization_submap_ = std::move(capped);
+    const double elapsed_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - initial_relocalization_submap_start_).count();
+    setSavedMapRelocalizationProgress(
+      "collecting_submap", initial_relocalization_submap_->size(), elapsed_sec);
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Saved-map relocalization: collecting submap %.1f/%.1fs, %zu/%d points",
+      elapsed_sec,
+      saved_map_initial_submap_duration_sec_,
+      initial_relocalization_submap_->size(),
+      saved_map_initial_submap_min_points_);
   }
 
   bool initialRelocalizationSubmapReady() const
@@ -1157,8 +1205,15 @@ private:
     last_saved_map_localization_attempt_ = attempt_time;
 
     if (global_attempt) {
+      setSavedMapRelocalizationProgress(
+        "global_feature_matching", source->size(), saved_map_initial_submap_duration_sec_);
+      RCLCPP_INFO(
+        get_logger(),
+        "Saved-map relocalization: running FPFH/RANSAC on a %zu-point submap",
+        source->size());
       PclFeatures::Ptr source_features;
       if (!computeFpfhFeatures(source, source_features)) {
+        setSavedMapRelocalizationProgress("retrying_after_feature_failure");
         resetInitialRelocalizationSubmap();
         return false;
       }
@@ -1180,12 +1235,19 @@ private:
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 3000,
           "Saved-map global relocalization has not found a valid FPFH/RANSAC submap candidate yet");
+        setSavedMapRelocalizationProgress("retrying_after_global_match_failure");
         resetInitialRelocalizationSubmap();
         return false;
       }
       initial_guess = global.getFinalTransformation();
     }
 
+    setSavedMapRelocalizationProgress(
+      global_attempt ? "gicp_refinement" : "gicp_tracking", source->size(), 0.0);
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Saved-map relocalization: running GICP %s with %zu points",
+      global_attempt ? "refinement" : "tracking", source->size());
     pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp;
     gicp.setInputSource(source);
     gicp.setInputTarget(saved_map_localization_cloud_);
@@ -1207,6 +1269,7 @@ private:
         "Saved-map GICP rejected: converged=%s fitness=%.4f (limit %.4f)",
         gicp.hasConverged() ? "true" : "false", fitness, saved_map_max_fitness_);
       if (global_attempt) {
+        setSavedMapRelocalizationProgress("retrying_after_gicp_failure");
         resetInitialRelocalizationSubmap();
       }
       return false;
@@ -1221,6 +1284,7 @@ private:
         "Saved-map GICP rejected a %.2fm correction jump (limit %.2fm)",
         (candidate.block<3, 1>(0, 3) - initial_guess.block<3, 1>(0, 3)).norm(),
         saved_map_max_tracking_translation_step_);
+      setSavedMapRelocalizationProgress("tracking_jump_rejected");
       return false;
     }
 
@@ -1229,6 +1293,9 @@ private:
       saved_map_from_odom_ = candidate;
       saved_map_relocalized_ = true;
       saved_map_last_fitness_ = fitness;
+      saved_map_relocalization_phase_ = "tracking";
+      saved_map_relocalization_submap_points_ = source->size();
+      saved_map_relocalization_elapsed_sec_ = 0.0;
     }
     applySavedMapCorrectionToLatestOdom();
     if (global_attempt) {
@@ -1411,6 +1478,12 @@ private:
     path_pub_ = output_node->create_publisher<nav_msgs::msg::Path>(
       path_output_topic_,
       rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
+    if (saved_map_loaded_) {
+      saved_map_pub_ = output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
+        saved_map_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+      publishSavedMap();
+    }
     output_static_tf_broadcaster_ =
       std::make_shared<tf2_ros::StaticTransformBroadcaster>(output_node);
     output_tf_broadcaster_ =
@@ -3428,10 +3501,16 @@ private:
       (map_count_ == 0 || (now() - last_map_time_) > rclcpp::Duration::from_seconds(2.0));
     bool waiting_for_saved_map_relocalization = false;
     double saved_map_fitness = std::numeric_limits<double>::infinity();
+    std::string saved_map_relocalization_phase;
+    std::size_t saved_map_submap_points = 0;
+    double saved_map_submap_elapsed_sec = 0.0;
     if (savedMapRelocalizationActive()) {
       std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
       waiting_for_saved_map_relocalization = !saved_map_relocalized_;
       saved_map_fitness = saved_map_last_fitness_;
+      saved_map_relocalization_phase = saved_map_relocalization_phase_;
+      saved_map_submap_points = saved_map_relocalization_submap_points_;
+      saved_map_submap_elapsed_sec = saved_map_relocalization_elapsed_sec_;
     }
 
     if (height_map_manual_mode_) {
@@ -3446,7 +3525,9 @@ private:
     } else if (odom_stale) {
       msg.data = "degraded:waiting_for_point_lio_odom";
     } else if (waiting_for_saved_map_relocalization) {
-      msg.data = "waiting_for_saved_map_relocalization";
+      msg.data = "relocalizing:phase=" + saved_map_relocalization_phase +
+        ":submap_points=" + std::to_string(saved_map_submap_points) +
+        ":elapsed_sec=" + shortDouble(saved_map_submap_elapsed_sec);
     } else if (map_stale) {
       msg.data = "degraded:waiting_for_point_lio_map";
     } else {
@@ -3591,6 +3672,8 @@ private:
   bool saved_map_loaded_{false};
   std::string saved_map_file_;
   std::string saved_map_frame_{"odom"};
+  std::string saved_map_topic_{"/autonomy_light/saved_map"};
+  double saved_map_publish_voxel_leaf_size_{0.10};
   bool saved_map_localization_enabled_{true};
   bool saved_map_global_initialization_{true};
   double saved_map_localization_update_interval_sec_{0.5};
@@ -3610,12 +3693,16 @@ private:
   int saved_map_min_scan_points_{80};
   PclCloud::Ptr saved_map_localization_cloud_;
   PclFeatures::Ptr saved_map_localization_features_;
+  PclCloud::Ptr saved_map_visualization_cloud_;
   PclCloud::Ptr initial_relocalization_submap_;
   std::chrono::steady_clock::time_point initial_relocalization_submap_start_{};
   std::mutex saved_map_localization_mutex_;
   Eigen::Matrix4f saved_map_from_odom_{Eigen::Matrix4f::Identity()};
   bool saved_map_relocalized_{false};
   double saved_map_last_fitness_{std::numeric_limits<double>::infinity()};
+  std::string saved_map_relocalization_phase_{"idle"};
+  std::size_t saved_map_relocalization_submap_points_{0};
+  double saved_map_relocalization_elapsed_sec_{0.0};
   std::chrono::steady_clock::time_point last_saved_map_localization_attempt_{};
   std::mutex registered_mutex_;
   std::shared_ptr<const std::vector<MapPoint>> latest_registered_points_;
@@ -3659,6 +3746,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr map_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_local_map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr height_map_pub_;
   rclcpp::Publisher<::autonomy_light::msg::HeightMap>::SharedPtr height_map_msg_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
