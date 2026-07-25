@@ -41,6 +41,29 @@ source ~/ros2_ws/install/setup.bash
 ./launch.sh --real --mid360s
 ```
 
+## Saved-map relocalization
+
+Create a PCD with `./mapping.sh`, then start against it with:
+
+```bash
+./launch.sh --real --map maps/point_lio_map_YYYYMMDD_HHMMSS.pcd
+```
+
+The first 2 seconds of registered Point-LIO scans are accumulated into an odom
+submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.
+Accepted transforms correct the published odometry into `saved_map_frame`
+(default: `odom`); GICP then tracks the map pose every 0.5 seconds. Height maps
+are withheld until relocalization succeeds and are extracted from the saved PCD
+around that corrected pose. Check
+`/autonomy_light/heartbeat` for `waiting_for_saved_map_relocalization` or a
+`ready:...:relocalization_fitness=...` state.
+
+Global scan matching needs stable 3D geometry. Repetitive corridors, featureless
+floors, or a map that was made with different sensor extrinsics can produce no
+acceptable match; the quality gates deliberately keep height-map output stopped
+in that case. Tune `saved_map_localization` in `config/autonomy_light.yaml` for
+the site rather than loosening `max_fitness` blindly.
+
 ## Debian Runtime Package
 
 For delivery to another Jetson, build a runtime `.deb` instead of handing over

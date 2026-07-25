@@ -38,6 +38,30 @@ autonomy_light:
     child_shutdown_grace_sec: 0.8
     saved_map_file: ""
     saved_map_frame: "odom"
+    # When saved_map_file is set, estimate map_from_odom from Point-LIO's
+    # registered scan.  A global FPFH/RANSAC candidate is refined by GICP, then
+    # later scans use GICP around the last accepted pose for accurate tracking.
+    saved_map_localization:
+      enabled: true
+      global_initialization: true
+      update_interval_sec: 0.5
+      # Accumulate registered scans in Point-LIO's odom frame before the first
+      # global search. Moving through the scene during this window gives the
+      # initializer substantially more stable geometry than one scan.
+      initial_submap_duration_sec: 2.0
+      initial_submap_min_points: 500
+      initial_submap_max_points: 30000
+      scan_voxel_leaf_size: 0.10
+      map_voxel_leaf_size: 0.10
+      normal_radius: 0.45
+      feature_radius: 0.75
+      global_max_iterations: 5000
+      global_inlier_fraction: 0.20
+      max_correspondence_distance: 0.75
+      gicp_max_iterations: 50
+      max_fitness: 0.01
+      max_tracking_translation_step: 1.0
+      min_scan_points: 80
 
     # ROS 2 domain split: keep heavy perception internal, publish only control-facing
     # outputs on the external domain. Set debug_local_map_ros_domain_id to the

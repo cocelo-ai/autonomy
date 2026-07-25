@@ -25,7 +25,8 @@ Options:
   --raw-imu-topic TOPIC
                       Override raw IMU topic.
   --map FILE          Load a saved Point-LIO PCD map and build height map from it.
-                      Current pose still comes from Point-LIO odom.
+                      Relocalizes registered scans in the saved-map frame before
+                      extracting the robot-centric height map.
   --mid360            Use Livox MID360 network/config JSON.
   --mid360s           Use Livox MID360s network/config JSON.
   --livox-model MODEL Livox model: mid360 or mid360s.
