@@ -2467,10 +2467,11 @@ private:
       point_lio_global_map_points_ = std::move(capped);
     }
 
+    const auto map_update_time = now();
     if (point_lio_global_map_pub_) {
       sensor_msgs::msg::PointCloud2 message;
       pcl::toROSMsg(*point_lio_global_map_points_, message);
-      message.header.stamp = now();
+      message.header.stamp = map_update_time;
       message.header.frame_id = frame_id;
       point_lio_global_map_pub_->publish(message);
       if (point_lio_global_map_refined_pub_ && refined_visual_cloud) {
@@ -2480,8 +2481,11 @@ private:
         refined_message.header.frame_id = frame_id;
         point_lio_global_map_refined_pub_->publish(refined_message);
       }
-      last_map_time_ = message.header.stamp;
     }
+    // Mapping-only mode accumulates the refined map without creating a visual
+    // publisher. Keep this timestamp in the node's clock domain in both modes;
+    // otherwise heartbeat subtracts ROS time from its SYSTEM_TIME initializer.
+    last_map_time_ = map_update_time;
     ++map_count_;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -3896,7 +3900,7 @@ private:
       (lidar_count_ == 0 || (now() - last_lidar_time_) > rclcpp::Duration::from_seconds(2.0));
     const bool odom_stale = odom_count_ == 0 ||
       (now() - last_odom_time_) > rclcpp::Duration::from_seconds(2.0);
-    const bool map_stale = !saved_map_loaded_ &&
+    const bool map_stale = !mapping_only_ && !saved_map_loaded_ &&
       (map_count_ == 0 || (now() - last_map_time_) > rclcpp::Duration::from_seconds(2.0));
     bool waiting_for_saved_map_relocalization = false;
     double saved_map_fitness = std::numeric_limits<double>::infinity();
