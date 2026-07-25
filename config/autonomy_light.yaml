@@ -130,7 +130,7 @@ autonomy_light:
       refined_topic: "/point_lio/global_map_refined"
       # Change this ID to view only the global map from a separate RViz domain.
       # For example: ROS_DOMAIN_ID=17 rviz2
-      ros_domain_id: 17
+      ros_domain_id: 0
       use_for_height_map: true
       height_voxel_leaf_size: 0.01
       height_max_points: 4000000
