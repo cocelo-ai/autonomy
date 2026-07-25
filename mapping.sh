@@ -7,7 +7,8 @@ Usage:
   mapping.sh [launch options] [mapping options] [-- <extra autonomy_light ros args>]
 
 Mapping options:
-  --output FILE          Final saved PCD path. Default: maps/point_lio_map_<timestamp>.pcd
+  --output FILE          Refined saved PCD path. Default: maps/point_lio_map_<timestamp>.pcd
+  --raw-output FILE      Raw Point-LIO PCD path. Default: <output>.raw.pcd
   --output-dir DIR       Directory for the default output file. Default: ./maps
   --pcd-interval N       Point-LIO pcd_save.interval. Default: -1, save one scans.pcd on shutdown.
   --save-grace-sec SEC   Seconds to wait for Point-LIO to flush PCD after Ctrl+C. Default: 120.
@@ -31,6 +32,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${AUTONOMY_LIGHT_MAPPING_OUTPUT_DIR:-${SCRIPT_DIR}/maps}"
 OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_OUTPUT_FILE:-}"
+RAW_OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_RAW_OUTPUT_FILE:-}"
 PCD_INTERVAL="${AUTONOMY_LIGHT_MAPPING_PCD_INTERVAL:--1}"
 SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:-120}"
 PCD_SOURCE="${AUTONOMY_LIGHT_POINT_LIO_PCD_SOURCE:-${SCRIPT_DIR}/third_party/point_lio_ros2/PCD/scans.pcd}"
@@ -51,6 +53,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output=*)
       OUTPUT_FILE="${1#--output=}"
+      shift
+      ;;
+    --raw-output)
+      RAW_OUTPUT_FILE="${2:?--raw-output requires a file path}"
+      shift 2
+      ;;
+    --raw-output=*)
+      RAW_OUTPUT_FILE="${1#--raw-output=}"
       shift
       ;;
     --output-dir)
@@ -104,6 +114,23 @@ done
 if [[ -z "${OUTPUT_FILE}" ]]; then
   OUTPUT_FILE="${OUTPUT_DIR}/point_lio_map_${TIMESTAMP}.pcd"
 fi
+if [[ -z "${RAW_OUTPUT_FILE}" ]]; then
+  if [[ "${OUTPUT_FILE}" == *.pcd ]]; then
+    RAW_OUTPUT_FILE="${OUTPUT_FILE%.pcd}.raw.pcd"
+  else
+    RAW_OUTPUT_FILE="${OUTPUT_FILE}.raw.pcd"
+  fi
+fi
+
+REFINED_OUTPUT_PATH="$(realpath -m -- "${OUTPUT_FILE}")"
+RAW_OUTPUT_PATH="$(realpath -m -- "${RAW_OUTPUT_FILE}")"
+PCD_SOURCE_PATH="$(realpath -m -- "${PCD_SOURCE}")"
+if [[ "${REFINED_OUTPUT_PATH}" == "${RAW_OUTPUT_PATH}" ||
+      "${REFINED_OUTPUT_PATH}" == "${PCD_SOURCE_PATH}" ||
+      "${RAW_OUTPUT_PATH}" == "${PCD_SOURCE_PATH}" ]]; then
+  echo "error: --output, --raw-output, and --pcd-source must name three different files" >&2
+  exit 2
+fi
 
 # ROS 2 infers a bare value such as "120" as an integer.  This parameter is
 # declared as double by autonomy_light, so retain or add a decimal point.
@@ -118,6 +145,8 @@ COMMAND=(
   -p
   mapping_only:=true
   -p
+  "mapping_refined_pcd_file:=${OUTPUT_FILE}"
+  -p
   point_lio_pcd_save_en:=true
   -p
   "point_lio_pcd_save_interval:=${PCD_INTERVAL}"
@@ -126,8 +155,9 @@ COMMAND=(
   "${EXTRA_ROS_ARGS[@]}"
 )
 
-echo "mapping mode: output=${OUTPUT_FILE}"
-echo "mapping mode: Point-LIO internal PCD=${PCD_SOURCE}"
+echo "mapping mode: refined output=${OUTPUT_FILE}"
+echo "mapping mode: raw output=${RAW_OUTPUT_FILE}"
+echo "mapping mode: Point-LIO internal raw PCD=${PCD_SOURCE}"
 echo "mapping mode: stop with Ctrl+C, then wait for PCD save"
 
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -138,12 +168,23 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 fi
 
 mkdir -p -- "$(dirname -- "${OUTPUT_FILE}")"
+mkdir -p -- "$(dirname -- "${RAW_OUTPUT_FILE}")"
 mkdir -p -- "$(dirname -- "${PCD_SOURCE}")"
 
 if [[ -e "${PCD_SOURCE}" ]]; then
   BACKUP_SOURCE="${PCD_SOURCE}.bak.${TIMESTAMP}"
   mv -- "${PCD_SOURCE}" "${BACKUP_SOURCE}"
   echo "previous Point-LIO PCD moved to: ${BACKUP_SOURCE}"
+fi
+if [[ -e "${OUTPUT_FILE}" ]]; then
+  BACKUP_REFINED_OUTPUT="${OUTPUT_FILE}.bak.${TIMESTAMP}"
+  mv -- "${OUTPUT_FILE}" "${BACKUP_REFINED_OUTPUT}"
+  echo "previous refined output moved to: ${BACKUP_REFINED_OUTPUT}"
+fi
+if [[ -e "${RAW_OUTPUT_FILE}" ]]; then
+  BACKUP_RAW_OUTPUT="${RAW_OUTPUT_FILE}.bak.${TIMESTAMP}"
+  mv -- "${RAW_OUTPUT_FILE}" "${BACKUP_RAW_OUTPUT}"
+  echo "previous raw output moved to: ${BACKUP_RAW_OUTPUT}"
 fi
 
 set +e
@@ -164,13 +205,31 @@ STATUS="$?"
 trap - INT TERM
 set -e
 
+RAW_SAVED="false"
+REFINED_SAVED="false"
 if [[ -s "${PCD_SOURCE}" ]]; then
-  cp -- "${PCD_SOURCE}" "${OUTPUT_FILE}"
+  cp -- "${PCD_SOURCE}" "${RAW_OUTPUT_FILE}"
+  RAW_SAVED="true"
+else
+  echo "warning: Point-LIO did not produce a non-empty raw PCD at ${PCD_SOURCE}" >&2
+  echo "hint: collect data, then stop with Ctrl+C so Point-LIO can flush scans.pcd." >&2
+fi
+
+if [[ -s "${OUTPUT_FILE}" ]]; then
+  REFINED_SAVED="true"
+else
+  echo "warning: refined global map did not produce a non-empty PCD at ${OUTPUT_FILE}" >&2
+  echo "hint: verify /cloud_registered is flowing while mapping." >&2
+fi
+
+if [[ "${RAW_SAVED}" == "true" && "${REFINED_SAVED}" == "true" ]]; then
   META_FILE="${OUTPUT_FILE}.yaml"
   {
     echo "created_at: \"${TIMESTAMP}\""
-    echo "source_pcd: \"${PCD_SOURCE}\""
-    echo "output_pcd: \"${OUTPUT_FILE}\""
+    echo "refined_pcd: \"${OUTPUT_FILE}\""
+    echo "raw_source_pcd: \"${PCD_SOURCE}\""
+    echo "raw_pcd: \"${RAW_OUTPUT_FILE}\""
+    echo "refined_voxel_leaf_size: 0.01"
     echo "pcd_interval: ${PCD_INTERVAL}"
     echo "save_grace_sec: ${SAVE_GRACE_SEC}"
     if [[ "${#LAUNCH_ARGS[@]}" -eq 0 ]]; then
@@ -180,14 +239,13 @@ if [[ -s "${PCD_SOURCE}" ]]; then
       printf '  - "%s"\n' "${LAUNCH_ARGS[@]}"
     fi
   } > "${META_FILE}"
-  echo "saved mapping PCD: ${OUTPUT_FILE}"
+  echo "saved refined mapping PCD: ${OUTPUT_FILE}"
+  echo "saved raw Point-LIO PCD: ${RAW_OUTPUT_FILE}"
   echo "saved metadata: ${META_FILE}"
   if [[ "${STATUS}" == "130" || "${STATUS}" == "143" ]]; then
     exit 0
   fi
 else
-  echo "warning: Point-LIO did not produce a non-empty PCD at ${PCD_SOURCE}" >&2
-  echo "hint: collect data, then stop with Ctrl+C so Point-LIO can flush scans.pcd." >&2
   exit 1
 fi
 

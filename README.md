@@ -43,11 +43,17 @@ source ~/ros2_ws/install/setup.bash
 
 ## Saved-map relocalization
 
-Create a PCD with `./mapping.sh`, then start against it with:
+Create a refined PCD and a raw Point-LIO PCD with `./mapping.sh`, then start
+against the refined PCD with:
 
 ```bash
 ./launch.sh --real --map maps/point_lio_map_YYYYMMDD_HHMMSS.pcd
 ```
+
+`--output` names the refined map used by `--map`; the raw Point-LIO map is
+saved alongside it as `*.raw.pcd`. Use `--raw-output FILE` to choose another
+raw-map path. The refined output applies isolated-point rejection and 1 cm
+voxel fusion, while the raw output is retained for diagnostics and recovery.
 
 The first 2 seconds of registered Point-LIO scans are accumulated into an odom
 submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.

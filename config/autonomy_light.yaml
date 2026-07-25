@@ -35,6 +35,9 @@ autonomy_light:
     # Offline mapping mode. Normally leave these false/default and use
     # ./mapping.sh, which overrides them at runtime.
     mapping_only: false
+    # Set only by mapping.sh. In mapping-only mode this enables the refined
+    # global-map accumulator and writes that precision map on shutdown.
+    mapping_refined_pcd_file: ""
     point_lio_pcd_save_en: false
     point_lio_pcd_save_interval: -1
     child_shutdown_grace_sec: 0.8

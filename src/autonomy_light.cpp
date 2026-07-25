@@ -481,14 +481,16 @@ public:
     if (mapping_only_) {
       RCLCPP_WARN(
         get_logger(),
-        "Mapping-only mode enabled: height-map IO is disabled; Point-LIO PCD save=%s",
-        point_lio_pcd_save_en_ ? "true" : "false");
+        "Mapping-only mode enabled: height-map IO is disabled; Point-LIO raw PCD save=%s refined PCD=%s",
+        point_lio_pcd_save_en_ ? "true" : "false",
+        mapping_refined_pcd_save_enabled_ ? mapping_refined_pcd_file_.c_str() : "disabled");
     }
   }
 
   ~AutonomyLightNode() override
   {
     child_processes_.stopAll(child_shutdown_grace_sec_);
+    saveMappingRefinedPcd();
     if (height_builder_executor_) {
       height_builder_executor_->cancel();
     }
@@ -590,6 +592,9 @@ private:
         height_origin_floor_min_points_)));
     publish_rate_hz_ = std::max(1.0, declare_parameter<double>("publish_rate_hz", publish_rate_hz_));
     mapping_only_ = declare_parameter<bool>("mapping_only", mapping_only_);
+    mapping_refined_pcd_file_ = declare_parameter<std::string>(
+      "mapping_refined_pcd_file", mapping_refined_pcd_file_);
+    mapping_refined_pcd_save_enabled_ = mapping_only_ && !mapping_refined_pcd_file_.empty();
     point_lio_pcd_save_en_ = declare_parameter<bool>(
       "point_lio_pcd_save_en", point_lio_pcd_save_en_);
     point_lio_pcd_save_interval_ = declare_parameter<int>(
@@ -714,8 +719,9 @@ private:
     // The global map is the sole live source for height-map construction.  Do
     // not allow a launch override to silently fall back to the old local-map
     // pipeline; mapping-only mode remains the one intentional exception.
-    point_lio_global_map_enabled_ = !mapping_only_;
-    point_lio_global_map_use_for_height_map_ = !mapping_only_;
+    const bool need_refined_global_map = !mapping_only_ || mapping_refined_pcd_save_enabled_;
+    point_lio_global_map_enabled_ = need_refined_global_map;
+    point_lio_global_map_use_for_height_map_ = need_refined_global_map;
     if (!mapping_only_ && (!requested_global_map || !requested_global_height_map)) {
       RCLCPP_WARN(
         get_logger(),
@@ -1781,14 +1787,14 @@ private:
         [this](nav_msgs::msg::Path::SharedPtr msg) {
           onPointLioPath(std::move(msg));
         });
-      if (savedMapRelocalizationActive() || point_lio_global_map_enabled_) {
-        registered_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-          point_lio_registered_topic_,
-          rclcpp::SensorDataQoS(),
-          [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-            onPointLioRegistered(std::move(msg));
-          });
-      }
+    }
+    if (savedMapRelocalizationActive() || point_lio_global_map_enabled_) {
+      registered_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        point_lio_registered_topic_,
+        rclcpp::SensorDataQoS(),
+        [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+          onPointLioRegistered(std::move(msg));
+        });
     }
 
     heartbeat_timer_ = create_wall_timer(
@@ -2233,8 +2239,7 @@ private:
       tf2::Matrix3x3(tf2::Quaternion::getIdentity()) :
       target_to_point_lio_body.rotation;
     const bool point_lio_scan_publish_en =
-      !mapping_only_ &&
-      (cloud_registered_fill_enabled_ || savedMapRelocalizationActive() || point_lio_global_map_enabled_);
+      cloud_registered_fill_enabled_ || savedMapRelocalizationActive() || point_lio_global_map_enabled_;
 
     auto command = std::vector<std::string>{
       "ros2", "run", "autonomy_light", "autonomy_light_pointlio_mapping",
@@ -2361,7 +2366,7 @@ private:
     const std::vector<MapPoint> & points,
     const std::string & frame_id)
   {
-    if (!point_lio_global_map_pub_ || points.empty()) {
+    if (!point_lio_global_map_enabled_ || points.empty()) {
       return;
     }
     PclCloud::Ptr incoming(new PclCloud());
@@ -2462,19 +2467,21 @@ private:
       point_lio_global_map_points_ = std::move(capped);
     }
 
-    sensor_msgs::msg::PointCloud2 message;
-    pcl::toROSMsg(*point_lio_global_map_points_, message);
-    message.header.stamp = now();
-    message.header.frame_id = frame_id;
-    point_lio_global_map_pub_->publish(message);
-    if (point_lio_global_map_refined_pub_ && refined_visual_cloud) {
-      sensor_msgs::msg::PointCloud2 refined_message;
-      pcl::toROSMsg(*refined_visual_cloud, refined_message);
-      refined_message.header.stamp = message.header.stamp;
-      refined_message.header.frame_id = frame_id;
-      point_lio_global_map_refined_pub_->publish(refined_message);
+    if (point_lio_global_map_pub_) {
+      sensor_msgs::msg::PointCloud2 message;
+      pcl::toROSMsg(*point_lio_global_map_points_, message);
+      message.header.stamp = now();
+      message.header.frame_id = frame_id;
+      point_lio_global_map_pub_->publish(message);
+      if (point_lio_global_map_refined_pub_ && refined_visual_cloud) {
+        sensor_msgs::msg::PointCloud2 refined_message;
+        pcl::toROSMsg(*refined_visual_cloud, refined_message);
+        refined_message.header.stamp = message.header.stamp;
+        refined_message.header.frame_id = frame_id;
+        point_lio_global_map_refined_pub_->publish(refined_message);
+      }
+      last_map_time_ = message.header.stamp;
     }
-    last_map_time_ = message.header.stamp;
     ++map_count_;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -2484,6 +2491,44 @@ private:
       point_lio_global_map_points_->size(),
       refined_visual_cloud ? refined_visual_cloud->size() : 0U,
       frame_id.c_str());
+  }
+
+  void saveMappingRefinedPcd()
+  {
+    if (!mapping_refined_pcd_save_enabled_) {
+      return;
+    }
+
+    PclCloud::Ptr refined_map;
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      if (point_lio_global_map_height_points_ && !point_lio_global_map_height_points_->empty()) {
+        refined_map.reset(new PclCloud(*point_lio_global_map_height_points_));
+      }
+    }
+    if (!refined_map || refined_map->empty()) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Refined mapping PCD was not written because no registered points were accumulated: %s",
+        mapping_refined_pcd_file_.c_str());
+      return;
+    }
+
+    const int result = pcl::io::savePCDFileBinary(mapping_refined_pcd_file_, *refined_map);
+    if (result < 0) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Failed to save refined mapping PCD: %s (pcl error %d)",
+        mapping_refined_pcd_file_.c_str(),
+        result);
+      return;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "Saved refined mapping PCD: %s (%zu points, %.3fm voxel)",
+      mapping_refined_pcd_file_.c_str(),
+      refined_map->size(),
+      point_lio_global_map_height_voxel_leaf_size_);
   }
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
@@ -3917,6 +3962,8 @@ private:
   GridSpec grid_spec_;
   double publish_rate_hz_{50.0};
   bool mapping_only_{false};
+  std::string mapping_refined_pcd_file_;
+  bool mapping_refined_pcd_save_enabled_{false};
   bool point_lio_pcd_save_en_{false};
   int point_lio_pcd_save_interval_{-1};
   double child_shutdown_grace_sec_{0.8};
