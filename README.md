@@ -67,6 +67,17 @@ the external `ROS_DOMAIN_ID` (the default configuration uses `17`) and set the
 PointCloud2 display durability to `Transient Local` when opening RViz after
 autonomy-light has already started.
 
+To view the accumulated live Point-LIO global map as well, enable it at launch:
+
+```bash
+./launch.sh --real -- -p point_lio_global_map.enabled:=true
+```
+
+It publishes `/point_lio/global_map` at 1 Hz by default. This is an accumulated,
+voxelized stream of Point-LIO registered scans, capped at 500,000 points; tune
+`point_lio_global_map` in the config if the map is larger or the visualization
+traffic is too heavy.
+
 Global scan matching needs stable 3D geometry. Repetitive corridors, featureless
 floors, or a map that was made with different sensor extrinsics can produce no
 acceptable match; the quality gates deliberately keep height-map output stopped

@@ -682,6 +682,23 @@ private:
       "point_lio_path_topic", point_lio_path_topic_);
     point_lio_registered_topic_ = declare_parameter<std::string>(
       "point_lio_registered_topic", point_lio_registered_topic_);
+    point_lio_global_map_enabled_ = declare_parameter<bool>(
+      "point_lio_global_map.enabled", point_lio_global_map_enabled_);
+    point_lio_global_map_topic_ = declare_parameter<std::string>(
+      "point_lio_global_map.topic", point_lio_global_map_topic_);
+    point_lio_global_map_voxel_leaf_size_ = std::max(
+      0.02,
+      declare_parameter<double>(
+        "point_lio_global_map.voxel_leaf_size", point_lio_global_map_voxel_leaf_size_));
+    point_lio_global_map_publish_interval_sec_ = std::max(
+      0.1,
+      declare_parameter<double>(
+        "point_lio_global_map.publish_interval_sec",
+        point_lio_global_map_publish_interval_sec_));
+    point_lio_global_map_max_points_ = std::max(
+      1000,
+      static_cast<int>(declare_parameter<int>(
+        "point_lio_global_map.max_points", point_lio_global_map_max_points_)));
     odom_output_topic_ = declare_parameter<std::string>("odom_output_topic", odom_output_topic_);
     height_map_topic_ = declare_parameter<std::string>("height_map_topic", height_map_topic_);
     height_map_msg_topic_ = declare_parameter<std::string>(
@@ -1576,7 +1593,7 @@ private:
         [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
           onPointLioMap(std::move(msg));
         });
-      if (cloud_registered_fill_enabled_ || savedMapRelocalizationActive()) {
+      if (cloud_registered_fill_enabled_ || savedMapRelocalizationActive() || point_lio_global_map_enabled_) {
         registered_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
           point_lio_registered_topic_,
           rclcpp::SensorDataQoS(),
@@ -2034,7 +2051,8 @@ private:
       target_to_point_lio_body.rotation;
     const bool point_lio_local_map_en = !mapping_only_ && !saved_map_loaded_;
     const bool point_lio_scan_publish_en =
-      !mapping_only_ && (cloud_registered_fill_enabled_ || savedMapRelocalizationActive());
+      !mapping_only_ &&
+      (cloud_registered_fill_enabled_ || savedMapRelocalizationActive() || point_lio_global_map_enabled_);
 
     auto command = std::vector<std::string>{
       "ros2", "run", "autonomy_light", "autonomy_light_pointlio_mapping",
@@ -2191,6 +2209,7 @@ private:
     }
 
     tryRelocalize(registration_cloud);
+    bool registered_cloud_relocalized = false;
     if (savedMapRelocalizationActive()) {
       Eigen::Matrix4f map_from_odom = Eigen::Matrix4f::Identity();
       bool relocalized = false;
@@ -2201,13 +2220,72 @@ private:
       }
       if (relocalized) {
         applySavedMapCorrectionToPoints(*points, map_from_odom);
+        registered_cloud_relocalized = true;
       }
+    }
+    if (point_lio_global_map_enabled_ &&
+      (!savedMapRelocalizationActive() || registered_cloud_relocalized))
+    {
+      updatePointLioGlobalMap(
+        *points,
+        registered_cloud_relocalized ? saved_map_frame_ :
+        (msg->header.frame_id.empty() ? odom_frame_ : msg->header.frame_id));
     }
     {
       std::lock_guard<std::mutex> lock(registered_mutex_);
       latest_registered_points_ = std::move(points);
       has_registered_cloud_ = true;
     }
+  }
+
+  void updatePointLioGlobalMap(
+    const std::vector<MapPoint> & points,
+    const std::string & frame_id)
+  {
+    if (!point_lio_global_map_pub_ || points.empty()) {
+      return;
+    }
+    PclCloud::Ptr incoming(new PclCloud());
+    incoming->reserve(points.size());
+    for (const auto & point : points) {
+      incoming->push_back(pcl::PointXYZ(point.x, point.y, point.z));
+    }
+    incoming = voxelDownsample(incoming, point_lio_global_map_voxel_leaf_size_);
+    if (!point_lio_global_map_points_) {
+      point_lio_global_map_points_.reset(new PclCloud());
+    }
+    *point_lio_global_map_points_ += *incoming;
+
+    const auto publish_time = std::chrono::steady_clock::now();
+    if (last_point_lio_global_map_publish_.time_since_epoch().count() != 0 &&
+      std::chrono::duration<double>(publish_time - last_point_lio_global_map_publish_).count() <
+      point_lio_global_map_publish_interval_sec_)
+    {
+      return;
+    }
+    last_point_lio_global_map_publish_ = publish_time;
+    point_lio_global_map_points_ = voxelDownsample(
+      point_lio_global_map_points_, point_lio_global_map_voxel_leaf_size_);
+    const auto max_points = static_cast<std::size_t>(point_lio_global_map_max_points_);
+    if (point_lio_global_map_points_->size() > max_points) {
+      PclCloud::Ptr capped(new PclCloud());
+      capped->reserve(max_points);
+      const std::size_t stride = (point_lio_global_map_points_->size() + max_points - 1) / max_points;
+      for (std::size_t index = 0; index < point_lio_global_map_points_->size(); index += stride) {
+        capped->push_back(point_lio_global_map_points_->points[index]);
+      }
+      point_lio_global_map_points_ = std::move(capped);
+    }
+
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(*point_lio_global_map_points_, message);
+    message.header.stamp = now();
+    message.header.frame_id = frame_id;
+    point_lio_global_map_pub_->publish(message);
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Point-LIO global map published: %zu points frame=%s",
+      point_lio_global_map_points_->size(), frame_id.c_str());
   }
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
@@ -3615,6 +3693,13 @@ private:
   std::string point_lio_map_topic_{"/point_lio/local_map"};
   std::string point_lio_path_topic_{"/path"};
   std::string point_lio_registered_topic_{"/cloud_registered"};
+  bool point_lio_global_map_enabled_{false};
+  std::string point_lio_global_map_topic_{"/point_lio/global_map"};
+  double point_lio_global_map_voxel_leaf_size_{0.10};
+  double point_lio_global_map_publish_interval_sec_{1.0};
+  int point_lio_global_map_max_points_{500000};
+  PclCloud::Ptr point_lio_global_map_points_;
+  std::chrono::steady_clock::time_point last_point_lio_global_map_publish_{};
   std::string odom_output_topic_{"/autonomy_light/odom"};
   std::string height_map_topic_{"/autonomy_light/height_map"};
   std::string height_map_msg_topic_{"/autonomy_light/height_map_data"};
@@ -3770,6 +3855,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_local_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr height_map_pub_;
   rclcpp::Publisher<::autonomy_light::msg::HeightMap>::SharedPtr height_map_msg_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

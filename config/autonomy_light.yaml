@@ -115,6 +115,14 @@ autonomy_light:
     point_lio_map_topic: "/point_lio/local_map"
     point_lio_path_topic: "/path"
     point_lio_registered_topic: "/cloud_registered"
+    # Optional full trajectory map built from Point-LIO registered scans.
+    # Enable at launch with: -- -p point_lio_global_map.enabled:=true
+    point_lio_global_map:
+      enabled: false
+      topic: "/point_lio/global_map"
+      voxel_leaf_size: 0.10
+      publish_interval_sec: 1.0
+      max_points: 500000
     odom_output_topic: "/autonomy_light/odom"
     height_map_topic: "/autonomy_light/height_map"
     height_map_msg_topic: "/autonomy_light/height_map_data"
