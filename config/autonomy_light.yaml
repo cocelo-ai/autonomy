@@ -43,6 +43,9 @@ autonomy_light:
     saved_map_topic: "/autonomy_light/saved_map"
     # Voxel size for the latched RViz/debug copy of the saved map.
     saved_map_publish_voxel_leaf_size: 0.10
+    # Re-publish on the map-visualization domain so RViz can attach after launch
+    # even when its QoS durability is left at the default.
+    saved_map_republish_interval_sec: 2.0
     # When saved_map_file is set, estimate map_from_odom from Point-LIO's
     # registered scan.  A global FPFH/RANSAC candidate is refined by GICP, then
     # later scans use GICP around the last accepted pose for accurate tracking.

@@ -604,6 +604,10 @@ private:
       0.02,
       declare_parameter<double>(
         "saved_map_publish_voxel_leaf_size", saved_map_publish_voxel_leaf_size_));
+    saved_map_republish_interval_sec_ = std::max(
+      0.2,
+      declare_parameter<double>(
+        "saved_map_republish_interval_sec", saved_map_republish_interval_sec_));
     saved_map_localization_enabled_ = declare_parameter<bool>(
       "saved_map_localization.enabled", saved_map_localization_enabled_);
     saved_map_global_initialization_ = declare_parameter<bool>(
@@ -1098,8 +1102,8 @@ private:
     message.header.stamp = now();
     message.header.frame_id = saved_map_frame_;
     saved_map_pub_->publish(message);
-    RCLCPP_INFO(
-      get_logger(),
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
       "Published saved map for visualization: topic=%s frame=%s points=%zu voxel=%.3fm",
       saved_map_topic_.c_str(),
       saved_map_frame_.c_str(),
@@ -1648,12 +1652,9 @@ private:
     path_pub_ = output_node->create_publisher<nav_msgs::msg::Path>(
       path_output_topic_,
       rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
-    if (saved_map_loaded_) {
-      saved_map_pub_ = output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
-        saved_map_topic_,
-        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
-      publishSavedMap();
-    }
+    // The saved PCD must share the global-map visualization domain. Otherwise
+    // it disappears when RViz is connected to a dedicated global-map domain.
+    rclcpp::Node * map_visualization_node = output_node;
     if (point_lio_global_map_enabled_) {
       rclcpp::Node * global_map_output_node = this;
       if (point_lio_global_map_ros_domain_id_ == external_ros_domain_id_) {
@@ -1670,6 +1671,7 @@ private:
           "global map");
         global_map_output_node = global_map_node_.get();
       }
+      map_visualization_node = global_map_output_node;
       point_lio_global_map_pub_ = global_map_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
         point_lio_global_map_topic_,
         rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
@@ -1683,6 +1685,12 @@ private:
         point_lio_global_map_topic_.c_str(),
         point_lio_global_map_refined_topic_.c_str(),
         point_lio_global_map_ros_domain_id_);
+    }
+    if (saved_map_loaded_) {
+      saved_map_pub_ = map_visualization_node->create_publisher<sensor_msgs::msg::PointCloud2>(
+        saved_map_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+      publishSavedMap();
     }
     output_static_tf_broadcaster_ =
       std::make_shared<tf2_ros::StaticTransformBroadcaster>(output_node);
@@ -1705,6 +1713,13 @@ private:
     height_publisher_timer_ = height_publisher_node_->create_wall_timer(
       height_period,
       [this]() { publishCachedHeightMap(); });
+    if (saved_map_loaded_) {
+      const auto saved_map_republish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(saved_map_republish_interval_sec_));
+      saved_map_republish_timer_ = height_publisher_node_->create_wall_timer(
+        saved_map_republish_period,
+        [this]() { publishSavedMap(); });
+    }
     startAuxiliaryExecutor(
       height_builder_node_, height_builder_executor_, height_builder_spin_thread_, "height grid builder");
     startAuxiliaryExecutor(
@@ -4026,6 +4041,7 @@ private:
   std::string saved_map_frame_{"odom"};
   std::string saved_map_topic_{"/autonomy_light/saved_map"};
   double saved_map_publish_voxel_leaf_size_{0.10};
+  double saved_map_republish_interval_sec_{2.0};
   bool saved_map_localization_enabled_{true};
   bool saved_map_global_initialization_{true};
   double saved_map_localization_update_interval_sec_{0.5};
@@ -4114,6 +4130,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
   rclcpp::TimerBase::SharedPtr height_builder_timer_;
   rclcpp::TimerBase::SharedPtr height_publisher_timer_;
+  rclcpp::TimerBase::SharedPtr saved_map_republish_timer_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
 };
 

@@ -61,11 +61,12 @@ around that corrected pose. Check
 During initialization, heartbeat reports the active phase and accumulated-point
 count, for example `relocalizing:phase=collecting_submap:submap_points=...`.
 The console also logs collection, global FPFH/RANSAC matching, and GICP
-refinement. The saved PCD is published once with transient-local QoS on
-`/autonomy_light/saved_map` in `saved_map_frame`; use that topic in RViz with
-the external `ROS_DOMAIN_ID` (the default configuration uses `17`) and set the
-PointCloud2 display durability to `Transient Local` when opening RViz after
-autonomy-light has already started.
+refinement. The saved PCD is published with transient-local QoS on
+`/autonomy_light/saved_map` in `saved_map_frame` (default: `odom`) and is
+republished every 2 seconds. It uses the same visualization `ROS_DOMAIN_ID` as
+the Point-LIO global map, configured by `point_lio_global_map.ros_domain_id`.
+In RViz, set the Fixed Frame to `odom` (or your configured `saved_map_frame`)
+and add `/autonomy_light/saved_map` as a `PointCloud2` display.
 
 The accumulated live Point-LIO global map is always enabled during a normal
 `launch.sh` run and is the only live source for height-map construction.  Its
