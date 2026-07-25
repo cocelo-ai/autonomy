@@ -50,6 +50,14 @@ against the refined PCD with:
 ./launch.sh --real --map maps/point_lio_map_YYYYMMDD_HHMMSS.pcd
 ```
 
+When using the installed Debian package, use `autonomy-light-mapping` instead
+of `./mapping.sh` and `autonomy-light` instead of `./launch.sh`:
+
+```bash
+autonomy-light-mapping --real --output "$HOME/autonomy-light-maps/site.pcd"
+autonomy-light --real --map "$HOME/autonomy-light-maps/site.pcd"
+```
+
 `--output` names the refined map used by `--map`; the raw Point-LIO map is
 saved alongside it as `*.raw.pcd`. Use `--raw-output FILE` to choose another
 raw-map path. The refined output applies isolated-point rejection and 1 cm
@@ -137,18 +145,67 @@ On a Jetson it creates `arm64`; on an x86_64 workstation it creates `amd64`.
 For example:
 
 ```text
-dist/cocelo-autonomy-light_0.1.0-1_arm64.deb
-dist/cocelo-autonomy-light_0.1.0-1_amd64.deb
+dist/cocelo-autonomy-light_0.3.0-3+humble22.04_arm64.deb
+dist/cocelo-autonomy-light_0.3.0-3+humble22.04_amd64.deb
 ```
 
 Install and run on a target with the same architecture:
 
 ```bash
 sudo apt update
-sudo apt install "./dist/cocelo-autonomy-light_0.1.0-1_$(dpkg --print-architecture).deb"
+sudo apt install "./dist/cocelo-autonomy-light_0.3.0-3+humble22.04_$(dpkg --print-architecture).deb"
 sudo nano /etc/cocelo/autonomy-light/autonomy_light.yaml
 autonomy-light --real
 ```
+
+### Running after Debian installation
+
+Run all commands below as the normal login user. The launcher asks for `sudo`
+only when it needs to configure a Livox network interface.
+
+Without a saved map, start live Point-LIO mapping and build the height map from
+the map accumulated during this run:
+
+```bash
+autonomy-light --real
+```
+
+To create a reusable saved map, choose a user-writable output path:
+
+```bash
+mkdir -p "$HOME/autonomy-light-maps"
+autonomy-light-mapping --real \
+  --output "$HOME/autonomy-light-maps/site.pcd"
+```
+
+Walk or drive the complete mapping route, return near previously visited areas
+when possible so loop closures can be found, then press `Ctrl+C` once. Keep the
+terminal open until it reports both the refined and raw PCD paths. The files
+created by the example are:
+
+```text
+$HOME/autonomy-light-maps/site.pcd          refined map used at runtime
+$HOME/autonomy-light-maps/site.raw.pcd      raw Point-LIO map for recovery/debug
+$HOME/autonomy-light-maps/site.pcd.yaml     mapping metadata
+```
+
+Start with the refined saved map:
+
+```bash
+autonomy-light --real \
+  --map "$HOME/autonomy-light-maps/site.pcd"
+```
+
+Height-map output is withheld until saved-map relocalization succeeds. Check
+`/autonomy_light/heartbeat` on the external domain if initialization remains
+in a waiting or relocalizing state:
+
+```bash
+ROS_DOMAIN_ID=0 ros2 topic echo /autonomy_light/heartbeat
+```
+
+Use `--mid360` or `--mid360s` on any of the three commands only when overriding
+the model selected in `/etc/cocelo/autonomy-light/autonomy_light.yaml`.
 
 The package installs the binary runtime under `/opt/cocelo/autonomy-light`, the
 editable runtime config under `/etc/cocelo/autonomy-light/autonomy_light.yaml`,

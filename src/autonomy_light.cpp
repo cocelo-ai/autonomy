@@ -718,6 +718,8 @@ private:
       "point_lio_pcd_save_en", point_lio_pcd_save_en_);
     point_lio_pcd_save_interval_ = declare_parameter<int>(
       "point_lio_pcd_save_interval", point_lio_pcd_save_interval_);
+    point_lio_pcd_save_file_ = declare_parameter<std::string>(
+      "point_lio_pcd_save_file", point_lio_pcd_save_file_);
     child_shutdown_grace_sec_ = std::max(
       0.8,
       declare_parameter<double>("child_shutdown_grace_sec", child_shutdown_grace_sec_));
@@ -2645,6 +2647,10 @@ private:
       "-p", "pcd_save.interval:=" + std::to_string(point_lio_pcd_save_interval_),
       "-p", "runtime_pos_log_enable:=false",
     };
+    if (!point_lio_pcd_save_file_.empty()) {
+      command.push_back("-p");
+      command.push_back("pcd_save.file:=" + point_lio_pcd_save_file_);
+    }
     if (child_use_sim_time_) {
       command.push_back("-p");
       command.push_back("use_sim_time:=true");
@@ -5225,6 +5231,7 @@ private:
   std::size_t mapping_slam_accepted_loop_count_{0};
   bool point_lio_pcd_save_en_{false};
   int point_lio_pcd_save_interval_{-1};
+  std::string point_lio_pcd_save_file_;
   double child_shutdown_grace_sec_{0.8};
   std::string height_origin_mode_{"local_floor"};
   double height_origin_fixed_z_{0.0};

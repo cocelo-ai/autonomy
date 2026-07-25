@@ -31,6 +31,7 @@ double vel_cov, acc_cov_input, gyr_cov_input;
 double gyr_cov_output, acc_cov_output, b_gyr_cov, b_acc_cov;
 double imu_meas_acc_cov, imu_meas_omg_cov;
 int lidar_type, pcd_save_interval;
+std::string pcd_save_file;
 std::vector<double> gravity_init, gravity;
 std::vector<double> extrinT;
 std::vector<double> extrinR;
@@ -137,6 +138,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<bool>("runtime_pos_log_enable", false);
     nh->declare_parameter<bool>("pcd_save.pcd_save_en", false);
     nh->declare_parameter<int>("pcd_save.interval", -1);
+    nh->declare_parameter<std::string>("pcd_save.file", "");
 
     // 使用get_parameter方法获取参数值
     nh->get_parameter("odom_only", odom_only);
@@ -224,4 +226,5 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("runtime_pos_log_enable", runtime_pos_log);
     nh->get_parameter("pcd_save.pcd_save_en", pcd_save_en);
     nh->get_parameter("pcd_save.interval", pcd_save_interval);
+    nh->get_parameter("pcd_save.file", pcd_save_file);
 }

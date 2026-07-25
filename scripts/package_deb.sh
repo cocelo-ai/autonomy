@@ -16,7 +16,7 @@ Assumption:
 
 Options:
   --version VERSION       Debian package version. Default: package.xml version.
-  --revision REV          Debian revision base. Default: 1.
+  --revision REV          Debian revision base. Default: 3.
   --output-dir DIR        Output directory. Default: dist.
   --ros-distro NAME       ROS distro. Default: ROS_DISTRO or auto-detected /opt/ros.
   --mid360                Set packaged default Livox model to MID360.
@@ -30,6 +30,7 @@ The package installs:
   /opt/cocelo/autonomy-light/install   ROS 2 runtime install tree
   /etc/cocelo/autonomy-light           Editable runtime config
   /usr/bin/autonomy-light              Runtime launcher
+  /usr/bin/autonomy-light-mapping      Mapping and PCD save launcher
   /usr/bin/autonomy-light-doctor       Receiver/network self-check helper
   /usr/bin/autonomy-light-heightmap-example
                                       HeightMap subscriber SDK example
@@ -41,7 +42,7 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 WORKSPACE_DIR="$(cd -- "${REPO_DIR}/../.." && pwd)"
 ROS_DISTRO_NAME="${ROS_DISTRO:-}"
 VERSION=""
-REVISION="1"
+REVISION="3"
 OUTPUT_DIR="${REPO_DIR}/dist"
 SKIP_BUILD="false"
 DO_STRIP="true"
@@ -465,6 +466,28 @@ exec /opt/cocelo/autonomy-light/install/autonomy_light/lib/autonomy_light/launch
 EOF
 chmod 0755 "${STAGE_ROOT}/usr/bin/autonomy-light"
 
+cat > "${STAGE_ROOT}/usr/bin/autonomy-light-mapping" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+export ROS_DISTRO="${ROS_DISTRO_NAME}"
+export AUTONOMY_LIGHT_CONFIG="\${AUTONOMY_LIGHT_CONFIG:-/etc/cocelo/autonomy-light/autonomy_light.yaml}"
+export LD_LIBRARY_PATH="/opt/cocelo/autonomy-light/lib:\${LD_LIBRARY_PATH:-}"
+
+if [[ -f "/opt/ros/${ROS_DISTRO_NAME}/setup.bash" ]]; then
+  set +u
+  source "/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
+  source "/opt/cocelo/autonomy-light/install/setup.bash"
+  set -u
+else
+  echo "error: /opt/ros/${ROS_DISTRO_NAME}/setup.bash not found" >&2
+  exit 1
+fi
+
+exec /opt/cocelo/autonomy-light/install/autonomy_light/lib/autonomy_light/mapping.sh "\$@"
+EOF
+chmod 0755 "${STAGE_ROOT}/usr/bin/autonomy-light-mapping"
+
 cat > "${STAGE_ROOT}/usr/bin/autonomy-light-doctor" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -547,7 +570,9 @@ cat > "${STAGE_ROOT}/DEBIAN/postinst" <<'EOF'
 set -e
 echo "cocelo-autonomy-light installed."
 echo "Edit config: /etc/cocelo/autonomy-light/autonomy_light.yaml"
-echo "Run: autonomy-light --real"
+echo "Without saved map: autonomy-light --real"
+echo "Create saved map: autonomy-light-mapping --real"
+echo "With saved map: autonomy-light --real --map /path/to/map.pcd"
 echo "Override Livox model when needed: autonomy-light --real --mid360 or --mid360s"
 echo "Check: autonomy-light-doctor"
 EOF
@@ -576,7 +601,9 @@ echo "Created: ${DEB_PATH}"
 echo
 echo "Install on target ${ARCH} system:"
 echo "  sudo apt install ./$(basename "${DEB_PATH}")"
-echo "  autonomy-light --real"
+echo "  autonomy-light --real                                      # without saved map"
+echo "  autonomy-light-mapping --real                              # create a saved map"
+echo "  autonomy-light --real --map /path/to/map.pcd               # with saved map"
 echo "Packaged default Livox model: ${LIVOX_MODEL}"
 echo "Override when needed: autonomy-light --real --mid360 or --mid360s"
 echo

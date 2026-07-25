@@ -4,7 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  mapping.sh [launch options] [mapping options] [-- <extra autonomy_light ros args>]
+  autonomy-light-mapping [launch options] [mapping options] [-- <extra autonomy_light ros args>]
+  ./mapping.sh [launch options] [mapping options] [-- <extra autonomy_light ros args>]
 
 Mapping options:
   --output FILE          Refined saved PCD path. Default: maps/point_lio_map_<timestamp>.pcd
@@ -12,7 +13,7 @@ Mapping options:
   --output-dir DIR       Directory for the default output file. Default: ./maps
   --pcd-interval N       Point-LIO pcd_save.interval. Default: -1, save one scans.pcd on shutdown.
   --save-grace-sec SEC   Seconds to wait for Point-LIO to flush PCD after Ctrl+C. Default: 120.
-  --pcd-source FILE      Internal Point-LIO scans.pcd path. Default: third_party/point_lio_ros2/PCD/scans.pcd
+  --pcd-source FILE      Internal Point-LIO output path. Default: <raw-output>
   --dry-run              Print the command without starting mapping.
 
 Most launch.sh options are passed through, for example:
@@ -20,6 +21,8 @@ Most launch.sh options are passed through, for example:
   --livox2-interface, --livox-lidar2-ip, --raw-lidar-topic, --raw-lidar2-topic.
 
 Examples:
+  autonomy-light-mapping --real
+  autonomy-light-mapping --real --output "$PWD/maps/lab_mapping.pcd"
   ./mapping.sh --real
   ./mapping.sh --real --output maps/lab_mapping.pcd
   ./mapping.sh --real --livox-lidar2-ip 192.168.2.166 --livox2-interface enx123
@@ -31,16 +34,35 @@ EOF
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-OUTPUT_DIR="${AUTONOMY_LIGHT_MAPPING_OUTPUT_DIR:-${SCRIPT_DIR}/maps}"
+OUTPUT_DIR="${AUTONOMY_LIGHT_MAPPING_OUTPUT_DIR:-${PWD}/maps}"
 OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_OUTPUT_FILE:-}"
 RAW_OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_RAW_OUTPUT_FILE:-}"
 PCD_INTERVAL="${AUTONOMY_LIGHT_MAPPING_PCD_INTERVAL:--1}"
 SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:-120}"
-PCD_SOURCE="${AUTONOMY_LIGHT_POINT_LIO_PCD_SOURCE:-${SCRIPT_DIR}/third_party/point_lio_ros2/PCD/scans.pcd}"
+PCD_SOURCE="${AUTONOMY_LIGHT_POINT_LIO_PCD_SOURCE:-}"
 DRY_RUN="false"
 
 declare -a LAUNCH_ARGS=()
 declare -a EXTRA_ROS_ARGS=()
+
+expand_user_path() {
+  local path="$1"
+  case "${path}" in
+    '~')
+      printf '%s\n' "${HOME:?HOME is required to expand ~}"
+      ;;
+    '~/'*)
+      printf '%s/%s\n' "${HOME:?HOME is required to expand ~/ paths}" "${path:2}"
+      ;;
+    '~'*)
+      echo "error: only ~ and ~/ paths for the current user are supported: ${path}" >&2
+      return 2
+      ;;
+    *)
+      printf '%s\n' "${path}"
+      ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -112,9 +134,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+OUTPUT_DIR="$(realpath -m -- "$(expand_user_path "${OUTPUT_DIR}")")"
 if [[ -z "${OUTPUT_FILE}" ]]; then
   OUTPUT_FILE="${OUTPUT_DIR}/point_lio_map_${TIMESTAMP}.pcd"
 fi
+OUTPUT_FILE="$(realpath -m -- "$(expand_user_path "${OUTPUT_FILE}")")"
 if [[ -z "${RAW_OUTPUT_FILE}" ]]; then
   if [[ "${OUTPUT_FILE}" == *.pcd ]]; then
     RAW_OUTPUT_FILE="${OUTPUT_FILE%.pcd}.raw.pcd"
@@ -122,14 +146,18 @@ if [[ -z "${RAW_OUTPUT_FILE}" ]]; then
     RAW_OUTPUT_FILE="${OUTPUT_FILE}.raw.pcd"
   fi
 fi
+RAW_OUTPUT_FILE="$(realpath -m -- "$(expand_user_path "${RAW_OUTPUT_FILE}")")"
+if [[ -z "${PCD_SOURCE}" ]]; then
+  PCD_SOURCE="${RAW_OUTPUT_FILE}"
+fi
+PCD_SOURCE="$(realpath -m -- "$(expand_user_path "${PCD_SOURCE}")")"
 
-REFINED_OUTPUT_PATH="$(realpath -m -- "${OUTPUT_FILE}")"
-RAW_OUTPUT_PATH="$(realpath -m -- "${RAW_OUTPUT_FILE}")"
-PCD_SOURCE_PATH="$(realpath -m -- "${PCD_SOURCE}")"
+REFINED_OUTPUT_PATH="${OUTPUT_FILE}"
+RAW_OUTPUT_PATH="${RAW_OUTPUT_FILE}"
+PCD_SOURCE_PATH="${PCD_SOURCE}"
 if [[ "${REFINED_OUTPUT_PATH}" == "${RAW_OUTPUT_PATH}" ||
-      "${REFINED_OUTPUT_PATH}" == "${PCD_SOURCE_PATH}" ||
-      "${RAW_OUTPUT_PATH}" == "${PCD_SOURCE_PATH}" ]]; then
-  echo "error: --output, --raw-output, and --pcd-source must name three different files" >&2
+      "${REFINED_OUTPUT_PATH}" == "${PCD_SOURCE_PATH}" ]]; then
+  echo "error: --output must differ from --raw-output and --pcd-source" >&2
   exit 2
 fi
 
@@ -151,6 +179,8 @@ COMMAND=(
   point_lio_pcd_save_en:=true
   -p
   "point_lio_pcd_save_interval:=${PCD_INTERVAL}"
+  -p
+  "point_lio_pcd_save_file:=${PCD_SOURCE_PATH}"
   -p
   "child_shutdown_grace_sec:=${SAVE_GRACE_SEC}"
   "${EXTRA_ROS_ARGS[@]}"
@@ -182,7 +212,7 @@ if [[ -e "${OUTPUT_FILE}" ]]; then
   mv -- "${OUTPUT_FILE}" "${BACKUP_REFINED_OUTPUT}"
   echo "previous refined output moved to: ${BACKUP_REFINED_OUTPUT}"
 fi
-if [[ -e "${RAW_OUTPUT_FILE}" ]]; then
+if [[ "${PCD_SOURCE_PATH}" != "${RAW_OUTPUT_PATH}" && -e "${RAW_OUTPUT_FILE}" ]]; then
   BACKUP_RAW_OUTPUT="${RAW_OUTPUT_FILE}.bak.${TIMESTAMP}"
   mv -- "${RAW_OUTPUT_FILE}" "${BACKUP_RAW_OUTPUT}"
   echo "previous raw output moved to: ${BACKUP_RAW_OUTPUT}"
@@ -209,7 +239,9 @@ set -e
 RAW_SAVED="false"
 REFINED_SAVED="false"
 if [[ -s "${PCD_SOURCE}" ]]; then
-  cp -- "${PCD_SOURCE}" "${RAW_OUTPUT_FILE}"
+  if [[ "${PCD_SOURCE_PATH}" != "${RAW_OUTPUT_PATH}" ]]; then
+    cp -- "${PCD_SOURCE}" "${RAW_OUTPUT_FILE}"
+  fi
   RAW_SAVED="true"
 else
   echo "warning: Point-LIO did not produce a non-empty raw PCD at ${PCD_SOURCE}" >&2

@@ -39,6 +39,19 @@ condition_variable sig_buffer;
 
 string root_dir = ROOT_DIR;
 
+string pcd_save_path(int chunk_index = -1) {
+    string path = pcd_save_file.empty() ? string(ROOT_DIR) + "PCD/scans.pcd" : pcd_save_file;
+    if (chunk_index < 0) {
+        return path;
+    }
+    const string suffix = "_" + to_string(chunk_index);
+    const size_t extension = path.rfind(".pcd");
+    if (extension == string::npos) {
+        return path + suffix + ".pcd";
+    }
+    return path.substr(0, extension) + suffix + path.substr(extension);
+}
+
 int feats_down_size = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
 
 int frame_ct = 0;
@@ -763,9 +776,9 @@ void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
         scan_wait_num++;
         if (pcl_wait_save->size() > 0 && pcd_save_interval > 0 && scan_wait_num >= pcd_save_interval) {
             pcd_index++;
-            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+            string all_points_dir = pcd_save_path(pcd_index);
             pcl::PCDWriter pcd_writer;
-            cout << "current scan saved to /PCD/" << all_points_dir << endl;
+            cout << "current scan saved to " << all_points_dir << endl;
             pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
             pcl_wait_save->clear();
             scan_wait_num = 0;
@@ -1569,8 +1582,7 @@ int main(int argc, char **argv) {
     /* 1. make sure you have enough memories
        2. noted that pcd save will influence the real-time performences **/
     if (pcl_wait_save->size() > 0 && pcd_save_en) {
-        string file_name = string("scans.pcd");
-        string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+        string all_points_dir = pcd_save_path();
         pcl::PCDWriter pcd_writer;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
     }

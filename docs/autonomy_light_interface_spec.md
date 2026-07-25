@@ -81,10 +81,46 @@ debug_local_map_ros_domain_id: 42
 
 ## 4. 실행
 
+### 4.1 `.deb` 설치 후 지도 없이 실행
+
+저장 지도를 사용하지 않고 현재 실행 중 누적되는 Point-LIO map으로 height
+map을 만들 때:
+
 ```bash
 autonomy-light --real --mid360
 # 또는
 autonomy-light --real --mid360s
+```
+
+설정 파일의 `livox_model`을 그대로 사용할 때는 `--mid360`/`--mid360s`를
+생략하고 `autonomy-light --real`만 실행해도 된다.
+
+### 4.2 Mapping 및 지도 저장
+
+일반 사용자에게 쓰기 권한이 있는 위치를 지정한다.
+
+```bash
+mkdir -p "$HOME/autonomy-light-maps"
+autonomy-light-mapping --real \
+  --output "$HOME/autonomy-light-maps/site.pcd"
+```
+
+경로를 충분히 주행한 뒤 `Ctrl+C`를 한 번 누르고, refined/raw PCD 저장 완료
+메시지가 나올 때까지 기다린다. 실제 실행에 쓰는 지도는 `site.pcd`이며,
+`site.raw.pcd`는 복구 및 debug용 원본이다.
+
+### 4.3 저장 지도와 함께 실행
+
+```bash
+autonomy-light --real \
+  --map "$HOME/autonomy-light-maps/site.pcd"
+```
+
+초기 submap과 저장 지도의 relocalization이 성공하기 전에는 height map
+출력이 보류된다. 상태는 external domain의 heartbeat에서 확인한다.
+
+```bash
+ROS_DOMAIN_ID=0 ros2 topic echo /autonomy_light/heartbeat
 ```
 
 정상 실행 시 로그에 아래와 비슷한 내용이 나온다.

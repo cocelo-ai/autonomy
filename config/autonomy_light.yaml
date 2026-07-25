@@ -69,6 +69,7 @@ autonomy_light:
       loop_weight: 20.0
     point_lio_pcd_save_en: false
     point_lio_pcd_save_interval: -1
+    point_lio_pcd_save_file: ""
     child_shutdown_grace_sec: 0.8
     saved_map_file: ""
     # Global map frame. `map -> odom` is published after runtime localization.
