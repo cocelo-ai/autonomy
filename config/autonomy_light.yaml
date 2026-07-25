@@ -23,8 +23,10 @@ autonomy_light:
       # Use odom for the old behavior, or fixed for a map-level z origin.
       mode: "local_floor"
       fixed_z: 0.0
-      filter_alpha: 0.25
-      max_step: 0.03
+      # The global-map floor estimate is intentionally low-pass filtered to
+      # prevent small Point-LIO z jitter from moving the entire height surface.
+      filter_alpha: 0.18
+      max_step: 0.015
       floor_radius: 0.6
       floor_percentile: 0.20
       floor_min_points: 20
@@ -141,9 +143,11 @@ autonomy_light:
       # filled directly with manual_value.
       manual_mode: false
       manual_value: 0.48
-    interpolation_max_passes: 2
+    # The source map is kept at 1 cm for terrain extraction while Point-LIO
+    # observations are roughly 5 cm apart. Fill only short, level gaps.
+    interpolation_max_passes: 4
     interpolation_min_neighbors: 3
-    interpolation_max_height_diff: 0.015
+    interpolation_max_height_diff: 0.02
     fill_remaining_height: 0.0
     initial_floor_seed_fill:
       # Startup-only seed for blind cells under/near the robot. It estimates floor
@@ -166,14 +170,16 @@ autonomy_light:
         # returns are independently retained as obstacles after terrain filtering.
         min_points_per_cell: 3
         supported_min_enabled: true
-        support_band: 0.04
+        # A terrain sample must agree with nearby low returns within 2.5 cm;
+        # isolated low noise no longer becomes the selected ground surface.
+        support_band: 0.025
         obstacle_override_enabled: true
         obstacle_min_height: 0.035
         obstacle_min_points: 1
         obstacle_support_band: 0.06
         # Project only obstacle tops into the neighboring height-map cells so
         # Point-LIO's coarser local-map voxels still produce a continuous edge.
-        obstacle_projection_radius_cells: 1
+        obstacle_projection_radius_cells: 0
       cloud_registered_fill:
         enabled: false
         percentile: 0.15
@@ -186,32 +192,36 @@ autonomy_light:
         floor_support_band: 0.08
         initial_keep_min_support: 3
       frame_aggregation:
-        robust_height_gate: 0.04
-        intra_cell_min_support_gap: 0.025
+        robust_height_gate: 0.025
+        intra_cell_min_support_gap: 0.02
         intra_cell_min_support_count: 3
-        edge_mix_height_diff: 0.035
+        edge_mix_height_diff: 0.02
         edge_prefer_prev_support_count: 0
         fill_missing_from_previous_grid: false
         cell_height_percentile: 0.15
         # Applied only to terrain; obstacle candidates are overlaid afterwards so
         # their edges do not leave temporal or spatial smoothing tails.
-        temporal_alpha: 0.70
+        temporal_alpha: 0.85
       isolated_filter:
-        radius: 1
-        min_support_neighbors: 3
-        support_height_diff: 0.035
-        outlier_height_diff: 0.04
+        # Remove sparse spikes against a 5 x 5-cell neighborhood before
+        # smoothing. The 2 cm compatibility test protects real edges.
+        radius: 2
+        min_support_neighbors: 5
+        support_height_diff: 0.02
+        outlier_height_diff: 0.025
         every_n_frames: 1
       hole_fill:
-        radius: 1
-        min_neighbors: 4
-        max_height_diff: 0.015
+        radius: 2
+        min_neighbors: 5
+        max_height_diff: 0.02
       bilateral:
-        radius: 1
-        sigma_spatial: 1.1
-        sigma_height: 0.015
+        # Smooth valid samples over 2 cm, but never average across a 2.5 cm
+        # discontinuity. Obstacles are overlaid after this terrain-only stage.
+        radius: 2
+        sigma_spatial: 1.3
+        sigma_height: 0.012
         max_height_diff: 0.025
-        passes: 1
+        passes: 2
         every_n_frames: 1
     start_lidar_driver: true
     start_point_lio: true
