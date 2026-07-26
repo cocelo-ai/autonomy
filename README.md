@@ -77,7 +77,7 @@ The first 2 seconds of registered Point-LIO scans are accumulated into an odom
 submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.
 After initialization, a five-second rolling Point-LIO submap is aligned to a
 local ROI of the saved PCD at 1 Hz. Accepted measurements are low-pass filtered
-into `map -> odom`; Point-LIO remains the high-rate `odom -> base_link` source.
+into `map -> odom`; Point-LIO remains the high-rate `odom -> lidar_link` source.
 `saved_map_frame` defaults to `map`. Height maps are withheld until saved-map
 relocalization succeeds and are extracted from the saved PCD around that
 corrected pose. Check
@@ -264,9 +264,9 @@ These topics are published on `external_ros_domain_id`.
 |---|---|---|
 | `/autonomy_light/height_map_data` | `autonomy_light/msg/HeightMap` | Compact sim-to-real height map for control. |
 | `/autonomy_light/height_map` | `sensor_msgs/msg/PointCloud2` | Debug point cloud generated from the height grid. |
-| `/autonomy_light/odom` | `nav_msgs/msg/Odometry` | Point-LIO odometry remapped to the configured target frame. |
+| `/autonomy_light/odom` | `nav_msgs/msg/Odometry` | Point-LIO odometry in `lidar_link`. |
 | `/autonomy_light/path` | `nav_msgs/msg/Path` | Corrected Point-LIO path republished on a topic distinct from the internal `/path` input. |
-| `/tf`, `/tf_static` | `tf2_msgs` | Point-LIO owns `odom -> base_link`; autonomy-light publishes `map -> odom`, `base_link -> base_link_gravity`, and static LiDAR transforms. |
+| `/tf`, `/tf_static` | `tf2_msgs` | Point-LIO owns `odom -> lidar_link`; autonomy-light publishes `map -> odom`, static `lidar_link -> base_link`, and `base_link -> base_link_gravity`. |
 
 The custom height map message is:
 

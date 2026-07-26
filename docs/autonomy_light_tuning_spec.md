@@ -168,14 +168,17 @@ LiDAR frame 이름이다. 현재값: `lidar_link`.
 
 ### `target_to_lidar_xyz`
 
-`target_frame`에서 `lidar_frame`까지의 translation `[x, y, z]`이다. 단위는 meter.
+`target_frame`에서 `lidar_frame`까지의 translation `[x, y, z]`이다. 단위는 meter. 런타임 TF는
+`lidar_frame -> target_frame`으로 역변환되어 발행된다.
 
 - 값이 틀리면 local map을 height map으로 자를 때 위치가 밀린다.
 - 특히 z가 틀리면 바닥 높이와 장애물 높이가 같이 어긋난다.
 
 ### `target_to_lidar_rpy`
 
-`target_frame`에서 `lidar_frame`까지의 rotation `[roll, pitch, yaw]`이다. 단위는 radian.
+`target_frame`에서 `lidar_frame`까지의 rotation `[roll, pitch, yaw]`이다. 단위는 radian. 런타임 TF는
+역회전으로 발행된다. 이 값은 Point-LIO 출력의 초기 map/odom 좌표축 보정에도 사용되므로,
+라이다가 뒤집혀 있거나 45° 기울어 장착된 경우 실제 장착 회전을 반드시 입력해야 한다.
 
 - MID360이 뒤집혀 장착되었으면 roll 보정이 중요하다.
 - 장착 방향이 틀리면 바닥이 기울거나 장애물이 이상한 방향으로 퍼진다.

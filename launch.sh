@@ -553,7 +553,7 @@ PY
 
 load_livox_defaults() {
   if [[ ! -f "${CONFIG_FILE}" ]]; then
-    LIVOX_FRAME_ID="${LIVOX_FRAME_ID:-livox_frame}"
+    LIVOX_FRAME_ID="${LIVOX_FRAME_ID:-lidar_link}"
     LIVOX_MODEL="$(normalize_livox_model "${LIVOX_MODEL:-mid360}")"
     return
   fi
@@ -583,7 +583,9 @@ load_livox_defaults() {
   RAW_LIDAR2_TOPIC="${RAW_LIDAR2_TOPIC:-${cfg_raw_lidar2_topic}}"
   RAW_IMU_TOPIC="${RAW_IMU_TOPIC:-${cfg_raw_imu_topic}}"
   RAW_IMU2_TOPIC="${RAW_IMU2_TOPIC:-${cfg_raw_imu2_topic}}"
-  LIVOX_FRAME_ID="${LIVOX_FRAME_ID:-${cfg_frame_id:-livox_frame}}"
+  # Keep the driver label identical to the configured lidar_frame.  An
+  # explicit LIVOX_FRAME_ID remains available for an intentional override.
+  LIVOX_FRAME_ID="${LIVOX_FRAME_ID:-${cfg_frame_id:-lidar_link}}"
   LIVOX_MODEL="$(normalize_livox_model "${LIVOX_MODEL:-${cfg_model:-mid360}}")"
 }
 
@@ -865,7 +867,7 @@ if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" ]]; then
       "-p"
       "output_data_type:=0"
       "-p"
-      "frame_id:=${LIVOX_FRAME_ID:-livox_frame}"
+      "frame_id:=${LIVOX_FRAME_ID:-lidar_link}"
       "-p"
       "lvx_file_path:=/tmp/autonomy_light_livox.lvx"
       "-p"
@@ -897,7 +899,7 @@ if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" ]]; then
         "-p"
         "output_data_type:=0"
         "-p"
-        "frame_id:=${LIVOX_FRAME_ID:-livox_frame}_2"
+        "frame_id:=${LIVOX_FRAME_ID:-lidar_link}_2"
         "-p"
         "lvx_file_path:=/tmp/autonomy_light_livox_2.lvx"
         "-p"

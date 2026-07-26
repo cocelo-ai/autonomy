@@ -6,7 +6,10 @@ autonomy_light:
     lidar_frame: "lidar_link"
     lidar2_frame: "lidar2_link"
 
-    # LiDAR 1 pose in target_frame. Used directly in the single-LiDAR path.
+    # LiDAR 1 pose in target_frame. These values are base_link -> lidar_link;
+    # the TF tree publishes the inverse lidar_link -> base_link edge. They also
+    # initialize Point-LIO's output frame so map/odom/base remain robot-aligned
+    # when the LiDAR is inverted or yawed/pitched relative to the chassis.
     target_to_lidar_xyz: [0.038335, 0.00162081, 0.138986]
     target_to_lidar_rpy: [3.1416, 0.0, 0.0]
 

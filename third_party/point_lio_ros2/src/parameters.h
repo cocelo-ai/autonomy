@@ -14,6 +14,8 @@ extern std::string odom_header_frame_id;
 extern std::string odom_child_frame_id;
 extern std::vector<double> odom_child_to_body_T;
 extern std::vector<double> odom_child_to_body_R;
+extern std::vector<double> odom_output_correction_T;
+extern std::vector<double> odom_output_correction_R;
 extern std::string odom_footprint_frame_id;
 extern bool odom_publish_footprint_tf;
 extern double odom_footprint_base_height;
