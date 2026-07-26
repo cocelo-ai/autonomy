@@ -62,6 +62,16 @@
     odometry:
       publish_odometry_without_downsample: false
 
+    # Output-frame mounting correction for standalone Point-LIO launches.
+    # This is base_link -> lidar_link for the default MID360 installation:
+    # x forward, y right, z down at the sensor.  autonomy_light passes the
+    # matching values from target_to_lidar_xyz/rpy when it launches Point-LIO.
+    odom:
+      output_correction_T: [0.038335, 0.00162081, 0.138986]
+      output_correction_R: [1.0, 0.0, 0.0,
+                            0.0, -1.0, 0.0,
+                            0.0, 0.0, -1.0]
+
     publish:
       path_en: true
       # Path is visualization-only: sample at ~1 Hz and bound long-run message
