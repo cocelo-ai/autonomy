@@ -2481,20 +2481,12 @@ private:
 
   void publishStaticTransform()
   {
-    // Point-LIO owns odom -> lidar_link.  Keep base_link below it in that
-    // same tree so the estimator never has to reinterpret its LiDAR-frame
-    // pose as a base-frame pose.
+    // The robot body owns LiDAR mounting geometry.  Point-LIO reports its
+    // sensor pose only on odometry; this node converts it to odom -> base_link.
     publishLidarStaticTransform(lidar_frame_, target_to_lidar_translation_, target_to_lidar_quaternion_);
     if (lidarMergeEnabled() && !lidar2_frame_.empty()) {
-      // base_link already has lidar_link as its sole parent.  Chain LiDAR 2
-      // below LiDAR 1 instead of giving base_link a second TF parent.
-      const tf2::Quaternion lidar_to_lidar2_rotation =
-        target_to_lidar_quaternion_.inverse() * target_to_lidar2_quaternion_;
-      const tf2::Vector3 lidar_to_lidar2_translation = tf2::quatRotate(
-        target_to_lidar_quaternion_.inverse(),
-        target_to_lidar2_translation_ - target_to_lidar_translation_);
       publishStaticTransform(
-        lidar_frame_, lidar2_frame_, lidar_to_lidar2_translation, lidar_to_lidar2_rotation);
+        target_frame_, lidar2_frame_, target_to_lidar2_translation_, target_to_lidar2_quaternion_);
     }
   }
 
@@ -2528,13 +2520,8 @@ private:
     if (child_frame.empty()) {
       return;
     }
-    // Parameters describe target(base_link) -> LiDAR.  The published tree is
-    // LiDAR -> target, therefore broadcast the inverse rigid transform.
-    const tf2::Quaternion parent_to_child_rotation = rotation.inverse();
-    const tf2::Vector3 parent_to_child_translation = tf2::quatRotate(
-      parent_to_child_rotation, -translation);
     publishStaticTransform(
-      child_frame, target_frame_, parent_to_child_translation, parent_to_child_rotation);
+      target_frame_, child_frame, translation, rotation);
   }
 
   tf2::Quaternion yawOnlyQuaternion(const geometry_msgs::msg::Quaternion & orientation) const
@@ -2627,6 +2614,25 @@ private:
     output_tf_broadcaster_->sendTransform(msg);
   }
 
+  void publishOdomToBaseTransform(const nav_msgs::msg::Odometry & base_odom)
+  {
+    if (odom_frame_.empty() || target_frame_.empty() || !output_tf_broadcaster_) {
+      return;
+    }
+    geometry_msgs::msg::TransformStamped msg;
+    msg.header.stamp = base_odom.header.stamp;
+    if (msg.header.stamp.sec == 0 && msg.header.stamp.nanosec == 0) {
+      msg.header.stamp = now();
+    }
+    msg.header.frame_id = odom_frame_;
+    msg.child_frame_id = target_frame_;
+    msg.transform.translation.x = base_odom.pose.pose.position.x;
+    msg.transform.translation.y = base_odom.pose.pose.position.y;
+    msg.transform.translation.z = base_odom.pose.pose.position.z;
+    msg.transform.rotation = base_odom.pose.pose.orientation;
+    output_tf_broadcaster_->sendTransform(msg);
+  }
+
   void startExternalProcesses()
   {
     if (start_lidar_driver_) {
@@ -2691,8 +2697,7 @@ private:
       "-p", "odom_child_frame_id:=" + lidar_frame_,
       "-p", "odom.child_to_body_T:=" + vectorParam(child_to_body_t),
       "-p", "odom.child_to_body_R:=" + matrixParam(child_to_body_r),
-      "-p", "odom.output_correction_T:=" + vectorParam(target_to_lidar_xyz_),
-      "-p", "odom.output_correction_R:=" + matrixParam(target_to_lidar_rotation_),
+      "-p", "odom.publish_tf:=false",
       "-p", "preprocess.lidar_type:=1",
       "-p", "preprocess.timestamp_unit:=3",
       "-p", "preprocess.scan_line:=4",
@@ -4991,6 +4996,7 @@ private:
         savedMapCorrectedOdom(*msg, map_from_odom) : *msg;
       latest_lidar_odom_.child_frame_id = lidar_frame_;
       latest_odom_ = baseOdomFromLidarOdom(latest_lidar_odom_);
+      latest_tf_odom_ = baseOdomFromLidarOdom(*msg);
       has_odom_ = true;
     }
     last_odom_time_ = now();
@@ -5069,25 +5075,23 @@ private:
         height_map_manual_mode_ ? manualHeightMapMsg(grid) : gridToHeightMapMsg(grid));
     }
 
-    nav_msgs::msg::Odometry lidar_odom;
+    nav_msgs::msg::Odometry tf_odom;
     nav_msgs::msg::Odometry base_odom;
     bool publish_odom = false;
     {
       std::lock_guard<std::mutex> lock(odom_mutex_);
       if (has_odom_) {
-        lidar_odom = latest_lidar_odom_;
+        tf_odom = latest_tf_odom_;
         base_odom = latest_odom_;
         publish_odom = true;
       }
     }
     if (publish_odom) {
       if (odom_pub_) {
-        odom_pub_->publish(lidar_odom);
+        odom_pub_->publish(tf_odom);
       }
       publishMapToOdomTransform();
-      // Point-LIO exclusively owns odom -> lidar_frame. Re-publishing the
-      // cached odometry here would repeatedly inject an old transform at the
-      // height-map timer rate and create a second authority for the same edge.
+      publishOdomToBaseTransform(tf_odom);
       publishHeightMapFrameTransform(base_odom);
     }
   }
@@ -5491,6 +5495,7 @@ private:
   nav_msgs::msg::Odometry latest_raw_odom_;
   bool has_raw_odom_{false};
   nav_msgs::msg::Odometry latest_lidar_odom_;
+  nav_msgs::msg::Odometry latest_tf_odom_;
   nav_msgs::msg::Odometry latest_odom_;
   bool has_odom_{false};
   std::uint64_t lidar_count_{0};

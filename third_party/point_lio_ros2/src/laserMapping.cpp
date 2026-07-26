@@ -98,8 +98,6 @@ auto logger = rclcpp::get_logger("laserMapping");
 
 V3D OdomChild_T_wrt_Body(Zero3d);
 M3D OdomChild_R_wrt_Body(Eye3d);
-V3D OdomOutput_T_Correction(Zero3d);
-M3D OdomOutput_R_Correction(Eye3d);
 
 void SigHandle(int sig) {
     flg_exit = true;
@@ -743,15 +741,9 @@ void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
         for (int i = 0; i < size; i++) {
             // if (i % 3 == 0)
             // {
-            const V3D pointlio_point(
-                feats_down_world->points[i].x,
-                feats_down_world->points[i].y,
-                feats_down_world->points[i].z);
-            const V3D corrected_point =
-                OdomOutput_R_Correction * pointlio_point + OdomOutput_T_Correction;
-            laserCloudWorld->points[i].x = corrected_point(0);
-            laserCloudWorld->points[i].y = corrected_point(1);
-            laserCloudWorld->points[i].z = corrected_point(2);
+            laserCloudWorld->points[i].x = feats_down_world->points[i].x;
+            laserCloudWorld->points[i].y = feats_down_world->points[i].y;
+            laserCloudWorld->points[i].z = feats_down_world->points[i].z;
             laserCloudWorld->points[i].intensity = feats_down_world->points[i].intensity; // feats_down_world->points[i].y; // 
             // }
         }
@@ -827,14 +819,8 @@ void set_posestamp(T &out) {
     }
 
     const M3D child_R_body = OdomChild_R_wrt_Body.transpose();
-    const M3D pointlio_R_child = body_q.toRotationMatrix() * child_R_body;
-    const V3D pointlio_p_child = body_p - pointlio_R_child * OdomChild_T_wrt_Body;
-    // Point-LIO starts in the sensor's axes.  Apply the configured rigid
-    // LiDAR mounting pose once at its output so odom/map use robot axes even
-    // when the sensor is inverted or yawed relative to base_link.
-    const M3D map_R_child = OdomOutput_R_Correction * pointlio_R_child;
-    const V3D map_p_child = OdomOutput_R_Correction * pointlio_p_child +
-        OdomOutput_T_Correction;
+    const M3D map_R_child = body_q.toRotationMatrix() * child_R_body;
+    const V3D map_p_child = body_p - map_R_child * OdomChild_T_wrt_Body;
     const Eigen::Quaterniond child_q(map_R_child);
 
     out.position.x = map_p_child(0);
@@ -919,9 +905,11 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 
     transform.header.stamp = odomAftMapped.header.stamp;
 
-    tf_br->sendTransform(transform);
+    if (odom_publish_tf) {
+        tf_br->sendTransform(transform);
+    }
 
-    if (odom_publish_footprint_tf && !odom_footprint_frame_id.empty()) {
+    if (odom_publish_tf && odom_publish_footprint_tf && !odom_footprint_frame_id.empty()) {
         const Eigen::Quaterniond map_q_base(
             odomAftMapped.pose.pose.orientation.w,
             odomAftMapped.pose.pose.orientation.x,
@@ -1003,8 +991,6 @@ int main(int argc, char **argv) {
     Lidar_R_wrt_IMU << MAT_FROM_ARRAY(extrinR);
     OdomChild_T_wrt_Body << VEC_FROM_ARRAY(odom_child_to_body_T);
     OdomChild_R_wrt_Body << MAT_FROM_ARRAY(odom_child_to_body_R);
-    OdomOutput_T_Correction << VEC_FROM_ARRAY(odom_output_correction_T);
-    OdomOutput_R_Correction << MAT_FROM_ARRAY(odom_output_correction_R);
     if (extrinsic_est_en) {
         if (!use_imu_as_input) {
             kf_output.x_.offset_R_L_I = Lidar_R_wrt_IMU;
