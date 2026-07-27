@@ -41,6 +41,11 @@ source ~/ros2_ws/install/setup.bash
 ./launch.sh --real --mid360s
 ```
 
+`--vis` opens a colored 2D height-map grid. Each cell shows its raw
+`HeightMap.data` value; robot-forward `+x` is up and `+y` is left. A
+144-value message is displayed as a 12x12 grid. Use `--vis-scale PIXELS` to
+change the cell size (default: 48), and press `q` or `Esc` to close the viewer.
+
 ## Saved-map relocalization
 
 Create a refined PCD and a raw Point-LIO PCD with `./mapping.sh`, then start

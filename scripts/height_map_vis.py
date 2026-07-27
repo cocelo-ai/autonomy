@@ -48,7 +48,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fast 2D HeightMap visualizer.")
     parser.add_argument("--topic", default="/autonomy_light/height_map_data")
     parser.add_argument("--fps", type=float, default=50.0)
-    parser.add_argument("--scale", type=int, default=10)
+    parser.add_argument(
+        "--scale",
+        type=int,
+        default=48,
+        help="Pixel size of each grid cell. Default: 48.",
+    )
     parser.add_argument("--window", default="autonomy_light height_map")
     parser.add_argument(
         "--raw-distance",
@@ -58,20 +63,26 @@ def parse_args():
     return parser.parse_args()
 
 
-def message_to_image(msg, raw_distance):
+def message_to_grid(msg, raw_distance):
     if msg.resolution <= 0.0:
-        return None, "invalid resolution"
+        return None, None, "invalid resolution"
 
     width = int(math.ceil(msg.x_length / msg.resolution))
     height = int(math.ceil(msg.y_length / msg.resolution))
     expected = width * height
     if width <= 0 or height <= 0 or len(msg.data) < expected:
-        return None, f"invalid grid {width}x{height} len={len(msg.data)}"
+        # The controller contract is often provided as only a flat 144-value
+        # vector. Keep that useful even if its geometry metadata is stale.
+        if len(msg.data) == 144:
+            width = height = 12
+            expected = 144
+        else:
+            return None, None, f"invalid grid {width}x{height} len={len(msg.data)}"
 
     raw = np.asarray(msg.data[:expected], dtype=np.float32).reshape((height, width))
     finite = np.isfinite(raw)
     if not finite.any():
-        return None, f"{width}x{height} all invalid"
+        return None, None, f"{width}x{height} all invalid"
 
     values = raw.copy()
     values[~finite] = np.nanmax(values[finite])
@@ -80,18 +91,69 @@ def message_to_image(msg, raw_distance):
     else:
         display = np.nanmax(values[finite]) - values
 
+    # Source layout: rows are y_min -> y_max and columns are x_min -> x_max.
+    # Screen layout: +x points up and +y points left.
+    raw_oriented = np.flipud(np.fliplr(raw.T))
     display = np.flipud(np.fliplr(display.T))
     low = float(np.nanmin(display))
     high = float(np.nanmax(display))
     span = max(1.0e-6, high - low)
     gray = np.clip((display - low) * (255.0 / span), 0.0, 255.0).astype(np.uint8)
-    image = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
     stats = f"{width}x{height} raw=[{float(np.nanmin(raw[finite])):.3f},{float(np.nanmax(raw[finite])):.3f}]"
-    return image, stats
+    return raw_oriented, gray, stats
 
 
-def draw_overlay(image, text):
-    cv2.rectangle(image, (0, 0), (image.shape[1], 44), (0, 0, 0), -1)
+def render_grid(raw, gray, cell_size):
+    cell_size = max(28, int(cell_size))
+    rows, cols = raw.shape
+    colors = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
+    image = cv2.resize(
+        colors,
+        (cols * cell_size, rows * cell_size),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+    font_scale = max(0.34, min(0.72, cell_size / 70.0))
+    thickness = 1 if cell_size < 64 else 2
+    for row in range(rows):
+        for col in range(cols):
+            x0 = col * cell_size
+            y0 = row * cell_size
+            value = raw[row, col]
+            label = f"{value:.2f}" if np.isfinite(value) else "nan"
+            (text_width, text_height), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+            )
+            x = x0 + max(2, (cell_size - text_width) // 2)
+            y = y0 + (cell_size + text_height) // 2
+            b, g, r = (int(channel) for channel in colors[row, col])
+            luminance = 0.114 * b + 0.587 * g + 0.299 * r
+            text_color = (0, 0, 0) if luminance > 145 else (255, 255, 255)
+            cv2.putText(
+                image,
+                label,
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                text_color,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+    for row in range(rows + 1):
+        y = min(row * cell_size, image.shape[0] - 1)
+        cv2.line(image, (0, y), (image.shape[1] - 1, y), (40, 40, 40), 1)
+    for col in range(cols + 1):
+        x = min(col * cell_size, image.shape[1] - 1)
+        cv2.line(image, (x, 0), (x, image.shape[0] - 1), (40, 40, 40), 1)
+    return image
+
+
+def draw_overlay(grid_image, text):
+    header_height = 52
+    image = cv2.copyMakeBorder(
+        grid_image, header_height, 0, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0)
+    )
     cv2.putText(
         image,
         text,
@@ -104,7 +166,7 @@ def draw_overlay(image, text):
     )
     cv2.putText(
         image,
-        "+x forward up, +y left, obstacle bright",
+        "+x forward: UP   +y: LEFT   labels: raw values   q/ESC: quit",
         (8, 38),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
@@ -112,6 +174,7 @@ def draw_overlay(image, text):
         1,
         cv2.LINE_AA,
     )
+    return image
 
 
 def main():
@@ -133,7 +196,7 @@ def main():
 
             if msg is None:
                 image = np.zeros((320, 640, 3), dtype=np.uint8)
-                draw_overlay(image, f"waiting for {args.topic}")
+                image = draw_overlay(image, f"waiting for {args.topic}")
             else:
                 now = time.monotonic()
                 elapsed = now - last_rate_time
@@ -142,19 +205,16 @@ def main():
                     last_count = count
                     last_rate_time = now
 
-                image, stats = message_to_image(msg, args.raw_distance)
-                if image is None:
-                    image = np.zeros((320, 640, 3), dtype=np.uint8)
+                raw, gray, stats = message_to_grid(msg, args.raw_distance)
+                if raw is None:
+                    grid_image = np.zeros((320, 640, 3), dtype=np.uint8)
                 else:
-                    image = cv2.resize(
-                        image,
-                        None,
-                        fx=max(1, args.scale),
-                        fy=max(1, args.scale),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
+                    grid_image = render_grid(raw, gray, args.scale)
                 stamp = f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}"
-                draw_overlay(image, f"{args.topic} {measured_hz:4.1f}Hz stamp={stamp} {stats}")
+                image = draw_overlay(
+                    grid_image,
+                    f"{args.topic} {measured_hz:4.1f}Hz stamp={stamp} {stats}",
+                )
 
             cv2.imshow(args.window, image)
             key = cv2.waitKey(1) & 0xFF

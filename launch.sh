@@ -45,7 +45,7 @@ Options:
                       Do not configure Livox host network/config.
   --vis-topic TOPIC   HeightMap topic for --vis. Default: /autonomy_light/height_map_data.
   --vis-fps HZ        Viewer refresh rate. Default: 50.
-  --vis-scale SCALE   Viewer nearest-neighbor pixel scale. Default: 10.
+  --vis-scale PIXELS  Viewer cell size in pixels. Default: 48.
 
 Examples:
   ./launch.sh --real
@@ -72,7 +72,7 @@ NO_DRIVERS="false"
 VIS="false"
 VIS_TOPIC="${AUTONOMY_LIGHT_VIS_TOPIC:-/autonomy_light/height_map_data}"
 VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
-VIS_SCALE="${AUTONOMY_LIGHT_VIS_SCALE:-10}"
+VIS_SCALE="${AUTONOMY_LIGHT_VIS_SCALE:-48}"
 VIS_ROS_DOMAIN_ID="${AUTONOMY_LIGHT_VIS_ROS_DOMAIN_ID:-}"
 SIM_TOPIC_PREFIX="${AUTONOMY_LIGHT_SIM_TOPIC_PREFIX-/f4}"
 RAW_LIDAR_TOPIC=""
