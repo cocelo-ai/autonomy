@@ -10,8 +10,8 @@ autonomy_light:
     # the TF tree publishes the inverse lidar_link -> base_link edge. They also
     # initialize Point-LIO's output frame so map/odom/base remain robot-aligned
     # when the LiDAR is inverted or yawed/pitched relative to the chassis.
-    target_to_lidar_xyz: [0.038335, 0.00162081, 0.138986]
-    target_to_lidar_rpy: [3.1416, 0.0, 0.0]
+    target_to_lidar_xyz: [0.234, 0.0, 0.077]
+    target_to_lidar_rpy: [0.0, 0.7854, 0.0]
 
     # LiDAR 2 pose in target_frame. Used only when raw_lidar2_topic is set.
     target_to_lidar2_xyz: [0.038335, 0.00162081, 0.138986]
@@ -24,8 +24,8 @@ autonomy_light:
     height_origin:
       # local_floor keeps the height map from riding on small odom z jitter caused by roll/pitch.
       # Use odom for the old behavior, or fixed for a map-level z origin.
-      mode: "local_floor"
-      fixed_z: 0.0
+      mode: "fixed_z"
+      fixed_z: 0.9
       # The global-map floor estimate is intentionally low-pass filtered to
       # prevent small Point-LIO z jitter from moving the entire height surface.
       filter_alpha: 0.18
@@ -184,6 +184,7 @@ autonomy_light:
       # height extraction; publish it as a separate RViz topic to compare with
       # the lighter raw visualization map above.
       refined_topic: "/point_lio/global_map_refined"
+      roi_topic: "/point_lio/roi_map"
       # Change this ID to view only the global map from a separate RViz domain.
       # For example: ROS_DOMAIN_ID=17 rviz2
       ros_domain_id: 0
@@ -197,6 +198,14 @@ autonomy_light:
       # store remains at height_voxel_leaf_size (1 cm).
       refined_visual_voxel_leaf_size: 0.02
       refined_visual_max_points: 1500000
+      roi:
+        enabled: true
+        min_x: -1.0
+        max_x: 1.0
+        min_y: -1.0
+        max_y: 1.0
+        min_z: -0.5
+        max_z: 0.0
       refinement:
         # Per registered scan: discard statistically isolated returns before
         # centimetre-level surfel fusion. This removes flying points without

@@ -23,7 +23,7 @@ EOF
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-WORKSPACE_DIR="$(cd -- "${PACKAGE_DIR}/../.." && pwd)"
+WORKSPACE_DIR="${PACKAGE_DIR}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 LIVOX_SDK2_REPO="${LIVOX_SDK2_REPO:-https://github.com/Livox-SDK/Livox-SDK2.git}"
 LIVOX_SDK2_REF="${LIVOX_SDK2_REF:-v1.3.1}"
@@ -142,6 +142,10 @@ prepare_vendored_driver() {
 
   if [[ ! -f "${driver_dir}/package.xml" ]]; then
     cp "${driver_dir}/package_ROS2.xml" "${driver_dir}/package.xml"
+  fi
+
+  if [[ "${WORKSPACE_DIR}" == "${PACKAGE_DIR}" ]]; then
+    return
   fi
 
   mkdir -p "${WORKSPACE_DIR}/src"

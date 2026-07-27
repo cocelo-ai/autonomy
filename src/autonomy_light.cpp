@@ -559,6 +559,7 @@ public:
     }
     point_lio_global_map_pub_.reset();
     point_lio_global_map_refined_pub_.reset();
+    point_lio_global_map_roi_pub_.reset();
     height_map_pub_.reset();
     height_map_msg_pub_.reset();
     odom_pub_.reset();
@@ -886,6 +887,8 @@ private:
       "point_lio_global_map.topic", point_lio_global_map_topic_);
     point_lio_global_map_refined_topic_ = declare_parameter<std::string>(
       "point_lio_global_map.refined_topic", point_lio_global_map_refined_topic_);
+    point_lio_global_map_roi_topic_ = declare_parameter<std::string>(
+      "point_lio_global_map.roi_topic", point_lio_global_map_roi_topic_);
     point_lio_global_map_ros_domain_id_ = static_cast<int>(declare_parameter<int>(
       "point_lio_global_map.ros_domain_id", point_lio_global_map_ros_domain_id_));
     const bool requested_global_height_map = declare_parameter<bool>(
@@ -934,6 +937,20 @@ private:
       static_cast<int>(declare_parameter<int>(
         "point_lio_global_map.refined_visual_max_points",
         point_lio_global_map_refined_visual_max_points_)));
+    point_lio_global_map_roi_enabled_ = declare_parameter<bool>(
+      "point_lio_global_map.roi.enabled", point_lio_global_map_roi_enabled_);
+    point_lio_global_map_roi_min_x_ = declare_parameter<double>(
+      "point_lio_global_map.roi.min_x", point_lio_global_map_roi_min_x_);
+    point_lio_global_map_roi_max_x_ = declare_parameter<double>(
+      "point_lio_global_map.roi.max_x", point_lio_global_map_roi_max_x_);
+    point_lio_global_map_roi_min_y_ = declare_parameter<double>(
+      "point_lio_global_map.roi.min_y", point_lio_global_map_roi_min_y_);
+    point_lio_global_map_roi_max_y_ = declare_parameter<double>(
+      "point_lio_global_map.roi.max_y", point_lio_global_map_roi_max_y_);
+    point_lio_global_map_roi_min_z_ = declare_parameter<double>(
+      "point_lio_global_map.roi.min_z", point_lio_global_map_roi_min_z_);
+    point_lio_global_map_roi_max_z_ = declare_parameter<double>(
+      "point_lio_global_map.roi.max_z", point_lio_global_map_roi_max_z_);
     point_lio_global_map_refine_mean_k_ = std::max(
       2,
       static_cast<int>(declare_parameter<int>(
@@ -1414,6 +1431,33 @@ private:
     filter.setStddevMulThresh(stddev_multiplier);
     filter.filter(*result);
     return result;
+  }
+
+  PclCloud::Ptr filterGlobalMapRoi(const PclCloud::ConstPtr & cloud) const
+  {
+    PclCloud::Ptr roi(new PclCloud());
+    if (!cloud || cloud->empty() || !point_lio_global_map_roi_enabled_) {
+      return roi;
+    }
+
+    const double min_x = std::min(point_lio_global_map_roi_min_x_, point_lio_global_map_roi_max_x_);
+    const double max_x = std::max(point_lio_global_map_roi_min_x_, point_lio_global_map_roi_max_x_);
+    const double min_y = std::min(point_lio_global_map_roi_min_y_, point_lio_global_map_roi_max_y_);
+    const double max_y = std::max(point_lio_global_map_roi_min_y_, point_lio_global_map_roi_max_y_);
+    const double min_z = std::min(point_lio_global_map_roi_min_z_, point_lio_global_map_roi_max_z_);
+    const double max_z = std::max(point_lio_global_map_roi_min_z_, point_lio_global_map_roi_max_z_);
+
+    roi->reserve(cloud->size());
+    for (const auto & point : cloud->points) {
+      if (
+        point.x >= min_x && point.x <= max_x &&
+        point.y >= min_y && point.y <= max_y &&
+        point.z >= min_z && point.z <= max_z)
+      {
+        roi->push_back(point);
+      }
+    }
+    return roi;
   }
 
   static PclCloud::Ptr capCloudUniformly(
@@ -2087,11 +2131,16 @@ private:
         global_map_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
         point_lio_global_map_refined_topic_,
         rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+      point_lio_global_map_roi_pub_ =
+        global_map_output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
+        point_lio_global_map_roi_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
       RCLCPP_INFO(
         get_logger(),
-        "Global map enabled: raw=%s refined=%s on ROS_DOMAIN_ID=%d (height-map source)",
+        "Global map enabled: raw=%s refined=%s roi=%s on ROS_DOMAIN_ID=%d (height-map source)",
         point_lio_global_map_topic_.c_str(),
         point_lio_global_map_refined_topic_.c_str(),
+        point_lio_global_map_roi_topic_.c_str(),
         point_lio_global_map_ros_domain_id_);
     }
     if (saved_map_loaded_) {
@@ -2979,7 +3028,9 @@ private:
       static_cast<std::size_t>(point_lio_global_map_max_points_));
     rebuilt = sparseVoxelMapToCloud(point_lio_global_map_height_voxels_);
     PclCloud::Ptr coarse = sparseVoxelMapToCloud(point_lio_global_map_coarse_voxels_);
-    PclCloud::Ptr snapshot(new PclCloud(*rebuilt));
+    PclCloud::Ptr height_source =
+      point_lio_global_map_roi_enabled_ ? filterGlobalMapRoi(rebuilt) : rebuilt;
+    PclCloud::Ptr snapshot(new PclCloud(*height_source));
     pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(
       new pcl::search::KdTree<pcl::PointXYZ>());
     tree->setInputCloud(snapshot);
@@ -3047,6 +3098,7 @@ private:
     point_lio_global_map_points_ =
       sparseVoxelMapToCloud(point_lio_global_map_coarse_voxels_);
     PclCloud::Ptr refined_visual_cloud;
+    PclCloud::Ptr roi_visual_cloud;
     if (point_lio_global_map_use_for_height_map_ &&
       !point_lio_global_map_height_voxels_.empty())
     {
@@ -3055,7 +3107,10 @@ private:
       // Publish an immutable refined-map snapshot for the independent height
       // builder. The next registered scan may continue fusion without racing
       // the high-rate height-map query thread.
-      PclCloud::Ptr refined_height_snapshot(new PclCloud(*point_lio_global_map_height_points_));
+      PclCloud::Ptr height_source = point_lio_global_map_roi_enabled_ ?
+        filterGlobalMapRoi(point_lio_global_map_height_points_) :
+        point_lio_global_map_height_points_;
+      PclCloud::Ptr refined_height_snapshot(new PclCloud(*height_source));
       pcl::search::KdTree<pcl::PointXYZ>::Ptr fine_tree(
         new pcl::search::KdTree<pcl::PointXYZ>());
       fine_tree->setInputCloud(refined_height_snapshot);
@@ -3067,6 +3122,11 @@ private:
       refined_visual_cloud = voxelDownsample(
         point_lio_global_map_height_points_,
         point_lio_global_map_refined_visual_voxel_leaf_size_);
+      if (point_lio_global_map_roi_enabled_) {
+        roi_visual_cloud = voxelDownsample(
+          filterGlobalMapRoi(point_lio_global_map_height_points_),
+          point_lio_global_map_refined_visual_voxel_leaf_size_);
+      }
       const auto refined_limit =
         static_cast<std::size_t>(point_lio_global_map_refined_visual_max_points_);
       if (refined_visual_cloud->size() > refined_limit) {
@@ -3078,6 +3138,9 @@ private:
           capped_refined->push_back(refined_visual_cloud->points[index]);
         }
         refined_visual_cloud = std::move(capped_refined);
+      }
+      if (roi_visual_cloud && roi_visual_cloud->size() > refined_limit) {
+        roi_visual_cloud = capCloudUniformly(roi_visual_cloud, refined_limit);
       }
     }
     ++height_input_revision_;
@@ -3095,6 +3158,13 @@ private:
         refined_message.header.stamp = message.header.stamp;
         refined_message.header.frame_id = frame_id;
         point_lio_global_map_refined_pub_->publish(refined_message);
+      }
+      if (point_lio_global_map_roi_pub_ && roi_visual_cloud) {
+        sensor_msgs::msg::PointCloud2 roi_message;
+        pcl::toROSMsg(*roi_visual_cloud, roi_message);
+        roi_message.header.stamp = message.header.stamp;
+        roi_message.header.frame_id = frame_id;
+        point_lio_global_map_roi_pub_->publish(roi_message);
       }
     }
     // Mapping-only mode accumulates the refined map without creating a visual
@@ -5329,6 +5399,7 @@ private:
   bool point_lio_global_map_enabled_{true};
   std::string point_lio_global_map_topic_{"/point_lio/global_map"};
   std::string point_lio_global_map_refined_topic_{"/point_lio/global_map_refined"};
+  std::string point_lio_global_map_roi_topic_{"/point_lio/roi_map"};
   int point_lio_global_map_ros_domain_id_{-1};
   bool point_lio_global_map_use_for_height_map_{true};
   double point_lio_global_map_height_voxel_leaf_size_{0.025};
@@ -5338,6 +5409,13 @@ private:
   int point_lio_global_map_max_points_{500000};
   double point_lio_global_map_refined_visual_voxel_leaf_size_{0.02};
   int point_lio_global_map_refined_visual_max_points_{1500000};
+  bool point_lio_global_map_roi_enabled_{false};
+  double point_lio_global_map_roi_min_x_{-10.0};
+  double point_lio_global_map_roi_max_x_{10.0};
+  double point_lio_global_map_roi_min_y_{-10.0};
+  double point_lio_global_map_roi_max_y_{10.0};
+  double point_lio_global_map_roi_min_z_{-2.0};
+  double point_lio_global_map_roi_max_z_{2.0};
   int point_lio_global_map_refine_mean_k_{16};
   double point_lio_global_map_refine_stddev_multiplier_{0.8};
   SparseVoxelMap point_lio_global_map_coarse_voxels_;
@@ -5536,6 +5614,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_refined_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_roi_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr height_map_pub_;
   rclcpp::Publisher<::autonomy_light::msg::HeightMap>::SharedPtr height_map_msg_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

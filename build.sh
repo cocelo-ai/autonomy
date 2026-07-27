@@ -26,7 +26,7 @@ EOF
 }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+WORKSPACE_DIR="${SCRIPT_DIR}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 SKIP_APT="false"
 SKIP_SDK="false"
