@@ -25,7 +25,7 @@ class HeightMapVis(Node):
         super().__init__("autonomy_light_height_map_vis")
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=2,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -63,12 +63,20 @@ def parse_args():
     return parser.parse_args()
 
 
+def grid_axis_cells(length, resolution):
+    cells = length / resolution
+    nearest = round(cells)
+    if abs(cells - nearest) < 1.0e-3:
+        return int(nearest)
+    return int(math.ceil(cells))
+
+
 def message_to_grid(msg, raw_distance):
     if msg.resolution <= 0.0:
         return None, None, "invalid resolution"
 
-    width = int(math.ceil(msg.x_length / msg.resolution))
-    height = int(math.ceil(msg.y_length / msg.resolution))
+    width = grid_axis_cells(msg.x_length, msg.resolution)
+    height = grid_axis_cells(msg.y_length, msg.resolution)
     expected = width * height
     if width <= 0 or height <= 0 or len(msg.data) < expected:
         # The controller contract is often provided as only a flat 144-value
@@ -191,7 +199,7 @@ def main():
     try:
         while rclpy.ok():
             start = time.monotonic()
-            rclpy.spin_once(node, timeout_sec=0.0)
+            rclpy.spin_once(node, timeout_sec=period)
             msg, count = node.latest()
 
             if msg is None:

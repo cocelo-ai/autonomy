@@ -18,14 +18,14 @@ autonomy_light:
     target_to_lidar2_rpy: [3.1416, 0.0, 0.0]
 
     # User-facing setup: robot-centric elevation map geometry.
-    elevation_resolution: 0.01
-    elevation_x_length: 1.6
+    elevation_resolution: 0.1
+    elevation_x_length: 1.8
     elevation_y_length: 0.8
     height_origin:
       # local_floor keeps the height map from riding on small odom z jitter caused by roll/pitch.
       # Use odom for the old behavior, or fixed for a map-level z origin.
-      mode: "fixed_z"
-      fixed_z: 0.9
+      mode: "local_floor"
+      fixed_z: 0.0
       # The global-map floor estimate is intentionally low-pass filtered to
       # prevent small Point-LIO z jitter from moving the entire height surface.
       filter_alpha: 0.18
@@ -79,7 +79,7 @@ autonomy_light:
     saved_map_frame: "map"
     saved_map_topic: "/autonomy_light/saved_map"
     # Voxel size for the latched RViz/debug copy of the saved map.
-    saved_map_publish_voxel_leaf_size: 0.10
+    saved_map_publish_voxel_leaf_size: 0.01
     # Re-publish on the map-visualization domain so RViz can attach after launch
     # even when its QoS durability is left at the default.
     saved_map_republish_interval_sec: 2.0
