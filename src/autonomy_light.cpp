@@ -1899,7 +1899,8 @@ private:
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Runtime localization accepted: %s fitness=%.4f source=%zu filter_alpha=%.2f",
-      already_localized ? "rolling-submap GICP" : "global FPFH/RANSAC submap + GICP",
+      already_localized ? "rolling-submap GICP" :
+      (global_attempt ? "global FPFH/RANSAC submap + GICP" : "automatic local GICP initialization"),
       fitness, source->size(), runtime_localization_filter_alpha_);
     return true;
   }
@@ -5508,32 +5509,32 @@ private:
   double saved_map_publish_voxel_leaf_size_{0.10};
   double saved_map_republish_interval_sec_{2.0};
   bool saved_map_localization_enabled_{true};
-  bool saved_map_global_initialization_{true};
+  bool saved_map_global_initialization_{false};
   double saved_map_localization_update_interval_sec_{1.0};
-  double saved_map_initial_submap_duration_sec_{2.0};
-  int saved_map_initial_submap_min_points_{500};
-  int saved_map_initial_submap_max_points_{30000};
+  double saved_map_initial_submap_duration_sec_{0.8};
+  int saved_map_initial_submap_min_points_{300};
+  int saved_map_initial_submap_max_points_{12000};
   double saved_map_scan_voxel_leaf_size_{0.05};
   double saved_map_voxel_leaf_size_{0.05};
   double saved_map_global_feature_voxel_leaf_size_{0.15};
   int saved_map_global_feature_max_points_{6000};
-  int saved_map_global_source_max_points_{6000};
+  int saved_map_global_source_max_points_{4000};
   double saved_map_normal_radius_{0.45};
   double saved_map_feature_radius_{0.75};
   int saved_map_global_max_iterations_{5000};
   double saved_map_global_inlier_fraction_{0.20};
-  double saved_map_max_correspondence_distance_{0.75};
-  int saved_map_gicp_max_iterations_{50};
+  double saved_map_max_correspondence_distance_{0.50};
+  int saved_map_gicp_max_iterations_{25};
   double saved_map_max_fitness_{0.04};
-  double saved_map_max_tracking_translation_step_{1.0};
+  double saved_map_max_tracking_translation_step_{0.60};
   int saved_map_min_scan_points_{80};
   bool runtime_localization_enabled_{true};
   double runtime_localization_update_interval_sec_{1.0};
-  double runtime_localization_submap_duration_sec_{5.0};
+  double runtime_localization_submap_duration_sec_{2.0};
   double runtime_localization_submap_voxel_leaf_size_{0.05};
-  int runtime_localization_submap_max_points_{60000};
-  double runtime_localization_target_radius_m_{15.0};
-  double runtime_localization_filter_alpha_{0.20};
+  int runtime_localization_submap_max_points_{20000};
+  double runtime_localization_target_radius_m_{8.0};
+  double runtime_localization_filter_alpha_{0.35};
   double runtime_localization_max_translation_innovation_m_{0.50};
   double runtime_localization_max_yaw_innovation_rad_{5.0 * 3.14159265358979323846 / 180.0};
   PclCloud::Ptr saved_map_localization_cloud_;

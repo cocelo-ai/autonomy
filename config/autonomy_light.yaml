@@ -84,35 +84,31 @@ autonomy_light:
     # even when its QoS durability is left at the default.
     saved_map_republish_interval_sec: 2.0
     # When saved_map_file is set, estimate map_from_odom from Point-LIO's
-    # registered scan.  A global FPFH/RANSAC candidate is refined by GICP, then
-    # later scans use GICP around the last accepted pose for accurate tracking.
+    # registered scan. Prefer fast automatic local GICP initialization; the
+    # expensive global FPFH/RANSAC path is left off for quick saved-map startup.
     saved_map_localization:
       enabled: true
-      global_initialization: true
-      # Only for the coarse global initialization. Steady tracking uses the
-      # independent runtime_localization cadence below.
+      global_initialization: false
+      # Used only when global_initialization is re-enabled.
       update_interval_sec: 1.0
-      # Accumulate registered scans in Point-LIO's odom frame before the first
-      # global search. Moving through the scene during this window gives the
-      # initializer substantially more stable geometry than one scan.
-      initial_submap_duration_sec: 2.0
-      initial_submap_min_points: 500
-      initial_submap_max_points: 30000
+      initial_submap_duration_sec: 0.8
+      initial_submap_min_points: 300
+      initial_submap_max_points: 12000
       scan_voxel_leaf_size: 0.05
       map_voxel_leaf_size: 0.05
       # FPFH/RANSAC is only a coarse global initializer. Run it on a bounded
       # 15 cm representation, then retain the 5 cm clouds for precise GICP.
       global_feature_voxel_leaf_size: 0.15
       global_feature_max_points: 6000
-      global_source_max_points: 6000
+      global_source_max_points: 4000
       normal_radius: 0.45
       feature_radius: 0.75
       global_max_iterations: 1500
       global_inlier_fraction: 0.20
-      max_correspondence_distance: 0.75
-      gicp_max_iterations: 50
+      max_correspondence_distance: 0.50
+      gicp_max_iterations: 25
       max_fitness: 0.01
-      max_tracking_translation_step: 1.0
+      max_tracking_translation_step: 0.60
       min_scan_points: 80
     # Low-rate global correction. Point-LIO stays the high-rate odom source;
     # With a saved map this aligns a rolling submap to the immutable map. Without
@@ -121,11 +117,11 @@ autonomy_light:
     runtime_localization:
       enabled: true
       update_interval_sec: 1.0
-      submap_duration_sec: 5.0
+      submap_duration_sec: 2.0
       submap_voxel_leaf_size: 0.05
-      submap_max_points: 60000
-      target_radius_m: 15.0
-      filter_alpha: 0.20
+      submap_max_points: 20000
+      target_radius_m: 8.0
+      filter_alpha: 0.35
       max_translation_innovation_m: 0.50
       max_yaw_innovation_deg: 5.0
 
