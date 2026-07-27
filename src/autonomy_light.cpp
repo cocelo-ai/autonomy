@@ -470,7 +470,18 @@ public:
       const pid_t ret = waitpid(child.pid, &status, WNOHANG);
       if (ret == 0) {
         kill(child.pid, SIGTERM);
-        waitpid(child.pid, &status, 0);
+        const auto term_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < term_deadline) {
+          const pid_t term_ret = waitpid(child.pid, &status, WNOHANG);
+          if (term_ret == child.pid || term_ret < 0) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (waitpid(child.pid, &status, WNOHANG) == 0) {
+          kill(child.pid, SIGKILL);
+          waitpid(child.pid, &status, 0);
+        }
       }
     }
     children_.clear();
@@ -530,9 +541,30 @@ public:
 
   ~AutonomyLightNode() override
   {
-    child_processes_.stopAll(child_shutdown_grace_sec_);
+    requestFastShutdown();
     stopRegisteredCloudWorker();
+    child_processes_.stopAll(child_shutdown_grace_sec_);
     saveMappingRefinedPcd();
+    shutdownAuxiliaryExecutors();
+    resetAuxiliaryRosObjects();
+    shutdownAuxiliaryContexts();
+  }
+
+  void requestFastShutdown()
+  {
+    shutdown_requested_.store(true, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lock(registered_worker_mutex_);
+      registered_worker_stop_ = true;
+      pending_registered_cloud_.reset();
+    }
+    registered_worker_cv_.notify_all();
+    shutdownAuxiliaryExecutors();
+  }
+
+private:
+  void shutdownAuxiliaryExecutors()
+  {
     if (height_builder_executor_) {
       height_builder_executor_->cancel();
     }
@@ -545,6 +577,10 @@ public:
     if (output_executor_) {
       output_executor_->cancel();
     }
+  }
+
+  void resetAuxiliaryRosObjects()
+  {
     if (height_builder_spin_thread_.joinable()) {
       height_builder_spin_thread_.join();
     }
@@ -570,6 +606,10 @@ public:
     height_publisher_node_.reset();
     global_map_node_.reset();
     output_node_.reset();
+  }
+
+  void shutdownAuxiliaryContexts()
+  {
     if (height_builder_context_ && height_builder_context_->is_valid()) {
       height_builder_context_->shutdown("autonomy_light shutdown");
     }
@@ -584,7 +624,6 @@ public:
     }
   }
 
-private:
   void loadParameters()
   {
     target_frame_ = declare_parameter<std::string>("target_frame", target_frame_);
@@ -2844,7 +2883,7 @@ private:
 
   void submitRegisteredCloud(PclCloud::Ptr cloud)
   {
-    if (!cloud || cloud->empty()) {
+    if (shutdown_requested_.load(std::memory_order_acquire) || !cloud || cloud->empty()) {
       return;
     }
     {
@@ -2861,7 +2900,9 @@ private:
 
   void processRegisteredCloud(const PclCloud::Ptr & registration_cloud)
   {
-    if (!registration_cloud || registration_cloud->empty()) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+      !registration_cloud || registration_cloud->empty())
+    {
       return;
     }
     if (mapping_slam_active_) {
@@ -2897,6 +2938,9 @@ private:
 
   void onPointLioRegistered(sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+      return;
+    }
     auto points = std::make_shared<std::vector<MapPoint>>();
     points->reserve(static_cast<std::size_t>(msg->width) * msg->height);
     PclCloud::Ptr registration_cloud(new PclCloud());
@@ -3901,6 +3945,9 @@ private:
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
   {
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
     std::shared_ptr<const std::vector<MapPoint>> map_points;
     std::shared_ptr<const std::vector<MapPoint>> registered_points;
     nav_msgs::msg::Odometry odom;
@@ -4017,6 +4064,9 @@ private:
 
     if (map_points) {
       for (const auto & point : *map_points) {
+        if (shutdown_requested_.load(std::memory_order_acquire)) {
+          return false;
+        }
         if (using_saved_map || using_global_map) {
           const double dx = static_cast<double>(point.x) - odom.pose.pose.position.x;
           const double dy = static_cast<double>(point.y) - odom.pose.pose.position.y;
@@ -4054,6 +4104,9 @@ private:
     }
 
     for (std::size_t index = 0; index < cell_samples.size(); ++index) {
+      if (shutdown_requested_.load(std::memory_order_acquire)) {
+        return false;
+      }
       if (cell_samples[index].empty()) {
         continue;
       }
@@ -5553,6 +5606,7 @@ private:
   std::size_t saved_map_relocalization_submap_points_{0};
   double saved_map_relocalization_elapsed_sec_{0.0};
   std::chrono::steady_clock::time_point last_saved_map_localization_attempt_{};
+  std::atomic<bool> shutdown_requested_{false};
   std::deque<RollingRegisteredCloud> runtime_localization_submap_queue_;
   std::mutex registered_worker_mutex_;
   std::condition_variable registered_worker_cv_;
@@ -5634,7 +5688,15 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    rclcpp::spin(std::make_shared<autonomy_light::AutonomyLightNode>());
+    auto node = std::make_shared<autonomy_light::AutonomyLightNode>();
+    std::weak_ptr<autonomy_light::AutonomyLightNode> weak_node = node;
+    rclcpp::on_shutdown([weak_node]() {
+        if (auto node = weak_node.lock()) {
+          node->requestFastShutdown();
+        }
+      });
+    rclcpp::spin(node);
+    node.reset();
   } catch (const std::exception & ex) {
     std::fprintf(stderr, "autonomy_light failed: %s\n", ex.what());
     rclcpp::shutdown();
