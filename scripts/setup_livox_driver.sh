@@ -184,6 +184,7 @@ build_workspace() {
   local build_python
   build_python="$(detect_build_python)"
   colcon build --packages-up-to livox_ros_driver2 autonomy_light \
+    --base-paths "${WORKSPACE_DIR}" "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
     --cmake-args \
       -DROS_EDITION=ROS2 \
       -DDISTRO_ROS="${ROS_DISTRO_NAME}" \

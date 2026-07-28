@@ -136,9 +136,9 @@ autonomy_light:
 
     # LiDAR 1: default single-LiDAR path. For one physical LiDAR, only these
     # fields need to be set.
-    livox_interface: "enP8p1s0"
+    livox_interface: "eno1"
     livox_host_ip: "192.168.1.50/24" 
-    livox_lidar_ip: "192.168.1.166"
+    livox_lidar_ip: "192.168.1.121"
 
     # LiDAR 2: optional. Set livox_lidar2_ip to start a second Livox driver.
     # If LiDAR 2 is connected through USB-to-Ethernet, put that interface here

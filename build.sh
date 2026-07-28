@@ -128,6 +128,7 @@ fi
 cd "${WORKSPACE_DIR}"
 echo "Building packages: ${PACKAGES[*]}"
 colcon build --packages-up-to "${PACKAGES[@]}" \
+  --base-paths "${WORKSPACE_DIR}" "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
   --cmake-args \
     -DROS_EDITION=ROS2 \
     -DDISTRO_ROS="${ROS_DISTRO_NAME}" \

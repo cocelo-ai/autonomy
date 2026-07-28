@@ -39,7 +39,7 @@ EOF
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-WORKSPACE_DIR="$(cd -- "${REPO_DIR}/../.." && pwd)"
+WORKSPACE_DIR="${REPO_DIR}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-}"
 VERSION=""
 REVISION="3"
