@@ -50,7 +50,6 @@ Lds::Lds(const double publish_freq, const uint8_t data_src)
 Lds::~Lds() {
   lidar_count_ = 0;
   ResetLds(0);
-  printf("lds destory!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
 }
 
 void Lds::ResetLidar(LidarDevice *lidar, uint8_t data_src) {
@@ -178,7 +177,6 @@ void Lds::PushLidarData(PointPacket* lidar_data, const uint8_t index, const uint
   if (nullptr == queue->storage_packet) {
     uint32_t queue_size = CalculatePacketQueueSize(publish_freq_);
     InitQueue(queue, queue_size);
-    printf("Lidar[%u] storage queue size: %u\n", index, queue_size);
   }
 
   if (!QueueIsFull(queue)) {

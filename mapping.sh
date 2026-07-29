@@ -16,7 +16,7 @@ Mapping options:
   --pcd-interval N       Point-LIO pcd_save.interval when raw save is enabled.
                          Default: -1, save one scans.pcd on shutdown.
   --save-grace-sec SEC   Seconds to wait for Point-LIO to flush PCD after Ctrl+C.
-                         Default: -1, wait until the PCD save finishes.
+                         Default: 30, or -1 with --save-raw-pcd.
   --pcd-source FILE      Internal Point-LIO output path. Default: <raw-output>
   --dry-run              Print the command without starting mapping.
 
@@ -43,7 +43,7 @@ OUTPUT_DIR="${AUTONOMY_LIGHT_MAPPING_OUTPUT_DIR:-${PWD}/maps}"
 OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_OUTPUT_FILE:-}"
 RAW_OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_RAW_OUTPUT_FILE:-}"
 PCD_INTERVAL="${AUTONOMY_LIGHT_MAPPING_PCD_INTERVAL:--1}"
-SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:--1}"
+SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:-}"
 PCD_SOURCE="${AUTONOMY_LIGHT_POINT_LIO_PCD_SOURCE:-}"
 SAVE_RAW_PCD="${AUTONOMY_LIGHT_MAPPING_SAVE_RAW_PCD:-false}"
 DRY_RUN="false"
@@ -207,6 +207,14 @@ if [[ -z "${PCD_SOURCE}" ]]; then
 fi
 PCD_SOURCE="$(realpath -m -- "$(expand_user_path "${PCD_SOURCE}")")"
 
+if [[ -z "${SAVE_GRACE_SEC}" ]]; then
+  if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+    SAVE_GRACE_SEC="-1"
+  else
+    SAVE_GRACE_SEC="30"
+  fi
+fi
+
 REFINED_OUTPUT_PATH="${OUTPUT_FILE}"
 RAW_OUTPUT_PATH="${RAW_OUTPUT_FILE}"
 PCD_SOURCE_PATH="${PCD_SOURCE}"
@@ -226,8 +234,6 @@ COMMAND=(
   "${SCRIPT_DIR}/launch.sh"
   "${LAUNCH_ARGS[@]}"
   --
-  -p
-  mapping_only:=true
   -p
   "mapping_refined_pcd_file:=${OUTPUT_FILE}"
   -p
@@ -290,6 +296,20 @@ MAPPING_PID="$!"
 
 cleanup() {
   if [[ -n "${MAPPING_PID:-}" ]] && kill -0 "${MAPPING_PID}" >/dev/null 2>&1; then
+    if [[ "${SHUTDOWN_STARTED:-false}" == "true" ]]; then
+      echo
+      echo "second interrupt received; forcing mapping process to stop..."
+      kill -TERM "${MAPPING_PID}" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "${MAPPING_PID}" >/dev/null 2>&1; then
+        kill -KILL "${MAPPING_PID}" >/dev/null 2>&1 || true
+      fi
+      if [[ -n "${MONITOR_PID:-}" ]] && kill -0 "${MONITOR_PID}" >/dev/null 2>&1; then
+        kill "${MONITOR_PID}" >/dev/null 2>&1 || true
+      fi
+      return 130
+    fi
+    SHUTDOWN_STARTED="true"
     if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
       echo "stopping mapping process; waiting for Point-LIO PCD flush. Large maps can take several minutes; do not press Ctrl+C again unless you want to abort the save."
       monitor_shutdown_progress "${MAPPING_PID}" "Point-LIO PCD flush" "${PCD_SOURCE}" &

@@ -63,15 +63,11 @@ void LivoxLidarCallback::LidarInfoChangeCallback(const uint32_t handle,
         lidar_device->livox_config.set_bits |= kConfigDataType;
         SetLivoxLidarPclDataType(handle, static_cast<LivoxLidarPointDataType>(config.pcl_data_type),
                                 LivoxLidarCallback::SetDataTypeCallback, lds_lidar);
-        std::cout << "set pcl data type, handle: " << handle << ", data type: "
-                  << static_cast<int32_t>(config.pcl_data_type) << std::endl;
       }
       if (config.pattern_mode != -1) {
         lidar_device->livox_config.set_bits |= kConfigScanPattern;
         SetLivoxLidarScanPattern(handle, static_cast<LivoxLidarScanPattern>(config.pattern_mode),
                               LivoxLidarCallback::SetPatternModeCallback, lds_lidar);
-        std::cout << "set scan pattern, handle: " << handle << ", scan pattern: "
-                  << static_cast<int32_t>(config.pattern_mode) << std::endl;
       }
       if (config.blind_spot_set != -1) {
         lidar_device->livox_config.set_bits |= kConfigBlindSpot;
@@ -103,7 +99,6 @@ void LivoxLidarCallback::LidarInfoChangeCallback(const uint32_t handle,
                                  LivoxLidarCallback::SetAttitudeCallback, lds_lidar);
   }
 
-  std::cout << "begin to change work mode to 'Normal', handle: " << handle << std::endl;
   SetLivoxLidarWorkMode(handle, kLivoxLidarNormal, WorkModeChangedCallback, nullptr);
   EnableLivoxLidarImuData(handle, LivoxLidarCallback::EnableLivoxLidarImuDataCallback, lds_lidar);
   return;
@@ -119,7 +114,6 @@ void LivoxLidarCallback::WorkModeChangedCallback(livox_status status,
     SetLivoxLidarWorkMode(handle, kLivoxLidarNormal, WorkModeChangedCallback, nullptr);
     return;
   }
-  std::cout << "successfully change work mode, handle: " << handle << std::endl;
   return;
 }
 
@@ -140,8 +134,6 @@ void LivoxLidarCallback::SetDataTypeCallback(livox_status status, uint32_t handl
     if (!lidar_device->livox_config.set_bits) {
       lidar_device->connect_state = kConnectStateSampling;
     }
-    std::cout << "successfully set data type, handle: " << handle
-              << ", set_bit: " << lidar_device->livox_config.set_bits << std::endl;
   } else if (status == kLivoxLidarStatusTimeout) {
     const UserLivoxLidarConfig& config = lidar_device->livox_config;
     SetLivoxLidarPclDataType(handle, static_cast<LivoxLidarPointDataType>(config.pcl_data_type),
@@ -173,8 +165,6 @@ void LivoxLidarCallback::SetPatternModeCallback(livox_status status, uint32_t ha
     if (!lidar_device->livox_config.set_bits) {
       lidar_device->connect_state = kConnectStateSampling;
     }
-    std::cout << "successfully set pattern mode, handle: " << handle
-              << ", set_bit: " << lidar_device->livox_config.set_bits << std::endl;
   } else if (status == kLivoxLidarStatusTimeout) {
     const UserLivoxLidarConfig& config = lidar_device->livox_config;
     SetLivoxLidarScanPattern(handle, static_cast<LivoxLidarScanPattern>(config.pattern_mode),
@@ -267,7 +257,6 @@ void LivoxLidarCallback::SetAttitudeCallback(livox_status status, uint32_t handl
 
   LdsLidar* lds_lidar = static_cast<LdsLidar*>(client_data);
   if (status == kLivoxLidarStatusSuccess) {
-    std::cout << "successfully set lidar attitude, ip: " << IpNumToString(handle) << std::endl;
   } else if (status == kLivoxLidarStatusTimeout) {
     std::cout << "set lidar attitude timeout, ip: " << IpNumToString(handle)
               << ", try again..." << std::endl;
@@ -305,7 +294,6 @@ void LivoxLidarCallback::EnableLivoxLidarImuDataCallback(livox_status status, ui
   }
 
   if (status == kLivoxLidarStatusSuccess) {
-    std::cout << "successfully enable Livox Lidar imu, ip: " << IpNumToString(handle) << std::endl;
   } else if (status == kLivoxLidarStatusTimeout) {
     std::cout << "enable Livox Lidar imu timeout, ip: " << IpNumToString(handle)
               << ", try again..." << std::endl;

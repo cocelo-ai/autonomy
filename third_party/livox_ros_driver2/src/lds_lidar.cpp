@@ -102,8 +102,6 @@ bool LdsLidar::InitLidars() {
   if (!ParseSummaryConfig()) {
     return false;
   }
-  std::cout << "config lidar type: " << static_cast<int>(lidar_summary_info_.lidar_type) << std::endl;
-
   if (lidar_summary_info_.lidar_type & kLivoxLidarType) {
     if (!InitLivoxLidar()) {
       return false;
@@ -203,7 +201,6 @@ int LdsLidar::DeInitLdsLidar(void) {
 
   if (lidar_summary_info_.lidar_type & kLivoxLidarType) {
     LivoxLidarSdkUninit();
-    printf("Livox Lidar SDK Deinit completely!\n");
   }
 
   return 0;

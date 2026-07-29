@@ -38,7 +38,6 @@ bool InitQueue(LidarDataQueue *queue, uint32_t queue_size) {
 
   if (!IsPowerOf2(queue_size)) {
     queue_size = RoundupPowerOf2(queue_size);
-    printf("Init queue, real query size:%u.\n", queue_size);
   }
 
   if (queue->storage_packet) {

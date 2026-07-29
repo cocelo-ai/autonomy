@@ -47,7 +47,6 @@ int8_t CacheIndex::GetFreeIndex(const uint8_t livox_lidar_type, const uint32_t h
   }
 
   {
-    printf("GetFreeIndex key:%s.\n", key.c_str());
     std::lock_guard<std::mutex> lock(index_mutex_);
     for (size_t i = 0; i < kMaxSourceLidar; ++i) {
       if (!index_cache_[i]) {

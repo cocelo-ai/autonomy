@@ -112,8 +112,6 @@ bool LivoxLidarConfigParser::ParseUserConfigs(const rapidjson::Document &doc,
     std::cout << "no valid base configs" << std::endl;
     return false;
   }
-  std::cout << "successfully parse base config, counts: "
-            << user_configs.size() << std::endl;
   return true;
 }
 

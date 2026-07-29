@@ -101,7 +101,7 @@ M3D OdomChild_R_wrt_Body(Eye3d);
 
 void SigHandle(int sig) {
     flg_exit = true;
-    RCLCPP_WARN(logger, "catch sig %d", sig);
+    RCLCPP_DEBUG(logger, "catch sig %d", sig);
     sig_buffer.notify_all();
 }
 
@@ -386,7 +386,7 @@ bool sync_packages(MeasureGroup &meas) {
             ++dropped;
         }
         if (dropped > 0) {
-            RCLCPP_WARN_THROTTLE(
+            RCLCPP_DEBUG_THROTTLE(
                 logger,
                 buffer_throttle_clock,
                 2000,
@@ -580,7 +580,7 @@ bool allow_map_incremental_by_floor_gate() {
         skip_frames = std::max(skip_frames, std::max(1, map_update_floor_gate_skip_frames_after_jump));
         stable_count = 0;
         reset_pending = map_update_floor_gate_reset_map_after_jump;
-        RCLCPP_WARN_THROTTLE(
+        RCLCPP_DEBUG_THROTTLE(
             logger,
             throttle_clock,
             1000,
@@ -1026,10 +1026,9 @@ int main(int argc, char **argv) {
     ofstream fout_out, fout_imu_pbp;
     fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
     fout_imu_pbp.open(DEBUG_FILE_DIR("imu_pbp.txt"), ios::out);
-    if (fout_out && fout_imu_pbp)
-        cout << "~~~~" << ROOT_DIR << " file opened" << endl;
-    else
-        cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
+    if (!fout_out || !fout_imu_pbp) {
+        RCLCPP_DEBUG(logger, "Point-LIO debug files unavailable under %s", ROOT_DIR);
+    }
 
     /*** ROS subscribe initialization ***/
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl;
@@ -1037,11 +1036,11 @@ int main(int argc, char **argv) {
     if (lidar_msg_type == "livox_custom" || lidar_msg_type == "custom") {
         sub_pcl_livox = nh->create_subscription<livox_ros_driver2::msg::CustomMsg>(
             lid_topic, rclcpp::SensorDataQoS(), livox_pcl_cbk);
-        RCLCPP_INFO(logger, "LiDAR input type: livox_ros_driver2/CustomMsg on %s", lid_topic.c_str());
+        RCLCPP_DEBUG(logger, "LiDAR input type: livox_ros_driver2/CustomMsg on %s", lid_topic.c_str());
     } else {
         sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(
             lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
-        RCLCPP_INFO(logger, "LiDAR input type: sensor_msgs/PointCloud2 on %s", lid_topic.c_str());
+        RCLCPP_DEBUG(logger, "LiDAR input type: sensor_msgs/PointCloud2 on %s", lid_topic.c_str());
     }
     auto imu_qos = rclcpp::SensorDataQoS().keep_last(2000);
     auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, imu_qos, imu_cbk);
@@ -1097,7 +1096,7 @@ int main(int argc, char **argv) {
             if (flg_first_scan) {
                 first_lidar_time = Measures.lidar_beg_time;
                 flg_first_scan = false;
-                cout << "first lidar time" << first_lidar_time << endl;
+                RCLCPP_DEBUG(logger, "first lidar time %.6f", first_lidar_time);
             }
 
             if (flg_reset) {

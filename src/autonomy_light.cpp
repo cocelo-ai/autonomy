@@ -449,10 +449,10 @@ public:
     }
 
     const bool wait_forever = grace_seconds < 0.0;
-    const auto grace = std::chrono::duration<double>(std::max(0.0, grace_seconds));
+    const auto grace = std::chrono::duration<double>(wait_forever ? 5.0 : std::max(0.0, grace_seconds));
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(grace);
-    while (!children_.empty() && (wait_forever || std::chrono::steady_clock::now() < deadline)) {
+    while (!children_.empty() && std::chrono::steady_clock::now() < deadline) {
       for (auto it = children_.begin(); it != children_.end(); ) {
         int status = 0;
         const pid_t ret = waitpid(it->pid, &status, WNOHANG);
@@ -468,27 +468,33 @@ public:
     }
 
     if (wait_forever) {
+      for (auto it = children_.begin(); it != children_.end(); ) {
+        if (it->name == "Point-LIO") {
+          ++it;
+          continue;
+        }
+        forceStop(*it);
+        it = children_.erase(it);
+      }
+      while (!children_.empty()) {
+        for (auto it = children_.begin(); it != children_.end(); ) {
+          int status = 0;
+          const pid_t ret = waitpid(it->pid, &status, WNOHANG);
+          if (ret == it->pid || ret < 0) {
+            it = children_.erase(it);
+          } else {
+            ++it;
+          }
+        }
+        if (!children_.empty()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      }
       return;
     }
 
     for (const auto & child : children_) {
-      int status = 0;
-      const pid_t ret = waitpid(child.pid, &status, WNOHANG);
-      if (ret == 0) {
-        kill(child.pid, SIGTERM);
-        const auto term_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-        while (std::chrono::steady_clock::now() < term_deadline) {
-          const pid_t term_ret = waitpid(child.pid, &status, WNOHANG);
-          if (term_ret == child.pid || term_ret < 0) {
-            break;
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        if (waitpid(child.pid, &status, WNOHANG) == 0) {
-          kill(child.pid, SIGKILL);
-          waitpid(child.pid, &status, 0);
-        }
-      }
+      forceStop(child);
     }
     children_.clear();
   }
@@ -499,6 +505,28 @@ private:
     std::string name;
     pid_t pid{-1};
   };
+
+  static void forceStop(const Child & child)
+  {
+    int status = 0;
+    const pid_t ret = waitpid(child.pid, &status, WNOHANG);
+    if (ret != 0) {
+      return;
+    }
+    kill(child.pid, SIGTERM);
+    const auto term_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < term_deadline) {
+      const pid_t term_ret = waitpid(child.pid, &status, WNOHANG);
+      if (term_ret == child.pid || term_ret < 0) {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (waitpid(child.pid, &status, WNOHANG) == 0) {
+      kill(child.pid, SIGKILL);
+      waitpid(child.pid, &status, 0);
+    }
+  }
 
   std::vector<Child> children_;
 };
@@ -535,10 +563,16 @@ public:
         height_map_msg_topic_.c_str(),
         height_map_manual_value_);
     }
+    if (force_identity_map_to_odom_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "force_identity_map_to_odom enabled: publishing map->odom as identity and ignoring "
+        "runtime map correction transforms");
+    }
     if (mapping_only_) {
       RCLCPP_WARN(
         get_logger(),
-        "Mapping-only mode enabled: height-map IO is disabled; Point-LIO raw PCD save=%s refined PCD=%s pose_graph=%s",
+        "Mapping-only mode enabled: control height-map IO is disabled; global-map visualization remains enabled; Point-LIO raw PCD save=%s refined PCD=%s pose_graph=%s",
         point_lio_pcd_save_en_ ? "true" : "false",
         mapping_refined_pcd_save_enabled_ ? mapping_refined_pcd_file_.c_str() : "disabled",
         mapping_slam_active_ ? "enabled" : "disabled");
@@ -682,7 +716,7 @@ private:
     mapping_only_ = declare_parameter<bool>("mapping_only", mapping_only_);
     mapping_refined_pcd_file_ = declare_parameter<std::string>(
       "mapping_refined_pcd_file", mapping_refined_pcd_file_);
-    mapping_refined_pcd_save_enabled_ = mapping_only_ && !mapping_refined_pcd_file_.empty();
+    mapping_refined_pcd_save_enabled_ = !mapping_refined_pcd_file_.empty();
     mapping_slam_enabled_ = declare_parameter<bool>("mapping_slam.enabled", mapping_slam_enabled_);
     mapping_slam_keyframe_distance_m_ = std::max(
       0.1,
@@ -761,7 +795,7 @@ private:
       declare_parameter<double>("mapping_slam.loop_weight", mapping_slam_loop_weight_));
     mapping_slam_save_optimized_on_shutdown_ = declare_parameter<bool>(
       "mapping_slam.save_optimized_on_shutdown", mapping_slam_save_optimized_on_shutdown_);
-    mapping_slam_active_ = mapping_refined_pcd_save_enabled_ && mapping_slam_enabled_;
+    mapping_slam_active_ = mapping_only_ && mapping_refined_pcd_save_enabled_ && mapping_slam_enabled_;
     point_lio_pcd_save_en_ = declare_parameter<bool>(
       "point_lio_pcd_save_en", point_lio_pcd_save_en_);
     point_lio_pcd_save_interval_ = declare_parameter<int>(
@@ -781,6 +815,8 @@ private:
       0.2,
       declare_parameter<double>(
         "saved_map_republish_interval_sec", saved_map_republish_interval_sec_));
+    force_identity_map_to_odom_ = declare_parameter<bool>(
+      "force_identity_map_to_odom", force_identity_map_to_odom_);
     saved_map_localization_enabled_ = declare_parameter<bool>(
       "saved_map_localization.enabled", saved_map_localization_enabled_);
     saved_map_global_initialization_ = declare_parameter<bool>(
@@ -1389,14 +1425,6 @@ private:
       for (const auto & point : *points) {
         saved_map_height_cloud_->push_back(pcl::PointXYZ(point.x, point.y, point.z));
       }
-      if (point_lio_global_map_roi_enabled_) {
-        saved_map_height_cloud_ = filterGlobalMapRoi(saved_map_height_cloud_);
-        if (saved_map_height_cloud_->empty()) {
-          RCLCPP_WARN(
-            get_logger(),
-            "Saved-map height ROI is empty; HeightMap output will wait for points inside the configured ROI");
-        }
-      }
       saved_map_height_tree_.reset(new pcl::search::KdTree<pcl::PointXYZ>());
       saved_map_height_tree_->setInputCloud(saved_map_height_cloud_);
       saved_map_loaded_ = true;
@@ -1460,7 +1488,7 @@ private:
 
   bool savedMapRelocalizationActive() const
   {
-    return saved_map_loaded_ && saved_map_localization_enabled_;
+    return saved_map_loaded_ && saved_map_localization_enabled_ && !force_identity_map_to_odom_;
   }
 
   void publishSavedMap()
@@ -1474,14 +1502,19 @@ private:
     message.header.stamp = publish_time;
     message.header.frame_id = saved_map_frame_;
     saved_map_pub_->publish(message);
-    if (point_lio_global_map_roi_pub_ && saved_map_height_cloud_ && !saved_map_height_cloud_->empty()) {
+    nav_msgs::msg::Odometry odom;
+    const bool has_odom = latestOdom(odom);
+    PclCloud::Ptr roi_cloud = has_odom ?
+      filterGlobalMapRoi(saved_map_height_cloud_, odom, latest_height_origin_z_) :
+      PclCloud::Ptr();
+    if (point_lio_global_map_roi_pub_ && roi_cloud && !roi_cloud->empty()) {
       sensor_msgs::msg::PointCloud2 roi_message;
-      pcl::toROSMsg(*saved_map_height_cloud_, roi_message);
+      pcl::toROSMsg(*roi_cloud, roi_message);
       roi_message.header.stamp = publish_time;
       roi_message.header.frame_id = saved_map_frame_;
       point_lio_global_map_roi_pub_->publish(roi_message);
     }
-    RCLCPP_INFO_THROTTLE(
+    RCLCPP_DEBUG_THROTTLE(
       get_logger(), *get_clock(), 5000,
       "Published saved map for visualization: topic=%s frame=%s points=%zu voxel=%.3fm",
       saved_map_topic_.c_str(),
@@ -1558,7 +1591,20 @@ private:
     return result;
   }
 
-  PclCloud::Ptr filterGlobalMapRoi(const PclCloud::ConstPtr & cloud) const
+  bool latestOdom(nav_msgs::msg::Odometry & odom)
+  {
+    std::lock_guard<std::mutex> lock(odom_mutex_);
+    if (!has_odom_) {
+      return false;
+    }
+    odom = latest_odom_;
+    return true;
+  }
+
+  PclCloud::Ptr filterGlobalMapRoi(
+    const PclCloud::ConstPtr & cloud,
+    const nav_msgs::msg::Odometry & odom,
+    const double origin_z) const
   {
     PclCloud::Ptr roi(new PclCloud());
     if (!cloud || cloud->empty() || !point_lio_global_map_roi_enabled_) {
@@ -1572,12 +1618,26 @@ private:
     const double min_z = std::min(point_lio_global_map_roi_min_z_, point_lio_global_map_roi_max_z_);
     const double max_z = std::max(point_lio_global_map_roi_min_z_, point_lio_global_map_roi_max_z_);
 
+    const tf2::Quaternion q_map_roi = yawOnlyQuaternion(odom.pose.pose.orientation);
+    const tf2::Quaternion q_roi_map = q_map_roi.inverse();
+    const tf2::Vector3 p_map_roi_origin(
+      odom.pose.pose.position.x,
+      odom.pose.pose.position.y,
+      origin_z);
+
+    // ROI limits are expressed in the current robot-yaw frame, not as fixed map-frame bounds.
     roi->reserve(cloud->size());
     for (const auto & point : cloud->points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+        continue;
+      }
+      const tf2::Vector3 p_roi = tf2::quatRotate(
+        q_roi_map,
+        tf2::Vector3(point.x, point.y, point.z) - p_map_roi_origin);
       if (
-        point.x >= min_x && point.x <= max_x &&
-        point.y >= min_y && point.y <= max_y &&
-        point.z >= min_z && point.z <= max_z)
+        p_roi.x() >= min_x && p_roi.x() <= max_x &&
+        p_roi.y() >= min_y && p_roi.y() <= max_y &&
+        p_roi.z() >= min_z && p_roi.z() <= max_z)
       {
         roi->push_back(point);
       }
@@ -1632,7 +1692,7 @@ private:
 
   void initializeSavedMapLocalization(const PclCloud & cloud)
   {
-    if (!saved_map_localization_enabled_) {
+    if (!saved_map_localization_enabled_ || force_identity_map_to_odom_) {
       return;
     }
 
@@ -1739,7 +1799,7 @@ private:
   bool runtimeMapLocalizationActive() const
   {
     return !mapping_only_ && runtime_localization_enabled_ &&
-      saved_map_loaded_ && saved_map_localization_enabled_;
+      saved_map_loaded_ && saved_map_localization_enabled_ && !force_identity_map_to_odom_;
   }
 
   void appendRuntimeLocalizationSubmap(const PclCloud::ConstPtr & registered_cloud)
@@ -2110,6 +2170,9 @@ private:
 
   void applySavedMapCorrectionToLatestOdom()
   {
+    if (force_identity_map_to_odom_) {
+      return;
+    }
     Eigen::Matrix4f map_from_odom = Eigen::Matrix4f::Identity();
     bool relocalized = false;
     {
@@ -2197,15 +2260,8 @@ private:
       internal_ros_domain_id_ = actual_internal_domain;
     }
 
-    if (mapping_only_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Mapping-only mode: skipping external height-map/odom/path publishers");
-      return;
-    }
-
     rclcpp::Node * output_node = this;
-    if (external_ros_domain_id_ != internal_ros_domain_id_) {
+    if (!mapping_only_ && external_ros_domain_id_ != internal_ros_domain_id_) {
       output_node_ = createDomainNode(
         "autonomy_light_external_output",
         external_ros_domain_id_,
@@ -2218,22 +2274,28 @@ private:
       output_node = output_node_.get();
     }
 
-    height_map_pub_ = output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
-      height_map_topic_,
-      rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
-    height_map_msg_pub_ = output_node->create_publisher<::autonomy_light::msg::HeightMap>(
-      height_map_msg_topic_,
-      rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
-    odom_pub_ = output_node->create_publisher<nav_msgs::msg::Odometry>(
-      odom_output_topic_,
-      rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
-    path_pub_ = output_node->create_publisher<nav_msgs::msg::Path>(
-      path_output_topic_,
-      rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
-    if (global_rotation_reference_enabled_ && global_rotation_reference_valid_) {
-      global_rotation_pub_ = output_node->create_publisher<std_msgs::msg::Float64>(
-        global_rotation_topic_,
+    if (mapping_only_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Mapping-only mode: skipping external height-map/odom/path publishers");
+    } else {
+      height_map_pub_ = output_node->create_publisher<sensor_msgs::msg::PointCloud2>(
+        height_map_topic_,
         rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
+      height_map_msg_pub_ = output_node->create_publisher<::autonomy_light::msg::HeightMap>(
+        height_map_msg_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
+      odom_pub_ = output_node->create_publisher<nav_msgs::msg::Odometry>(
+        odom_output_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
+      path_pub_ = output_node->create_publisher<nav_msgs::msg::Path>(
+        path_output_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
+      if (global_rotation_reference_enabled_ && global_rotation_reference_valid_) {
+        global_rotation_pub_ = output_node->create_publisher<std_msgs::msg::Float64>(
+          global_rotation_topic_,
+          rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
+      }
     }
     // The saved PCD must share the global-map visualization domain. Otherwise
     // it disappears when RViz is connected to a dedicated global-map domain.
@@ -2285,28 +2347,30 @@ private:
     output_tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(output_node);
 
-    const auto height_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::duration<double>(1.0 / publish_rate_hz_));
-    height_publisher_node_ = createDomainNode(
-      "autonomy_light_height_publisher",
-      external_ros_domain_id_,
-      height_publisher_context_);
-    height_publisher_timer_ = height_publisher_node_->create_wall_timer(
-      height_period,
-      [this]() {
-        refreshHeightGridFromRefinedMap();
-        publishCachedHeightMap();
-      });
-    if (saved_map_loaded_) {
-      const auto saved_map_republish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(saved_map_republish_interval_sec_));
-      saved_map_republish_timer_ = height_publisher_node_->create_wall_timer(
-        saved_map_republish_period,
-        [this]() { publishSavedMap(); });
+    if (!mapping_only_) {
+      const auto height_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(1.0 / publish_rate_hz_));
+      height_publisher_node_ = createDomainNode(
+        "autonomy_light_height_publisher",
+        external_ros_domain_id_,
+        height_publisher_context_);
+      height_publisher_timer_ = height_publisher_node_->create_wall_timer(
+        height_period,
+        [this]() {
+          refreshHeightGridFromRefinedMap();
+          publishCachedHeightMap();
+        });
+      if (saved_map_loaded_) {
+        const auto saved_map_republish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::duration<double>(saved_map_republish_interval_sec_));
+        saved_map_republish_timer_ = height_publisher_node_->create_wall_timer(
+          saved_map_republish_period,
+          [this]() { publishSavedMap(); });
+      }
+      startAuxiliaryExecutor(
+        height_publisher_node_, height_publisher_executor_, height_publisher_spin_thread_,
+        "height map publisher");
     }
-    startAuxiliaryExecutor(
-      height_publisher_node_, height_publisher_executor_, height_publisher_spin_thread_,
-      "height map publisher");
 
     RCLCPP_INFO(
       get_logger(),
@@ -2350,7 +2414,7 @@ private:
           onLidarCloud(std::move(msg));
         });
     }
-    if (!mapping_only_ || mapping_slam_active_) {
+    if (!mapping_only_ || mapping_slam_active_ || point_lio_global_map_enabled_) {
       odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         point_lio_odom_topic_,
         rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile(),
@@ -2761,11 +2825,13 @@ private:
   void publishMapToOdomTransform()
   {
     Eigen::Matrix4f map_from_odom = Eigen::Matrix4f::Identity();
-    bool localized = false;
+    bool localized = force_identity_map_to_odom_;
     {
       std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
-      map_from_odom = saved_map_from_odom_;
-      localized = saved_map_relocalized_;
+      if (!force_identity_map_to_odom_) {
+        map_from_odom = saved_map_from_odom_;
+        localized = saved_map_relocalized_;
+      }
     }
     if (!localized || saved_map_frame_.empty() || odom_frame_.empty() ||
       saved_map_frame_ == odom_frame_ || !output_tf_broadcaster_)
@@ -3186,9 +3252,7 @@ private:
       static_cast<std::size_t>(point_lio_global_map_max_points_));
     rebuilt = sparseVoxelMapToCloud(point_lio_global_map_height_voxels_);
     PclCloud::Ptr coarse = sparseVoxelMapToCloud(point_lio_global_map_coarse_voxels_);
-    PclCloud::Ptr height_source =
-      point_lio_global_map_roi_enabled_ ? filterGlobalMapRoi(rebuilt) : rebuilt;
-    PclCloud::Ptr snapshot(new PclCloud(*height_source));
+    PclCloud::Ptr snapshot(new PclCloud(*rebuilt));
     pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(
       new pcl::search::KdTree<pcl::PointXYZ>());
     tree->setInputCloud(snapshot);
@@ -3253,10 +3317,7 @@ private:
         sparseVoxelMapToCloud(point_lio_global_map_height_voxels_);
       // Keep the height-map source independent from the slower RViz/debug
       // global-map publish interval so control output can use fresh fusion data.
-      PclCloud::Ptr height_source = point_lio_global_map_roi_enabled_ ?
-        filterGlobalMapRoi(point_lio_global_map_height_points_) :
-        point_lio_global_map_height_points_;
-      PclCloud::Ptr refined_height_snapshot(new PclCloud(*height_source));
+      PclCloud::Ptr refined_height_snapshot(new PclCloud(*point_lio_global_map_height_points_));
       pcl::search::KdTree<pcl::PointXYZ>::Ptr fine_tree(
         new pcl::search::KdTree<pcl::PointXYZ>());
       fine_tree->setInputCloud(refined_height_snapshot);
@@ -3289,9 +3350,10 @@ private:
       refined_visual_cloud = voxelDownsample(
         point_lio_global_map_height_points_,
         point_lio_global_map_refined_visual_voxel_leaf_size_);
-      if (point_lio_global_map_roi_enabled_) {
+      nav_msgs::msg::Odometry odom;
+      if (point_lio_global_map_roi_enabled_ && latestOdom(odom)) {
         roi_visual_cloud = voxelDownsample(
-          filterGlobalMapRoi(point_lio_global_map_height_points_),
+          filterGlobalMapRoi(point_lio_global_map_height_points_, odom, latest_height_origin_z_),
           point_lio_global_map_refined_visual_voxel_leaf_size_);
       }
       const auto refined_limit =
@@ -3337,7 +3399,7 @@ private:
     // otherwise heartbeat subtracts ROS time from its SYSTEM_TIME initializer.
     last_map_time_ = map_update_time;
     ++map_count_;
-    RCLCPP_INFO_THROTTLE(
+    RCLCPP_DEBUG_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Point-LIO global map refined: scan=%zu->%zu raw=%zu refined=%zu frame=%s",
       incoming_count,
@@ -3835,6 +3897,9 @@ private:
 
   void advanceRuntimeLoopCorrection()
   {
+    if (force_identity_map_to_odom_) {
+      return;
+    }
     bool updated = false;
     {
       std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
@@ -3855,7 +3920,9 @@ private:
 
   bool tryRuntimeLoopClosure(const PclCloud::ConstPtr & registered_cloud)
   {
-    if (mapping_only_ || saved_map_loaded_ || !runtime_localization_enabled_) {
+    if (mapping_only_ || saved_map_loaded_ || !runtime_localization_enabled_ ||
+      force_identity_map_to_odom_)
+    {
       return false;
     }
 
@@ -4014,7 +4081,7 @@ private:
       keyframe.ring_key = std::move(ring_key);
       mapping_keyframes_.push_back(std::move(keyframe));
       mapping_slam_keyframe_count_ = mapping_keyframes_.size();
-      RCLCPP_INFO_THROTTLE(
+      RCLCPP_DEBUG_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Mapping SLAM: captured keyframe=%zu points=%zu",
         mapping_keyframes_.size() - 1U,
@@ -4300,7 +4367,7 @@ private:
       if (estimateLocalFloorOriginZ(map_points, odom, q_height_map, floor_z)) {
         raw_origin_z = floor_z;
       } else {
-        RCLCPP_WARN_THROTTLE(
+        RCLCPP_DEBUG_THROTTLE(
           get_logger(),
           *get_clock(),
           2000,
@@ -4931,7 +4998,7 @@ private:
       }
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
       "Initial floor seed fill seeded %zu missing cell(s) with z=%.3f from %zu %s sample(s).",
       missing_count,
@@ -5246,6 +5313,8 @@ private:
       map_from_odom = saved_map_from_odom_;
       relocalized = saved_map_relocalized_;
     }
+    nav_msgs::msg::Odometry tf_odom;
+    nav_msgs::msg::Odometry base_odom;
     {
       std::lock_guard<std::mutex> lock(odom_mutex_);
       latest_raw_odom_ = *msg;
@@ -5255,11 +5324,18 @@ private:
       latest_lidar_odom_.child_frame_id = lidar_frame_;
       latest_odom_ = baseOdomFromLidarOdom(latest_lidar_odom_);
       latest_tf_odom_ = baseOdomFromLidarOdom(*msg);
+      tf_odom = latest_tf_odom_;
+      base_odom = latest_odom_;
       has_odom_ = true;
     }
     last_odom_time_ = now();
     ++odom_count_;
     ++height_input_revision_;
+    if (mapping_only_) {
+      publishMapToOdomTransform();
+      publishOdomToBaseTransform(tf_odom);
+      publishHeightMapFrameTransform(base_odom);
+    }
   }
 
   void onPointLioPath(nav_msgs::msg::Path::SharedPtr msg)
@@ -5501,6 +5577,7 @@ private:
         (monitor_raw_lidar_ ? std::to_string(lidar_count_) : std::string("unmonitored")) +
         ":odom=" + std::to_string(odom_count_) +
         ":map=" + (saved_map_loaded_ ? std::string("saved") : std::to_string(map_count_)) +
+        (force_identity_map_to_odom_ ? ":map_to_odom=identity" : "") +
         (savedMapRelocalizationActive() ? ":relocalization_fitness=" +
         shortDouble(saved_map_fitness) : "") +
         ":registered_drop=" + std::to_string(registered_worker_dropped_clouds_.load()) +
@@ -5696,6 +5773,7 @@ private:
   std::string saved_map_topic_{"/autonomy_light/saved_map"};
   double saved_map_publish_voxel_leaf_size_{0.10};
   double saved_map_republish_interval_sec_{2.0};
+  bool force_identity_map_to_odom_{false};
   bool global_rotation_reference_enabled_{false};
   bool global_rotation_reference_valid_{false};
   std::string global_rotation_topic_{"/autonomy_light/global_rotation"};

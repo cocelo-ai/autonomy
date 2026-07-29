@@ -773,7 +773,6 @@ source_setup_file() {
   source "${setup_file}"
   set -u
   AUTONOMY_LIGHT_SOURCED_SETUPS="${AUTONOMY_LIGHT_SOURCED_SETUPS:-}:${setup_file}"
-  echo "sourced: ${setup_file}"
 }
 
 source_setup_files() {
@@ -979,7 +978,7 @@ cleanup() {
   local pid
   for pid in "${AUTONOMY_LIGHT_PID:-}" "${VIS_PID:-}"; do
     if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
-      kill "${pid}" >/dev/null 2>&1 || true
+      kill -INT "${pid}" >/dev/null 2>&1 || true
     fi
   done
 }
