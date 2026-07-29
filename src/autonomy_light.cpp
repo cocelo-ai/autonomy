@@ -2196,20 +2196,16 @@ private:
 
     const auto height_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / publish_rate_hz_));
-    height_builder_node_ = createDomainNode(
-      "autonomy_light_height_builder",
-      external_ros_domain_id_,
-      height_builder_context_);
     height_publisher_node_ = createDomainNode(
       "autonomy_light_height_publisher",
       external_ros_domain_id_,
       height_publisher_context_);
-    height_builder_timer_ = height_builder_node_->create_wall_timer(
-      height_period,
-      [this]() { refreshHeightGridFromRefinedMap(); });
     height_publisher_timer_ = height_publisher_node_->create_wall_timer(
       height_period,
-      [this]() { publishCachedHeightMap(); });
+      [this]() {
+        refreshHeightGridFromRefinedMap();
+        publishCachedHeightMap();
+      });
     if (saved_map_loaded_) {
       const auto saved_map_republish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(saved_map_republish_interval_sec_));
@@ -2217,8 +2213,6 @@ private:
         saved_map_republish_period,
         [this]() { publishSavedMap(); });
     }
-    startAuxiliaryExecutor(
-      height_builder_node_, height_builder_executor_, height_builder_spin_thread_, "height grid builder");
     startAuxiliaryExecutor(
       height_publisher_node_, height_publisher_executor_, height_publisher_spin_thread_,
       "height map publisher");
@@ -5175,7 +5169,6 @@ private:
         std::lock_guard<std::mutex> lock(grid_mutex_);
         latest_grid_ = grid;
         latest_ground_grid_ = grid;
-        latest_grid_input_revision_ = input_revision;
         has_grid_ = true;
         has_ground_grid_ = true;
       }
@@ -5183,7 +5176,6 @@ private:
       {
         std::lock_guard<std::mutex> lock(grid_mutex_);
         latest_grid_ = grid;
-        latest_grid_input_revision_ = input_revision;
         has_grid_ = true;
       }
     }
@@ -5194,24 +5186,16 @@ private:
   {
     ElevationGrid grid;
     bool has_grid = false;
-    std::uint64_t grid_input_revision = 0;
     {
       std::lock_guard<std::mutex> lock(grid_mutex_);
       if (has_grid_) {
         grid = latest_grid_;
-        grid_input_revision = latest_grid_input_revision_;
         has_grid = true;
       }
     }
-    if (has_grid &&
-      !height_map_manual_mode_ &&
-      grid_input_revision != height_input_revision_.load(std::memory_order_acquire))
-    {
-      has_grid = false;
-    }
     if (has_grid && height_map_pub_ && height_map_msg_pub_) {
-      // Do not restamp stale terrain after odom/scan input advances; the grid
-      // must correspond to the latest height input revision before publication.
+      // The publisher timer rebuilds immediately before this call, so each
+      // publish uses the freshest grid available for this 50 Hz tick.
       grid.header.stamp = now();
       height_map_pub_->publish(gridToPointCloud(grid));
       height_map_msg_pub_->publish(
@@ -5643,7 +5627,6 @@ private:
   bool has_ground_grid_{false};
   std::atomic<std::uint64_t> height_input_revision_{1};
   std::uint64_t last_built_height_input_revision_{0};
-  std::uint64_t latest_grid_input_revision_{0};
   std::mutex odom_mutex_;
   nav_msgs::msg::Odometry latest_raw_odom_;
   bool has_raw_odom_{false};
