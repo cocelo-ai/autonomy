@@ -258,13 +258,12 @@ autonomy_light:
         # Point-LIO's coarser local-map voxels still produce a continuous edge.
         obstacle_projection_radius_cells: 0
       cloud_registered_fill:
-        enabled: true
+        enabled: false
         percentile: 0.15
         min_points_per_cell: 2
-        # The latest registered scan is used as the current, robot-centric
-        # height source. Saved/live maps only fill cells that the current scan
-        # did not observe.
-        initial_floor_fill_enabled: true
+        # Disabled with the local registered-scan fallback. Missing cells are
+        # handled from the stable global map instead.
+        initial_floor_fill_enabled: false
         initial_floor_max_local_coverage: 0.25
         floor_min_points: 20
         floor_support_band: 0.08
