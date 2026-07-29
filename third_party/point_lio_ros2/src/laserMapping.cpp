@@ -1586,7 +1586,18 @@ int main(int argc, char **argv) {
     if (pcl_wait_save->size() > 0 && pcd_save_en) {
         string all_points_dir = pcd_save_path();
         pcl::PCDWriter pcd_writer;
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+        RCLCPP_INFO(
+            logger,
+            "Saving Point-LIO PCD: %s (%zu points). This can take a while for large maps.",
+            all_points_dir.c_str(),
+            pcl_wait_save->size());
+        const int result = pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+        if (result < 0) {
+            RCLCPP_ERROR(logger, "Failed to save Point-LIO PCD: %s (pcl error %d)",
+                         all_points_dir.c_str(), result);
+        } else {
+            RCLCPP_INFO(logger, "Saved Point-LIO PCD: %s", all_points_dir.c_str());
+        }
     }
     fout_out.close();
     fout_imu_pbp.close();

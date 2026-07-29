@@ -47,6 +47,9 @@ autonomy_light:
     # IMU roll/pitch are deliberately retained from Point-LIO for stability.
     mapping_slam:
       enabled: true
+      # Fast shutdown by default: save the live refined global-map snapshot.
+      # Enable this only when you need final loop-optimized map reconstruction.
+      save_optimized_on_shutdown: false
       keyframe_distance_m: 0.5
       keyframe_yaw_deg: 7.5
       keyframe_voxel_leaf_size: 0.03
@@ -83,6 +86,13 @@ autonomy_light:
     # Re-publish on the map-visualization domain so RViz can attach after launch
     # even when its QoS durability is left at the default.
     saved_map_republish_interval_sec: 2.0
+    # Optional map-frame reference axes for publishing robot yaw relative to a
+    # measured global direction. Each line is [x1, y1, z1, x2, y2, z2].
+    global_rotation_reference:
+      enabled: false
+      topic: "/autonomy_light/global_rotation"
+      horizontal: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+      vertical: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
     # When saved_map_file is set, estimate map_from_odom from Point-LIO's
     # registered scan. Prefer fast automatic local GICP initialization; the
     # expensive global FPFH/RANSAC path is left off for quick saved-map startup.

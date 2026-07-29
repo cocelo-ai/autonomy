@@ -9,10 +9,14 @@ Usage:
 
 Mapping options:
   --output FILE          Refined saved PCD path. Default: maps/point_lio_map_<timestamp>.pcd
-  --raw-output FILE      Raw Point-LIO PCD path. Default: <output>.raw.pcd
+  --save-raw-pcd        Also save Point-LIO raw PCD on shutdown. Default: off.
+  --raw-output FILE      Raw Point-LIO PCD path when --save-raw-pcd is used.
+                         Default: <output>.raw.pcd
   --output-dir DIR       Directory for the default output file. Default: ./maps
-  --pcd-interval N       Point-LIO pcd_save.interval. Default: -1, save one scans.pcd on shutdown.
-  --save-grace-sec SEC   Seconds to wait for Point-LIO to flush PCD after Ctrl+C. Default: 120.
+  --pcd-interval N       Point-LIO pcd_save.interval when raw save is enabled.
+                         Default: -1, save one scans.pcd on shutdown.
+  --save-grace-sec SEC   Seconds to wait for Point-LIO to flush PCD after Ctrl+C.
+                         Default: -1, wait until the PCD save finishes.
   --pcd-source FILE      Internal Point-LIO output path. Default: <raw-output>
   --dry-run              Print the command without starting mapping.
 
@@ -27,8 +31,9 @@ Examples:
   ./mapping.sh --real --output maps/lab_mapping.pcd
   ./mapping.sh --real --livox-lidar2-ip 192.168.2.166 --livox2-interface enx123
 
-Stop mapping with Ctrl+C. The script then waits for Point-LIO to save the raw
-PCD and for the refined-map loop-closure pose graph to finish.
+Stop mapping with Ctrl+C. By default the refined global map is saved from the
+live refined snapshot so shutdown is not blocked by raw PCD flush or final
+pose-graph reconstruction.
 EOF
 }
 
@@ -38,8 +43,9 @@ OUTPUT_DIR="${AUTONOMY_LIGHT_MAPPING_OUTPUT_DIR:-${PWD}/maps}"
 OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_OUTPUT_FILE:-}"
 RAW_OUTPUT_FILE="${AUTONOMY_LIGHT_MAPPING_RAW_OUTPUT_FILE:-}"
 PCD_INTERVAL="${AUTONOMY_LIGHT_MAPPING_PCD_INTERVAL:--1}"
-SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:-120}"
+SAVE_GRACE_SEC="${AUTONOMY_LIGHT_MAPPING_SAVE_GRACE_SEC:--1}"
 PCD_SOURCE="${AUTONOMY_LIGHT_POINT_LIO_PCD_SOURCE:-}"
+SAVE_RAW_PCD="${AUTONOMY_LIGHT_MAPPING_SAVE_RAW_PCD:-false}"
 DRY_RUN="false"
 
 declare -a LAUNCH_ARGS=()
@@ -62,6 +68,47 @@ expand_user_path() {
       printf '%s\n' "${path}"
       ;;
   esac
+}
+
+format_elapsed() {
+  local seconds="$1"
+  printf '%02d:%02d:%02d' "$((seconds / 3600))" "$(((seconds % 3600) / 60))" "$((seconds % 60))"
+}
+
+file_size_text() {
+  local file="$1"
+  if [[ ! -e "${file}" ]]; then
+    printf 'waiting for file'
+    return
+  fi
+  if command -v numfmt >/dev/null 2>&1; then
+    stat -c '%s' -- "${file}" 2>/dev/null | numfmt --to=iec --suffix=B 2>/dev/null || printf 'size unknown'
+  else
+    stat -c '%s bytes' -- "${file}" 2>/dev/null || printf 'size unknown'
+  fi
+}
+
+monitor_shutdown_progress() {
+  local pid="$1"
+  local label="$2"
+  local file="$3"
+  local start
+  local elapsed
+  local spin_index=0
+  local spinner='|/-\'
+  start="$(date +%s)"
+
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    elapsed="$(($(date +%s) - start))"
+    printf '\r%s %s elapsed=%s output=%s' \
+      "${label}" \
+      "${spinner:spin_index % ${#spinner}:1}" \
+      "$(format_elapsed "${elapsed}")" \
+      "$(file_size_text "${file}")"
+    spin_index="$((spin_index + 1))"
+    sleep 1
+  done
+  printf '\n'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -116,6 +163,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pcd-source=*)
       PCD_SOURCE="${1#--pcd-source=}"
+      shift
+      ;;
+    --save-raw-pcd)
+      SAVE_RAW_PCD="true"
+      shift
+      ;;
+    --no-save-raw-pcd)
+      SAVE_RAW_PCD="false"
       shift
       ;;
     --dry-run)
@@ -176,7 +231,7 @@ COMMAND=(
   -p
   "mapping_refined_pcd_file:=${OUTPUT_FILE}"
   -p
-  point_lio_pcd_save_en:=true
+  "point_lio_pcd_save_en:=${SAVE_RAW_PCD}"
   -p
   "point_lio_pcd_save_interval:=${PCD_INTERVAL}"
   -p
@@ -187,9 +242,18 @@ COMMAND=(
 )
 
 echo "mapping mode: refined output=${OUTPUT_FILE}"
-echo "mapping mode: raw output=${RAW_OUTPUT_FILE}"
-echo "mapping mode: Point-LIO internal raw PCD=${PCD_SOURCE}"
-echo "mapping mode: stop with Ctrl+C, then wait for raw save and pose-graph optimization"
+if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+  echo "mapping mode: raw output=${RAW_OUTPUT_FILE}"
+  echo "mapping mode: Point-LIO internal raw PCD=${PCD_SOURCE}"
+  if [[ "${SAVE_GRACE_SEC}" == -* ]]; then
+    echo "mapping mode: stop with Ctrl+C, then wait until raw PCD save finishes"
+  else
+    echo "mapping mode: stop with Ctrl+C, then wait up to ${SAVE_GRACE_SEC}s for raw PCD save"
+  fi
+else
+  echo "mapping mode: raw Point-LIO PCD save=disabled"
+  echo "mapping mode: stop with Ctrl+C, then save the refined global-map snapshot"
+fi
 
 if [[ "${DRY_RUN}" == "true" ]]; then
   printf 'dry-run command:'
@@ -199,10 +263,12 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 fi
 
 mkdir -p -- "$(dirname -- "${OUTPUT_FILE}")"
-mkdir -p -- "$(dirname -- "${RAW_OUTPUT_FILE}")"
-mkdir -p -- "$(dirname -- "${PCD_SOURCE}")"
+if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+  mkdir -p -- "$(dirname -- "${RAW_OUTPUT_FILE}")"
+  mkdir -p -- "$(dirname -- "${PCD_SOURCE}")"
+fi
 
-if [[ -e "${PCD_SOURCE}" ]]; then
+if [[ "${SAVE_RAW_PCD}" == "true" && -e "${PCD_SOURCE}" ]]; then
   BACKUP_SOURCE="${PCD_SOURCE}.bak.${TIMESTAMP}"
   mv -- "${PCD_SOURCE}" "${BACKUP_SOURCE}"
   echo "previous Point-LIO PCD moved to: ${BACKUP_SOURCE}"
@@ -212,7 +278,7 @@ if [[ -e "${OUTPUT_FILE}" ]]; then
   mv -- "${OUTPUT_FILE}" "${BACKUP_REFINED_OUTPUT}"
   echo "previous refined output moved to: ${BACKUP_REFINED_OUTPUT}"
 fi
-if [[ "${PCD_SOURCE_PATH}" != "${RAW_OUTPUT_PATH}" && -e "${RAW_OUTPUT_FILE}" ]]; then
+if [[ "${SAVE_RAW_PCD}" == "true" && "${PCD_SOURCE_PATH}" != "${RAW_OUTPUT_PATH}" && -e "${RAW_OUTPUT_FILE}" ]]; then
   BACKUP_RAW_OUTPUT="${RAW_OUTPUT_FILE}.bak.${TIMESTAMP}"
   mv -- "${RAW_OUTPUT_FILE}" "${BACKUP_RAW_OUTPUT}"
   echo "previous raw output moved to: ${BACKUP_RAW_OUTPUT}"
@@ -224,9 +290,22 @@ MAPPING_PID="$!"
 
 cleanup() {
   if [[ -n "${MAPPING_PID:-}" ]] && kill -0 "${MAPPING_PID}" >/dev/null 2>&1; then
-    echo "stopping mapping process; waiting for Point-LIO PCD flush..."
+    if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+      echo "stopping mapping process; waiting for Point-LIO PCD flush. Large maps can take several minutes; do not press Ctrl+C again unless you want to abort the save."
+      monitor_shutdown_progress "${MAPPING_PID}" "Point-LIO PCD flush" "${PCD_SOURCE}" &
+    else
+      echo "stopping mapping process; saving refined global-map snapshot..."
+      monitor_shutdown_progress "${MAPPING_PID}" "refined map save" "${OUTPUT_FILE}" &
+    fi
+    MONITOR_PID="$!"
     kill -INT "${MAPPING_PID}" >/dev/null 2>&1 || true
     wait "${MAPPING_PID}"
+    MONITOR_STATUS="$?"
+    if [[ -n "${MONITOR_PID:-}" ]] && kill -0 "${MONITOR_PID}" >/dev/null 2>&1; then
+      kill "${MONITOR_PID}" >/dev/null 2>&1 || true
+      wait "${MONITOR_PID}" >/dev/null 2>&1 || true
+    fi
+    return "${MONITOR_STATUS}"
   fi
 }
 trap cleanup INT TERM
@@ -238,7 +317,9 @@ set -e
 
 RAW_SAVED="false"
 REFINED_SAVED="false"
-if [[ -s "${PCD_SOURCE}" ]]; then
+if [[ "${SAVE_RAW_PCD}" != "true" ]]; then
+  RAW_SAVED="true"
+elif [[ -s "${PCD_SOURCE}" ]]; then
   if [[ "${PCD_SOURCE_PATH}" != "${RAW_OUTPUT_PATH}" ]]; then
     cp -- "${PCD_SOURCE}" "${RAW_OUTPUT_FILE}"
   fi
@@ -261,7 +342,10 @@ if [[ "${RAW_SAVED}" == "true" && "${REFINED_SAVED}" == "true" ]]; then
     echo "created_at: \"${TIMESTAMP}\""
     echo "refined_pcd: \"${OUTPUT_FILE}\""
     echo "raw_source_pcd: \"${PCD_SOURCE}\""
-    echo "raw_pcd: \"${RAW_OUTPUT_FILE}\""
+    echo "raw_pcd_enabled: ${SAVE_RAW_PCD}"
+    if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+      echo "raw_pcd: \"${RAW_OUTPUT_FILE}\""
+    fi
     echo "refined_voxel_leaf_size: 0.01"
     echo "pcd_interval: ${PCD_INTERVAL}"
     echo "save_grace_sec: ${SAVE_GRACE_SEC}"
@@ -273,7 +357,9 @@ if [[ "${RAW_SAVED}" == "true" && "${REFINED_SAVED}" == "true" ]]; then
     fi
   } > "${META_FILE}"
   echo "saved refined mapping PCD: ${OUTPUT_FILE}"
-  echo "saved raw Point-LIO PCD: ${RAW_OUTPUT_FILE}"
+  if [[ "${SAVE_RAW_PCD}" == "true" ]]; then
+    echo "saved raw Point-LIO PCD: ${RAW_OUTPUT_FILE}"
+  fi
   echo "saved metadata: ${META_FILE}"
   if [[ "${STATUS}" == "130" || "${STATUS}" == "143" ]]; then
     exit 0

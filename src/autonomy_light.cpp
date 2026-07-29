@@ -58,6 +58,7 @@
 #endif
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -447,10 +448,11 @@ public:
       kill(child.pid, SIGINT);
     }
 
+    const bool wait_forever = grace_seconds < 0.0;
     const auto grace = std::chrono::duration<double>(std::max(0.0, grace_seconds));
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(grace);
-    while (!children_.empty() && std::chrono::steady_clock::now() < deadline) {
+    while (!children_.empty() && (wait_forever || std::chrono::steady_clock::now() < deadline)) {
       for (auto it = children_.begin(); it != children_.end(); ) {
         int status = 0;
         const pid_t ret = waitpid(it->pid, &status, WNOHANG);
@@ -463,6 +465,10 @@ public:
       if (!children_.empty()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
+    }
+
+    if (wait_forever) {
+      return;
     }
 
     for (const auto & child : children_) {
@@ -753,6 +759,8 @@ private:
     mapping_slam_loop_weight_ = std::max(
       1.0,
       declare_parameter<double>("mapping_slam.loop_weight", mapping_slam_loop_weight_));
+    mapping_slam_save_optimized_on_shutdown_ = declare_parameter<bool>(
+      "mapping_slam.save_optimized_on_shutdown", mapping_slam_save_optimized_on_shutdown_);
     mapping_slam_active_ = mapping_refined_pcd_save_enabled_ && mapping_slam_enabled_;
     point_lio_pcd_save_en_ = declare_parameter<bool>(
       "point_lio_pcd_save_en", point_lio_pcd_save_en_);
@@ -760,9 +768,8 @@ private:
       "point_lio_pcd_save_interval", point_lio_pcd_save_interval_);
     point_lio_pcd_save_file_ = declare_parameter<std::string>(
       "point_lio_pcd_save_file", point_lio_pcd_save_file_);
-    child_shutdown_grace_sec_ = std::max(
-      0.8,
-      declare_parameter<double>("child_shutdown_grace_sec", child_shutdown_grace_sec_));
+    child_shutdown_grace_sec_ =
+      declare_parameter<double>("child_shutdown_grace_sec", child_shutdown_grace_sec_);
     saved_map_file_ = declare_parameter<std::string>("saved_map_file", saved_map_file_);
     saved_map_frame_ = declare_parameter<std::string>("saved_map_frame", saved_map_frame_);
     saved_map_topic_ = declare_parameter<std::string>("saved_map_topic", saved_map_topic_);
@@ -857,6 +864,15 @@ private:
       20,
       static_cast<int>(declare_parameter<int>(
         "saved_map_localization.min_scan_points", saved_map_min_scan_points_)));
+    global_rotation_reference_enabled_ = declare_parameter<bool>(
+      "global_rotation_reference.enabled", global_rotation_reference_enabled_);
+    global_rotation_topic_ = declare_parameter<std::string>(
+      "global_rotation_reference.topic", global_rotation_topic_);
+    global_rotation_horizontal_line_ = declareVectorParameter(
+      "global_rotation_reference.horizontal", global_rotation_horizontal_line_, 6);
+    global_rotation_vertical_line_ = declareVectorParameter(
+      "global_rotation_reference.vertical", global_rotation_vertical_line_, 6);
+    configureGlobalRotationReference();
     runtime_localization_enabled_ = declare_parameter<bool>(
       "runtime_localization.enabled", runtime_localization_enabled_);
     runtime_localization_update_interval_sec_ = std::max(
@@ -1264,6 +1280,60 @@ private:
       target_to_lidar2_xyz_[1],
       target_to_lidar2_xyz_[2]);
     target_to_lidar2_quaternion_ = q2;
+  }
+
+  static bool lineYawFromParameter(const std::vector<double> & line, double & yaw)
+  {
+    if (line.size() != 6) {
+      return false;
+    }
+    const double dx = line[3] - line[0];
+    const double dy = line[4] - line[1];
+    if (!std::isfinite(dx) || !std::isfinite(dy) || std::hypot(dx, dy) < 1.0e-6) {
+      return false;
+    }
+    yaw = std::atan2(dy, dx);
+    return true;
+  }
+
+  void configureGlobalRotationReference()
+  {
+    global_rotation_reference_valid_ = false;
+    if (!global_rotation_reference_enabled_) {
+      return;
+    }
+
+    double horizontal_yaw = 0.0;
+    double vertical_yaw = 0.0;
+    const bool has_horizontal = lineYawFromParameter(global_rotation_horizontal_line_, horizontal_yaw);
+    const bool has_vertical = lineYawFromParameter(global_rotation_vertical_line_, vertical_yaw);
+    if (!has_horizontal && !has_vertical) {
+      RCLCPP_WARN(
+        get_logger(),
+        "global_rotation_reference is enabled but both horizontal and vertical lines are invalid");
+      return;
+    }
+
+    if (has_horizontal && has_vertical) {
+      const double vertical_as_horizontal = wrapAngle(vertical_yaw - 0.5 * 3.14159265358979323846);
+      global_rotation_reference_yaw_ = std::atan2(
+        std::sin(horizontal_yaw) + std::sin(vertical_as_horizontal),
+        std::cos(horizontal_yaw) + std::cos(vertical_as_horizontal));
+      const double perpendicular_error = std::abs(
+        std::abs(wrapAngle(vertical_yaw - horizontal_yaw)) - 0.5 * 3.14159265358979323846);
+      if (perpendicular_error > 10.0 * 3.14159265358979323846 / 180.0) {
+        RCLCPP_WARN(
+          get_logger(),
+          "global_rotation_reference lines are not close to perpendicular: error=%.1fdeg",
+          perpendicular_error * 180.0 / 3.14159265358979323846);
+      }
+    } else if (has_horizontal) {
+      global_rotation_reference_yaw_ = horizontal_yaw;
+    } else {
+      global_rotation_reference_yaw_ = wrapAngle(vertical_yaw - 0.5 * 3.14159265358979323846);
+    }
+    global_rotation_reference_yaw_ = wrapAngle(global_rotation_reference_yaw_);
+    global_rotation_reference_valid_ = true;
   }
 
   void loadSavedMap()
@@ -2160,6 +2230,11 @@ private:
     path_pub_ = output_node->create_publisher<nav_msgs::msg::Path>(
       path_output_topic_,
       rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
+    if (global_rotation_reference_enabled_ && global_rotation_reference_valid_) {
+      global_rotation_pub_ = output_node->create_publisher<std_msgs::msg::Float64>(
+        global_rotation_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile());
+    }
     // The saved PCD must share the global-map visualization domain. Otherwise
     // it disappears when RViz is connected to a dedicated global-map domain.
     rclcpp::Node * map_visualization_node = output_node;
@@ -2730,6 +2805,34 @@ private:
     msg.transform.translation.z = base_odom.pose.pose.position.z;
     msg.transform.rotation = base_odom.pose.pose.orientation;
     output_tf_broadcaster_->sendTransform(msg);
+  }
+
+  void publishGlobalRotation(const nav_msgs::msg::Odometry & base_odom)
+  {
+    if (!global_rotation_pub_ || !global_rotation_reference_valid_) {
+      return;
+    }
+    if (saved_map_loaded_ && savedMapRelocalizationActive()) {
+      std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+      if (!saved_map_relocalized_) {
+        return;
+      }
+    }
+
+    tf2::Quaternion q_map_base;
+    tf2::fromMsg(base_odom.pose.pose.orientation, q_map_base);
+    if (q_map_base.length2() < 1.0e-12) {
+      return;
+    }
+    q_map_base.normalize();
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    tf2::Matrix3x3(q_map_base).getRPY(roll, pitch, yaw);
+
+    std_msgs::msg::Float64 msg;
+    msg.data = wrapAngle(yaw - global_rotation_reference_yaw_);
+    global_rotation_pub_->publish(msg);
   }
 
   void startExternalProcesses()
@@ -3926,7 +4029,16 @@ private:
       return;
     }
 
-    PclCloud::Ptr refined_map = mapping_slam_active_ ? buildOptimizedMappingMap() : nullptr;
+    const auto save_start = std::chrono::steady_clock::now();
+    PclCloud::Ptr refined_map =
+      (mapping_slam_active_ && mapping_slam_save_optimized_on_shutdown_) ?
+      buildOptimizedMappingMap() : nullptr;
+    if (mapping_slam_active_ && !mapping_slam_save_optimized_on_shutdown_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Fast refined mapping PCD save enabled: writing the live refined global-map snapshot "
+        "without shutdown pose-graph reconstruction");
+    }
     if (!refined_map || refined_map->empty()) {
       std::lock_guard<std::mutex> lock(map_mutex_);
       if (point_lio_global_map_height_points_ && !point_lio_global_map_height_points_->empty()) {
@@ -3941,6 +4053,8 @@ private:
       return;
     }
     const int result = pcl::io::savePCDFileBinary(mapping_refined_pcd_file_, *refined_map);
+    const auto save_elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - save_start).count();
     if (result < 0) {
       RCLCPP_ERROR(
         get_logger(),
@@ -3957,6 +4071,10 @@ private:
       point_lio_global_map_height_voxel_leaf_size_,
       mapping_slam_keyframe_count_,
       mapping_slam_accepted_loop_count_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Refined mapping PCD save elapsed: %.3fs",
+      save_elapsed);
   }
 
   bool buildElevationGridFromMap(ElevationGrid & grid)
@@ -5232,6 +5350,7 @@ private:
       publishMapToOdomTransform();
       publishOdomToBaseTransform(tf_odom);
       publishHeightMapFrameTransform(base_odom);
+      publishGlobalRotation(base_odom);
     }
   }
 
@@ -5414,6 +5533,7 @@ private:
   std::string mapping_refined_pcd_file_;
   bool mapping_refined_pcd_save_enabled_{false};
   bool mapping_slam_enabled_{true};
+  bool mapping_slam_save_optimized_on_shutdown_{false};
   bool mapping_slam_active_{false};
   double mapping_slam_keyframe_distance_m_{0.5};
   double mapping_slam_keyframe_yaw_rad_{7.5 * 3.14159265358979323846 / 180.0};
@@ -5576,6 +5696,12 @@ private:
   std::string saved_map_topic_{"/autonomy_light/saved_map"};
   double saved_map_publish_voxel_leaf_size_{0.10};
   double saved_map_republish_interval_sec_{2.0};
+  bool global_rotation_reference_enabled_{false};
+  bool global_rotation_reference_valid_{false};
+  std::string global_rotation_topic_{"/autonomy_light/global_rotation"};
+  std::vector<double> global_rotation_horizontal_line_{0.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+  std::vector<double> global_rotation_vertical_line_{0.0, 0.0, 0.0, 0.0, 1.0, 0.0};
+  double global_rotation_reference_yaw_{0.0};
   bool saved_map_localization_enabled_{true};
   bool saved_map_global_initialization_{false};
   double saved_map_localization_update_interval_sec_{1.0};
@@ -5689,6 +5815,7 @@ private:
   rclcpp::Publisher<::autonomy_light::msg::HeightMap>::SharedPtr height_map_msg_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr global_rotation_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
   rclcpp::TimerBase::SharedPtr height_builder_timer_;
   rclcpp::TimerBase::SharedPtr height_publisher_timer_;
