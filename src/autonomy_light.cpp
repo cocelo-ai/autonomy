@@ -1076,13 +1076,13 @@ private:
         min_z_obstacle_projection_radius_cells_)));
     const bool requested_registered_fill = declare_parameter<bool>(
       "algorithm.cloud_registered_fill.enabled", cloud_registered_fill_enabled_);
-    // Registered scan filling was the old local-map fallback.  It can make a
-    // single current scan visibly perturb an otherwise stable global terrain.
+    // Keep HeightMap extraction on the refined global map. Registered scans are
+    // fused into that map, but are not used directly as the HeightMap source.
     cloud_registered_fill_enabled_ = false;
     if (requested_registered_fill) {
       RCLCPP_WARN(
         get_logger(),
-        "algorithm.cloud_registered_fill is ignored: height maps use the global map only");
+        "algorithm.cloud_registered_fill is ignored: height maps use the refined global map only");
     }
     cloud_registered_fill_percentile_ = std::clamp(
       declare_parameter<double>(
@@ -1102,7 +1102,7 @@ private:
       RCLCPP_WARN(
         get_logger(),
         "algorithm.cloud_registered_fill.initial_floor_fill_enabled is ignored: "
-        "height maps use the global map only");
+        "height maps use the refined global map only");
     }
     cloud_registered_initial_floor_max_coverage_ = std::clamp(
       declare_parameter<double>(
@@ -3132,6 +3132,32 @@ private:
         static_cast<std::size_t>(point_lio_global_map_height_max_points_));
     }
 
+    bool height_snapshot_updated = false;
+    if (point_lio_global_map_use_for_height_map_ &&
+      !point_lio_global_map_height_voxels_.empty())
+    {
+      point_lio_global_map_height_points_ =
+        sparseVoxelMapToCloud(point_lio_global_map_height_voxels_);
+      // Keep the height-map source independent from the slower RViz/debug
+      // global-map publish interval so control output can use fresh fusion data.
+      PclCloud::Ptr height_source = point_lio_global_map_roi_enabled_ ?
+        filterGlobalMapRoi(point_lio_global_map_height_points_) :
+        point_lio_global_map_height_points_;
+      PclCloud::Ptr refined_height_snapshot(new PclCloud(*height_source));
+      pcl::search::KdTree<pcl::PointXYZ>::Ptr fine_tree(
+        new pcl::search::KdTree<pcl::PointXYZ>());
+      fine_tree->setInputCloud(refined_height_snapshot);
+      {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        point_lio_global_map_height_cloud_ = refined_height_snapshot;
+        point_lio_global_map_height_tree_ = std::move(fine_tree);
+      }
+      height_snapshot_updated = true;
+    }
+    if (height_snapshot_updated) {
+      ++height_input_revision_;
+    }
+
     const auto publish_time = std::chrono::steady_clock::now();
     if (last_point_lio_global_map_publish_.time_since_epoch().count() != 0 &&
       std::chrono::duration<double>(publish_time - last_point_lio_global_map_publish_).count() <
@@ -3145,25 +3171,8 @@ private:
     PclCloud::Ptr refined_visual_cloud;
     PclCloud::Ptr roi_visual_cloud;
     if (point_lio_global_map_use_for_height_map_ &&
-      !point_lio_global_map_height_voxels_.empty())
+      point_lio_global_map_height_points_ && !point_lio_global_map_height_points_->empty())
     {
-      point_lio_global_map_height_points_ =
-        sparseVoxelMapToCloud(point_lio_global_map_height_voxels_);
-      // Publish an immutable refined-map snapshot for the independent height
-      // builder. The next registered scan may continue fusion without racing
-      // the high-rate height-map query thread.
-      PclCloud::Ptr height_source = point_lio_global_map_roi_enabled_ ?
-        filterGlobalMapRoi(point_lio_global_map_height_points_) :
-        point_lio_global_map_height_points_;
-      PclCloud::Ptr refined_height_snapshot(new PclCloud(*height_source));
-      pcl::search::KdTree<pcl::PointXYZ>::Ptr fine_tree(
-        new pcl::search::KdTree<pcl::PointXYZ>());
-      fine_tree->setInputCloud(refined_height_snapshot);
-      {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        point_lio_global_map_height_cloud_ = refined_height_snapshot;
-        point_lio_global_map_height_tree_ = std::move(fine_tree);
-      }
       refined_visual_cloud = voxelDownsample(
         point_lio_global_map_height_points_,
         point_lio_global_map_refined_visual_voxel_leaf_size_);
@@ -3188,8 +3197,6 @@ private:
         roi_visual_cloud = capCloudUniformly(roi_visual_cloud, refined_limit);
       }
     }
-    ++height_input_revision_;
-
     const auto map_update_time = now();
     if (point_lio_global_map_pub_) {
       sensor_msgs::msg::PointCloud2 message;
@@ -3922,6 +3929,9 @@ private:
         "Refined mapping PCD was not written because no registered points were accumulated: %s",
         mapping_refined_pcd_file_.c_str());
       return;
+    }
+    if (point_lio_global_map_roi_enabled_) {
+      refined_map = filterGlobalMapRoi(refined_map);
     }
 
     const int result = pcl::io::savePCDFileBinary(mapping_refined_pcd_file_, *refined_map);
@@ -5165,6 +5175,7 @@ private:
         std::lock_guard<std::mutex> lock(grid_mutex_);
         latest_grid_ = grid;
         latest_ground_grid_ = grid;
+        latest_grid_input_revision_ = input_revision;
         has_grid_ = true;
         has_ground_grid_ = true;
       }
@@ -5172,6 +5183,7 @@ private:
       {
         std::lock_guard<std::mutex> lock(grid_mutex_);
         latest_grid_ = grid;
+        latest_grid_input_revision_ = input_revision;
         has_grid_ = true;
       }
     }
@@ -5182,17 +5194,24 @@ private:
   {
     ElevationGrid grid;
     bool has_grid = false;
+    std::uint64_t grid_input_revision = 0;
     {
       std::lock_guard<std::mutex> lock(grid_mutex_);
       if (has_grid_) {
         grid = latest_grid_;
+        grid_input_revision = latest_grid_input_revision_;
         has_grid = true;
       }
     }
+    if (has_grid &&
+      !height_map_manual_mode_ &&
+      grid_input_revision != height_input_revision_.load(std::memory_order_acquire))
+    {
+      has_grid = false;
+    }
     if (has_grid && height_map_pub_ && height_map_msg_pub_) {
-      // Each publication uses terrain reconstructed from the immutable refined
-      // global-map snapshot; only the ROS timestamp is refreshed between grid
-      // builds so output remains at publish_rate_hz even during map fusion.
+      // Do not restamp stale terrain after odom/scan input advances; the grid
+      // must correspond to the latest height input revision before publication.
       grid.header.stamp = now();
       height_map_pub_->publish(gridToPointCloud(grid));
       height_map_msg_pub_->publish(
@@ -5624,6 +5643,7 @@ private:
   bool has_ground_grid_{false};
   std::atomic<std::uint64_t> height_input_revision_{1};
   std::uint64_t last_built_height_input_revision_{0};
+  std::uint64_t latest_grid_input_revision_{0};
   std::mutex odom_mutex_;
   nav_msgs::msg::Odometry latest_raw_odom_;
   bool has_raw_odom_{false};

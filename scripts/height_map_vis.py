@@ -6,8 +6,10 @@ import time
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 
 from autonomy_light.msg import HeightMap
 
@@ -185,21 +187,38 @@ def draw_overlay(grid_image, text):
     return image
 
 
+def message_age_ms(node, msg):
+    stamp = Time.from_msg(msg.header.stamp)
+    if stamp.nanoseconds == 0:
+        return None
+    return (node.get_clock().now().nanoseconds - stamp.nanoseconds) / 1.0e6
+
+
+def spin_node(node):
+    try:
+        rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
+
+
 def main():
     args = parse_args()
     rclpy.init()
     node = HeightMapVis(args.topic)
+    spin_thread = threading.Thread(target=spin_node, args=(node,), daemon=True)
+    spin_thread.start()
     cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
 
     period = 1.0 / max(1.0, args.fps)
     last_count = 0
     last_rate_time = time.monotonic()
     measured_hz = 0.0
+    render_ms = 0.0
 
     try:
         while rclpy.ok():
             start = time.monotonic()
-            rclpy.spin_once(node, timeout_sec=period)
+            render_start = start
             msg, count = node.latest()
 
             if msg is None:
@@ -219,9 +238,12 @@ def main():
                 else:
                     grid_image = render_grid(raw, gray, args.scale)
                 stamp = f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}"
+                age_ms = message_age_ms(node, msg)
+                age_text = "age=n/a" if age_ms is None else f"age={age_ms:5.1f}ms"
+                render_ms = 0.85 * render_ms + 0.15 * ((time.monotonic() - render_start) * 1000.0)
                 image = draw_overlay(
                     grid_image,
-                    f"{args.topic} {measured_hz:4.1f}Hz stamp={stamp} {stats}",
+                    f"{args.topic} {measured_hz:4.1f}Hz {age_text} render={render_ms:4.1f}ms stamp={stamp} {stats}",
                 )
 
             cv2.imshow(args.window, image)
@@ -233,8 +255,9 @@ def main():
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
     finally:
-        node.destroy_node()
         rclpy.shutdown()
+        spin_thread.join(timeout=1.0)
+        node.destroy_node()
         cv2.destroyAllWindows()
 
 
