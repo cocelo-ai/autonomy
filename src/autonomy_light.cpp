@@ -1319,6 +1319,14 @@ private:
       for (const auto & point : *points) {
         saved_map_height_cloud_->push_back(pcl::PointXYZ(point.x, point.y, point.z));
       }
+      if (point_lio_global_map_roi_enabled_) {
+        saved_map_height_cloud_ = filterGlobalMapRoi(saved_map_height_cloud_);
+        if (saved_map_height_cloud_->empty()) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Saved-map height ROI is empty; HeightMap output will wait for points inside the configured ROI");
+        }
+      }
       saved_map_height_tree_.reset(new pcl::search::KdTree<pcl::PointXYZ>());
       saved_map_height_tree_->setInputCloud(saved_map_height_cloud_);
       saved_map_loaded_ = true;
@@ -1390,11 +1398,19 @@ private:
     if (!saved_map_pub_ || !saved_map_visualization_cloud_ || saved_map_visualization_cloud_->empty()) {
       return;
     }
+    const auto publish_time = now();
     sensor_msgs::msg::PointCloud2 message;
     pcl::toROSMsg(*saved_map_visualization_cloud_, message);
-    message.header.stamp = now();
+    message.header.stamp = publish_time;
     message.header.frame_id = saved_map_frame_;
     saved_map_pub_->publish(message);
+    if (point_lio_global_map_roi_pub_ && saved_map_height_cloud_ && !saved_map_height_cloud_->empty()) {
+      sensor_msgs::msg::PointCloud2 roi_message;
+      pcl::toROSMsg(*saved_map_height_cloud_, roi_message);
+      roi_message.header.stamp = publish_time;
+      roi_message.header.frame_id = saved_map_frame_;
+      point_lio_global_map_roi_pub_->publish(roi_message);
+    }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 5000,
       "Published saved map for visualization: topic=%s frame=%s points=%zu voxel=%.3fm",
@@ -3924,10 +3940,6 @@ private:
         mapping_refined_pcd_file_.c_str());
       return;
     }
-    if (point_lio_global_map_roi_enabled_) {
-      refined_map = filterGlobalMapRoi(refined_map);
-    }
-
     const int result = pcl::io::savePCDFileBinary(mapping_refined_pcd_file_, *refined_map);
     if (result < 0) {
       RCLCPP_ERROR(
