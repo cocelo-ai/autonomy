@@ -712,6 +712,10 @@ private:
       static_cast<int>(declare_parameter<int>(
         "height_origin.floor_min_points",
         height_origin_floor_min_points_)));
+    height_map_frame_mode_ = declare_parameter<std::string>(
+      "height_map_frame_mode", height_map_frame_mode_);
+    height_map_frame_fixed_z_ = declare_parameter<double>(
+      "height_map_frame_fixed_z", height_map_frame_fixed_z_);
     publish_rate_hz_ = std::max(1.0, declare_parameter<double>("publish_rate_hz", publish_rate_hz_));
     mapping_only_ = declare_parameter<bool>("mapping_only", mapping_only_);
     mapping_refined_pcd_file_ = declare_parameter<std::string>(
@@ -864,6 +868,45 @@ private:
       static_cast<int>(declare_parameter<int>(
         "saved_map_localization.global_source_max_points",
         saved_map_global_source_max_points_)));
+    saved_map_initial_local_search_enabled_ = declare_parameter<bool>(
+      "saved_map_localization.initial_local_search.enabled",
+      saved_map_initial_local_search_enabled_);
+    saved_map_initial_local_search_yaw_rad_ = std::max(
+      0.0,
+      declare_parameter<double>(
+        "saved_map_localization.initial_local_search.yaw_search_deg",
+        saved_map_initial_local_search_yaw_rad_ * 180.0 / 3.14159265358979323846)) *
+      3.14159265358979323846 / 180.0;
+    saved_map_initial_local_search_xy_m_ = std::max(
+      0.0,
+      declare_parameter<double>(
+        "saved_map_localization.initial_local_search.xy_search_m",
+        saved_map_initial_local_search_xy_m_));
+    saved_map_initial_local_search_max_candidates_ = std::max(
+      1,
+      static_cast<int>(declare_parameter<int>(
+        "saved_map_localization.initial_local_search.max_candidates",
+        saved_map_initial_local_search_max_candidates_)));
+    saved_map_initial_local_search_voxel_leaf_size_ = std::max(
+      saved_map_scan_voxel_leaf_size_,
+      declare_parameter<double>(
+        "saved_map_localization.initial_local_search.voxel_leaf_size",
+        saved_map_initial_local_search_voxel_leaf_size_));
+    saved_map_initial_local_search_max_points_ = std::max(
+      100,
+      static_cast<int>(declare_parameter<int>(
+        "saved_map_localization.initial_local_search.max_points",
+        saved_map_initial_local_search_max_points_)));
+    saved_map_initial_local_search_iterations_ = std::max(
+      3,
+      static_cast<int>(declare_parameter<int>(
+        "saved_map_localization.initial_local_search.iterations",
+        saved_map_initial_local_search_iterations_)));
+    saved_map_initial_local_search_correspondence_m_ = std::max(
+      saved_map_scan_voxel_leaf_size_,
+      declare_parameter<double>(
+        "saved_map_localization.initial_local_search.max_correspondence_distance",
+        saved_map_initial_local_search_correspondence_m_));
     saved_map_normal_radius_ = std::max(
       0.05,
       declare_parameter<double>("saved_map_localization.normal_radius", saved_map_normal_radius_));
@@ -972,6 +1015,10 @@ private:
       "point_lio_path_topic", point_lio_path_topic_);
     point_lio_registered_topic_ = declare_parameter<std::string>(
       "point_lio_registered_topic", point_lio_registered_topic_);
+    point_lio_fov_degree_ = std::clamp(
+      declare_parameter<double>("point_lio_fov_degree", point_lio_fov_degree_),
+      1.0,
+      360.0);
     const bool requested_global_map = declare_parameter<bool>(
       "point_lio_global_map.enabled", point_lio_global_map_enabled_);
     point_lio_global_map_topic_ = declare_parameter<std::string>(
@@ -1913,6 +1960,122 @@ private:
     return filtered;
   }
 
+  static Eigen::Matrix4f yawTranslationDelta(
+    const double yaw,
+    const double x,
+    const double y)
+  {
+    Eigen::Matrix4f delta = Eigen::Matrix4f::Identity();
+    const float c = static_cast<float>(std::cos(yaw));
+    const float s = static_cast<float>(std::sin(yaw));
+    delta(0, 0) = c;
+    delta(0, 1) = -s;
+    delta(1, 0) = s;
+    delta(1, 1) = c;
+    delta(0, 3) = static_cast<float>(x);
+    delta(1, 3) = static_cast<float>(y);
+    return delta;
+  }
+
+  std::vector<Eigen::Matrix4f> initialLocalSearchGuesses(
+    const Eigen::Matrix4f & initial_guess) const
+  {
+    std::vector<Eigen::Matrix4f> guesses;
+    guesses.reserve(static_cast<std::size_t>(saved_map_initial_local_search_max_candidates_));
+    auto add_guess = [&](const double yaw, const double x, const double y) {
+        if (guesses.size() >=
+          static_cast<std::size_t>(saved_map_initial_local_search_max_candidates_))
+        {
+          return;
+        }
+        guesses.push_back(yawTranslationDelta(yaw, x, y) * initial_guess);
+      };
+
+    add_guess(0.0, 0.0, 0.0);
+    const double yaw = saved_map_initial_local_search_yaw_rad_;
+    if (yaw > 1.0e-6) {
+      add_guess(yaw, 0.0, 0.0);
+      add_guess(-yaw, 0.0, 0.0);
+      add_guess(0.5 * yaw, 0.0, 0.0);
+      add_guess(-0.5 * yaw, 0.0, 0.0);
+    }
+
+    const double xy = saved_map_initial_local_search_xy_m_;
+    if (xy > 1.0e-6) {
+      add_guess(0.0, xy, 0.0);
+      add_guess(0.0, -xy, 0.0);
+      add_guess(0.0, 0.0, xy);
+      add_guess(0.0, 0.0, -xy);
+    }
+    return guesses;
+  }
+
+  bool refineInitialGuessWithLocalSearch(
+    const PclCloud::ConstPtr & source,
+    const PclCloud::ConstPtr & target,
+    Eigen::Matrix4f & initial_guess,
+    double & best_fitness)
+  {
+    if (!saved_map_initial_local_search_enabled_ || !source || !target ||
+      source->size() < static_cast<std::size_t>(saved_map_min_scan_points_) ||
+      target->size() < static_cast<std::size_t>(saved_map_min_scan_points_))
+    {
+      return false;
+    }
+
+    PclCloud::Ptr coarse_source = capCloudUniformly(
+      voxelDownsample(source, saved_map_initial_local_search_voxel_leaf_size_),
+      static_cast<std::size_t>(saved_map_initial_local_search_max_points_));
+    PclCloud::Ptr coarse_target = capCloudUniformly(
+      voxelDownsample(target, saved_map_initial_local_search_voxel_leaf_size_),
+      static_cast<std::size_t>(saved_map_initial_local_search_max_points_));
+    if (!coarse_source || !coarse_target ||
+      coarse_source->size() < static_cast<std::size_t>(saved_map_min_scan_points_) ||
+      coarse_target->size() < static_cast<std::size_t>(saved_map_min_scan_points_))
+    {
+      return false;
+    }
+
+    const auto guesses = initialLocalSearchGuesses(initial_guess);
+    if (guesses.size() <= 1U) {
+      return false;
+    }
+
+    bool found = false;
+    Eigen::Matrix4f best = initial_guess;
+    best_fitness = std::numeric_limits<double>::infinity();
+    for (const auto & guess : guesses) {
+      pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp;
+      gicp.setInputSource(coarse_source);
+      gicp.setInputTarget(coarse_target);
+      gicp.setMaximumIterations(saved_map_initial_local_search_iterations_);
+      gicp.setMaxCorrespondenceDistance(
+        static_cast<float>(saved_map_initial_local_search_correspondence_m_));
+      gicp.setTransformationEpsilon(1.0e-4);
+      gicp.setEuclideanFitnessEpsilon(1.0e-4);
+      gicp.setCorrespondenceRandomness(12);
+      PclCloud aligned;
+      gicp.align(aligned, guess);
+      const Eigen::Matrix4f candidate = gicp.getFinalTransformation();
+      const double fitness = gicp.getFitnessScore(
+        saved_map_initial_local_search_correspondence_m_ *
+        saved_map_initial_local_search_correspondence_m_);
+      if (gicp.hasConverged() && isFiniteTransform(candidate) &&
+        std::isfinite(fitness) && fitness < best_fitness)
+      {
+        best = candidate;
+        best_fitness = fitness;
+        found = true;
+      }
+    }
+
+    if (!found) {
+      return false;
+    }
+    initial_guess = best;
+    return true;
+  }
+
   bool tryRelocalize(const PclCloud::ConstPtr & registered_cloud)
   {
     if (!runtimeMapLocalizationActive() || !registered_cloud ||
@@ -2006,6 +2169,19 @@ private:
       if (!target || target->size() < static_cast<std::size_t>(saved_map_min_scan_points_)) {
         resetInitialRelocalizationSubmap();
         return false;
+      }
+    } else if (!already_localized) {
+      double coarse_fitness = std::numeric_limits<double>::infinity();
+      if (refineInitialGuessWithLocalSearch(source, target, initial_guess, coarse_fitness)) {
+        RCLCPP_INFO(
+          get_logger(),
+          "Runtime localization: initial local search selected coarse fitness=%.4f",
+          coarse_fitness);
+        target = runtimeLocalizationTarget(initial_guess, false);
+        if (!target || target->size() < static_cast<std::size_t>(saved_map_min_scan_points_)) {
+          setSavedMapRelocalizationProgress("waiting_for_runtime_map_target", source->size(), 0.0);
+          return false;
+        }
       }
     }
 
@@ -2797,14 +2973,27 @@ private:
       odom.pose.pose.position.x,
       odom.pose.pose.position.y,
       odom.pose.pose.position.z);
-    const tf2::Vector3 p_map_height(
-      odom.pose.pose.position.x,
-      odom.pose.pose.position.y,
-      latest_height_origin_z_);
+    tf2::Vector3 p_target_height;
+    if (height_map_frame_mode_ == "base_fixed" || height_map_frame_mode_ == "base_link_fixed") {
+      p_target_height = tf2::Vector3(0.0, 0.0, height_map_frame_fixed_z_);
+    } else {
+      if (height_map_frame_mode_ != "floor" && height_map_frame_mode_ != "height_origin") {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(),
+          *get_clock(),
+          5000,
+          "Unknown height_map_frame_mode '%s'; using floor",
+          height_map_frame_mode_.c_str());
+      }
+      const tf2::Vector3 p_map_height(
+        odom.pose.pose.position.x,
+        odom.pose.pose.position.y,
+        latest_height_origin_z_);
+      p_target_height = tf2::quatRotate(
+        q_map_target.inverse(), p_map_height - p_map_target);
+    }
     tf2::Quaternion q_target_height = q_map_target.inverse() * q_map_height;
     q_target_height.normalize();
-    const tf2::Vector3 p_target_height = tf2::quatRotate(
-      q_map_target.inverse(), p_map_height - p_map_target);
 
     geometry_msgs::msg::TransformStamped msg;
     msg.header.stamp = odom.header.stamp;
@@ -2966,6 +3155,7 @@ private:
       "-p", "odom.child_to_body_T:=" + vectorParam(child_to_body_t),
       "-p", "odom.child_to_body_R:=" + matrixParam(child_to_body_r),
       "-p", "odom.publish_tf:=false",
+      "-p", "mapping.fov_degree:=" + shortDouble(point_lio_fov_degree_),
       "-p", "preprocess.lidar_type:=1",
       "-p", "preprocess.timestamp_unit:=3",
       "-p", "preprocess.scan_line:=4",
@@ -5646,6 +5836,8 @@ private:
   double height_origin_floor_radius_{0.6};
   double height_origin_floor_percentile_{0.20};
   int height_origin_floor_min_points_{20};
+  std::string height_map_frame_mode_{"floor"};
+  double height_map_frame_fixed_z_{0.0};
   bool height_origin_initialized_{false};
   double filtered_height_origin_z_{0.0};
   double latest_height_origin_z_{0.0};
@@ -5662,6 +5854,7 @@ private:
   std::string point_lio_odom_topic_{"/aft_mapped_to_init"};
   std::string point_lio_path_topic_{"/path"};
   std::string point_lio_registered_topic_{"/cloud_registered"};
+  double point_lio_fov_degree_{360.0};
   bool point_lio_global_map_enabled_{true};
   std::string point_lio_global_map_topic_{"/point_lio/global_map"};
   std::string point_lio_global_map_refined_topic_{"/point_lio/global_map_refined"};
@@ -5791,6 +5984,14 @@ private:
   double saved_map_global_feature_voxel_leaf_size_{0.15};
   int saved_map_global_feature_max_points_{6000};
   int saved_map_global_source_max_points_{4000};
+  bool saved_map_initial_local_search_enabled_{true};
+  double saved_map_initial_local_search_yaw_rad_{15.0 * 3.14159265358979323846 / 180.0};
+  double saved_map_initial_local_search_xy_m_{0.35};
+  int saved_map_initial_local_search_max_candidates_{9};
+  double saved_map_initial_local_search_voxel_leaf_size_{0.12};
+  int saved_map_initial_local_search_max_points_{3500};
+  int saved_map_initial_local_search_iterations_{8};
+  double saved_map_initial_local_search_correspondence_m_{0.80};
   double saved_map_normal_radius_{0.45};
   double saved_map_feature_radius_{0.75};
   int saved_map_global_max_iterations_{5000};

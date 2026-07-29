@@ -33,6 +33,11 @@ autonomy_light:
       floor_radius: 0.6
       floor_percentile: 0.20
       floor_min_points: 20
+    # Transform mode for height_map_frame under base_link.
+    # floor: existing behavior, follow the filtered floor/height_origin z.
+    # base_fixed: keep base_link -> height_map_frame at a fixed base_link z.
+    height_map_frame_mode: "floor"
+    height_map_frame_fixed_z: 0.0
     publish_rate_hz: 50.0
 
     # Offline mapping mode. Normally leave these false/default and use
@@ -114,12 +119,24 @@ autonomy_light:
       global_feature_voxel_leaf_size: 0.15
       global_feature_max_points: 6000
       global_source_max_points: 4000
+      # Fast bounded search used only before the first saved-map localization.
+      # It improves local GICP when the robot starts near, but not exactly at,
+      # the saved-map pose without paying the cost of full FPFH/RANSAC.
+      initial_local_search:
+        enabled: true
+        yaw_search_deg: 15.0
+        xy_search_m: 0.35
+        max_candidates: 9
+        voxel_leaf_size: 0.12
+        max_points: 3500
+        iterations: 8
+        max_correspondence_distance: 0.8
       normal_radius: 0.45
       feature_radius: 0.75
       global_max_iterations: 1500
       global_inlier_fraction: 0.20
       max_correspondence_distance: 0.50
-      gicp_max_iterations: 25
+      gicp_max_iterations: 20
       max_fitness: 0.02
       max_tracking_translation_step: 0.60
       min_scan_points: 80
@@ -130,7 +147,7 @@ autonomy_light:
     runtime_localization:
       enabled: true
       update_interval_sec: 1.0
-      submap_duration_sec: 2.0
+      submap_duration_sec: 1.0
       submap_voxel_leaf_size: 0.05
       submap_max_points: 10000
       target_radius_m: 5.0
@@ -184,6 +201,8 @@ autonomy_light:
     point_lio_odom_topic: "/aft_mapped_to_init"
     point_lio_path_topic: "/path"
     point_lio_registered_topic: "/cloud_registered"
+    # Horizontal LiDAR FOV passed to Point-LIO mapping.fov_degree.
+    point_lio_fov_degree: 360.0
     # Full trajectory map built from Point-LIO registered scans. This is the
     # only live source used to construct the height map.
     point_lio_global_map:
