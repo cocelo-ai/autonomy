@@ -116,11 +116,23 @@ autonomy-light --real \
   --map "$HOME/autonomy-light-maps/site.pcd"
 ```
 
-초기 submap과 저장 지도의 relocalization이 성공하기 전에는 height map
-출력이 보류된다. 상태는 external domain의 heartbeat에서 확인한다.
+저장 지도 모드에서는 RViz2가 자동으로 열린다. 지도가 보이면
+`2D Pose Estimate`를 누르고 지도 위의 로봇 위치에서 전방 방향으로 화살표를
+그린다. `/initialpose`를 받은 런타임은 9개 자동 후보 탐색 대신 축소된
+point cloud로 GICP를 한 번만 수행한다. 검증이 성공하기 전에는 height map
+출력이 보류된다. RViz가 필요 없는 환경에서는 `--no-rviz`를 사용하고 다른
+클라이언트에서 `/initialpose`를 발행할 수 있다.
+
+상태는 external domain의 heartbeat에서 확인한다.
 
 ```bash
 ROS_DOMAIN_ID=0 ros2 topic echo /autonomy_light/heartbeat
+```
+
+입력 대기 중에는 다음 phase가 표시된다.
+
+```text
+relocalizing:phase=waiting_for_initial_pose:submap_points=0:elapsed_sec=0.00
 ```
 
 정상 실행 시 로그에 아래와 비슷한 내용이 나온다.

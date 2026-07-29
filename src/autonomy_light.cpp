@@ -33,6 +33,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <autonomy_light/msg/height_map.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -640,6 +641,7 @@ private:
     height_map_msg_pub_.reset();
     odom_pub_.reset();
     path_pub_.reset();
+    initial_pose_sub_.reset();
     output_static_tf_broadcaster_.reset();
     output_tf_broadcaster_.reset();
     height_builder_node_.reset();
@@ -825,6 +827,18 @@ private:
       "saved_map_localization.enabled", saved_map_localization_enabled_);
     saved_map_global_initialization_ = declare_parameter<bool>(
       "saved_map_localization.global_initialization", saved_map_global_initialization_);
+    saved_map_initial_pose_enabled_ = declare_parameter<bool>(
+      "saved_map_localization.initial_pose.enabled", saved_map_initial_pose_enabled_);
+    saved_map_initial_pose_topic_ = declare_parameter<std::string>(
+      "saved_map_localization.initial_pose.topic", saved_map_initial_pose_topic_);
+    saved_map_initial_pose_wait_for_input_ = declare_parameter<bool>(
+      "saved_map_localization.initial_pose.wait_for_input",
+      saved_map_initial_pose_wait_for_input_);
+    saved_map_initial_pose_max_fitness_ = std::max(
+      1.0e-5,
+      declare_parameter<double>(
+        "saved_map_localization.initial_pose.max_fitness",
+        saved_map_initial_pose_max_fitness_));
     saved_map_localization_update_interval_sec_ = std::max(
       0.0,
       declare_parameter<double>(
@@ -1980,6 +1994,121 @@ private:
     return delta;
   }
 
+  bool applyInitialPoseGuess(
+    const geometry_msgs::msg::PoseWithCovarianceStamped & message)
+  {
+    nav_msgs::msg::Odometry raw_odom;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      if (!has_raw_odom_) {
+        return false;
+      }
+      raw_odom = latest_raw_odom_;
+    }
+
+    const auto & frame = message.header.frame_id;
+    if (!frame.empty() && frame != saved_map_frame_ && frame != "/" + saved_map_frame_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Ignoring initial pose in frame '%s'; RViz Fixed Frame must be '%s'",
+        frame.c_str(),
+        saved_map_frame_.c_str());
+      return true;
+    }
+
+    tf2::Quaternion desired_orientation;
+    tf2::fromMsg(message.pose.pose.orientation, desired_orientation);
+    if (desired_orientation.length2() < 1.0e-12) {
+      RCLCPP_WARN(get_logger(), "Ignoring initial pose with an invalid zero quaternion");
+      return true;
+    }
+    desired_orientation.normalize();
+
+    const nav_msgs::msg::Odometry raw_base_odom = baseOdomFromLidarOdom(raw_odom);
+    tf2::Quaternion raw_orientation;
+    tf2::fromMsg(raw_base_odom.pose.pose.orientation, raw_orientation);
+    if (raw_orientation.length2() < 1.0e-12) {
+      raw_orientation.setRPY(0.0, 0.0, 0.0);
+    } else {
+      raw_orientation.normalize();
+    }
+    double desired_roll = 0.0;
+    double desired_pitch = 0.0;
+    double desired_yaw = 0.0;
+    double raw_roll = 0.0;
+    double raw_pitch = 0.0;
+    double raw_yaw = 0.0;
+    tf2::Matrix3x3(desired_orientation).getRPY(desired_roll, desired_pitch, desired_yaw);
+    tf2::Matrix3x3(raw_orientation).getRPY(raw_roll, raw_pitch, raw_yaw);
+    const double yaw_delta = wrapAngle(desired_yaw - raw_yaw);
+    const float c = static_cast<float>(std::cos(yaw_delta));
+    const float s = static_cast<float>(std::sin(yaw_delta));
+    const float raw_x = static_cast<float>(raw_base_odom.pose.pose.position.x);
+    const float raw_y = static_cast<float>(raw_base_odom.pose.pose.position.y);
+
+    Eigen::Matrix4f map_from_odom = Eigen::Matrix4f::Identity();
+    map_from_odom(0, 0) = c;
+    map_from_odom(0, 1) = -s;
+    map_from_odom(1, 0) = s;
+    map_from_odom(1, 1) = c;
+    map_from_odom(0, 3) = static_cast<float>(message.pose.pose.position.x) -
+      (c * raw_x - s * raw_y);
+    map_from_odom(1, 3) = static_cast<float>(message.pose.pose.position.y) -
+      (s * raw_x + c * raw_y);
+
+    {
+      std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+      saved_map_from_odom_ = map_from_odom;
+      saved_map_relocalized_ = false;
+      saved_map_initial_pose_received_ = true;
+      saved_map_last_fitness_ = std::numeric_limits<double>::infinity();
+      saved_map_relocalization_phase_ = "initial_pose_received";
+      saved_map_relocalization_submap_points_ = 0;
+      saved_map_relocalization_elapsed_sec_ = 0.0;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "RViz initial pose received: x=%.2f y=%.2f yaw=%.1fdeg; "
+      "the next registered cloud will run one bounded GICP",
+      message.pose.pose.position.x,
+      message.pose.pose.position.y,
+      desired_yaw * 180.0 / 3.14159265358979323846);
+    return true;
+  }
+
+  void onInitialPose(geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr message)
+  {
+    if (!message || !savedMapRelocalizationActive()) {
+      return;
+    }
+    if (applyInitialPoseGuess(*message)) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(initial_pose_pending_mutex_);
+      pending_initial_pose_ = *message;
+      has_pending_initial_pose_ = true;
+    }
+    setSavedMapRelocalizationProgress("initial_pose_waiting_for_point_lio_odom");
+    RCLCPP_INFO(
+      get_logger(),
+      "RViz initial pose queued until the first Point-LIO odometry message arrives");
+  }
+
+  void applyPendingInitialPose()
+  {
+    geometry_msgs::msg::PoseWithCovarianceStamped pending;
+    {
+      std::lock_guard<std::mutex> lock(initial_pose_pending_mutex_);
+      if (!has_pending_initial_pose_) {
+        return;
+      }
+      pending = pending_initial_pose_;
+      has_pending_initial_pose_ = false;
+    }
+    applyInitialPoseGuess(pending);
+  }
+
   std::vector<Eigen::Matrix4f> initialLocalSearchGuesses(
     const Eigen::Matrix4f & initial_guess) const
   {
@@ -2017,9 +2146,11 @@ private:
     const PclCloud::ConstPtr & source,
     const PclCloud::ConstPtr & target,
     Eigen::Matrix4f & initial_guess,
-    double & best_fitness)
+    double & best_fitness,
+    const bool search_multiple_candidates = true)
   {
-    if (!saved_map_initial_local_search_enabled_ || !source || !target ||
+    if ((search_multiple_candidates && !saved_map_initial_local_search_enabled_) ||
+      !source || !target ||
       source->size() < static_cast<std::size_t>(saved_map_min_scan_points_) ||
       target->size() < static_cast<std::size_t>(saved_map_min_scan_points_))
     {
@@ -2039,10 +2170,9 @@ private:
       return false;
     }
 
-    const auto guesses = initialLocalSearchGuesses(initial_guess);
-    if (guesses.size() <= 1U) {
-      return false;
-    }
+    const auto guesses = search_multiple_candidates ?
+      initialLocalSearchGuesses(initial_guess) :
+      std::vector<Eigen::Matrix4f>{initial_guess};
 
     bool found = false;
     Eigen::Matrix4f best = initial_guess;
@@ -2090,13 +2220,23 @@ private:
 
     Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
     bool already_localized = false;
+    bool initial_pose_received = false;
     {
       std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
       initial_guess = saved_map_from_odom_;
       already_localized = saved_map_relocalized_;
+      initial_pose_received = saved_map_initial_pose_received_;
+    }
+    if (!already_localized && saved_map_initial_pose_enabled_ &&
+      saved_map_initial_pose_wait_for_input_ && !initial_pose_received)
+    {
+      setSavedMapRelocalizationProgress("waiting_for_initial_pose");
+      return false;
     }
 
     const bool global_attempt = saved_map_loaded_ && !already_localized && saved_map_global_initialization_;
+    const bool initial_pose_attempt =
+      saved_map_initial_pose_enabled_ && !already_localized && initial_pose_received;
     PclCloud::Ptr source;
     if (global_attempt) {
       appendInitialRelocalizationSubmap(registered_cloud);
@@ -2173,6 +2313,50 @@ private:
         resetInitialRelocalizationSubmap();
         return false;
       }
+    } else if (initial_pose_attempt) {
+      double coarse_fitness = std::numeric_limits<double>::infinity();
+      setSavedMapRelocalizationProgress("initial_pose_gicp", source->size(), 0.0);
+      RCLCPP_INFO(
+        get_logger(),
+        "Runtime localization: validating RViz initial pose with one bounded GICP");
+      const bool converged = refineInitialGuessWithLocalSearch(
+        source, target, initial_guess, coarse_fitness, false);
+      last_saved_map_localization_attempt_ = std::chrono::steady_clock::now();
+      if (!converged || !std::isfinite(coarse_fitness) ||
+        coarse_fitness > saved_map_initial_pose_max_fitness_)
+      {
+        {
+          std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+          saved_map_initial_pose_received_ = false;
+          saved_map_relocalization_phase_ = "initial_pose_rejected";
+          saved_map_last_fitness_ = coarse_fitness;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "RViz initial pose rejected: converged=%s fitness=%.4f (limit %.4f). "
+          "Set 2D Pose Estimate again.",
+          converged ? "true" : "false",
+          coarse_fitness,
+          saved_map_initial_pose_max_fitness_);
+        return false;
+      }
+      {
+        std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+        saved_map_from_odom_ = initial_guess;
+        saved_map_relocalized_ = true;
+        saved_map_initial_pose_received_ = false;
+        saved_map_last_fitness_ = coarse_fitness;
+        saved_map_relocalization_phase_ = "tracking";
+        saved_map_relocalization_submap_points_ = source->size();
+        saved_map_relocalization_elapsed_sec_ = 0.0;
+      }
+      applySavedMapCorrectionToLatestOdom();
+      RCLCPP_INFO(
+        get_logger(),
+        "Runtime localization accepted: RViz initial pose + bounded GICP fitness=%.4f source=%zu",
+        coarse_fitness,
+        source->size());
+      return true;
     } else if (!already_localized) {
       double coarse_fitness = std::numeric_limits<double>::infinity();
       if (refineInitialGuessWithLocalSearch(source, target, initial_guess, coarse_fitness)) {
@@ -2519,6 +2703,27 @@ private:
       saved_map_pub_ = map_visualization_node->create_publisher<sensor_msgs::msg::PointCloud2>(
         saved_map_topic_,
         rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+      if (savedMapRelocalizationActive() && saved_map_initial_pose_enabled_) {
+        initial_pose_sub_ =
+          map_visualization_node->create_subscription<
+          geometry_msgs::msg::PoseWithCovarianceStamped>(
+          saved_map_initial_pose_topic_,
+          rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile(),
+          [this](geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr message) {
+            onInitialPose(std::move(message));
+          });
+        {
+          std::lock_guard<std::mutex> lock(saved_map_localization_mutex_);
+          if (saved_map_initial_pose_wait_for_input_) {
+            saved_map_relocalization_phase_ = "waiting_for_initial_pose";
+          }
+        }
+        RCLCPP_INFO(
+          get_logger(),
+          "Saved-map initial pose: waiting on %s in frame %s; use RViz 2D Pose Estimate",
+          saved_map_initial_pose_topic_.c_str(),
+          saved_map_frame_.c_str());
+      }
       publishSavedMap();
     }
     output_static_tf_broadcaster_ =
@@ -5530,6 +5735,7 @@ private:
     last_odom_time_ = now();
     ++odom_count_;
     ++height_input_revision_;
+    applyPendingInitialPose();
     if (mapping_only_) {
       publishMapToOdomTransform();
       publishOdomToBaseTransform(tf_odom);
@@ -5985,6 +6191,11 @@ private:
   double global_rotation_reference_yaw_{0.0};
   bool saved_map_localization_enabled_{true};
   bool saved_map_global_initialization_{false};
+  bool saved_map_initial_pose_enabled_{false};
+  std::string saved_map_initial_pose_topic_{"/initialpose"};
+  bool saved_map_initial_pose_wait_for_input_{false};
+  double saved_map_initial_pose_max_fitness_{0.10};
+  bool saved_map_initial_pose_received_{false};
   double saved_map_localization_update_interval_sec_{1.0};
   double saved_map_initial_submap_duration_sec_{0.8};
   int saved_map_initial_submap_min_points_{300};
@@ -6036,6 +6247,9 @@ private:
   std::size_t saved_map_relocalization_submap_points_{0};
   double saved_map_relocalization_elapsed_sec_{0.0};
   std::chrono::steady_clock::time_point last_saved_map_localization_attempt_{};
+  std::mutex initial_pose_pending_mutex_;
+  geometry_msgs::msg::PoseWithCovarianceStamped pending_initial_pose_;
+  bool has_pending_initial_pose_{false};
   std::atomic<bool> shutdown_requested_{false};
   std::deque<RollingRegisteredCloud> runtime_localization_submap_queue_;
   std::mutex registered_worker_mutex_;
@@ -6096,6 +6310,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr saved_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_lio_global_map_refined_pub_;

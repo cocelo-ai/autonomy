@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  launch.sh [--real|--sim] [--no-drivers] [--vis] [options] [-- <extra ros args>]
+  launch.sh [--real|--sim] [--no-drivers] [--vis] [--rviz] [options] [-- <extra ros args>]
 
 Modes:
   --real              Real robot mode. Starts Livox driver and Point-LIO. Default.
@@ -12,6 +12,9 @@ Modes:
                       and reads simulated /<prefix>/livox/lidar + /<prefix>/livox/imu.
   --no-drivers        Start autonomy_light only; disables both Livox driver and Point-LIO.
   --vis               Start a lightweight 50Hz OpenCV height-map viewer.
+  --rviz              Start RViz2 with the saved-map initial-pose view.
+                      Enabled automatically with --map.
+  --no-rviz           Do not start RViz2 automatically with --map.
 
 Options:
   --config FILE       Override config yaml.
@@ -46,11 +49,13 @@ Options:
   --vis-topic TOPIC   HeightMap topic for --vis. Default: /autonomy_light/height_map_data.
   --vis-fps HZ        Viewer refresh rate. Default: 50.
   --vis-scale PIXELS  Viewer cell size in pixels. Default: 48.
+  --rviz-config FILE  Override the RViz2 config file.
 
 Examples:
   ./launch.sh --real
   ./launch.sh --real --vis
   ./launch.sh --real --map maps/lab_mapping.pcd
+  # In RViz2, click "2D Pose Estimate" and set the robot pose on the saved map.
   ROS_DOMAIN_ID=17 rviz2                  # global map (set matching config domain)
   ./launch.sh --real --mid360
   ./launch.sh --real --mid360s
@@ -70,10 +75,13 @@ ROS_DISTRO_NAME="${ROS_DISTRO:-}"
 MODE="real"
 NO_DRIVERS="false"
 VIS="false"
+RVIZ="${AUTONOMY_LIGHT_RVIZ:-auto}"
 VIS_TOPIC="${AUTONOMY_LIGHT_VIS_TOPIC:-/autonomy_light/height_map_data}"
 VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
 VIS_SCALE="${AUTONOMY_LIGHT_VIS_SCALE:-48}"
 VIS_ROS_DOMAIN_ID="${AUTONOMY_LIGHT_VIS_ROS_DOMAIN_ID:-}"
+RVIZ_ROS_DOMAIN_ID="${AUTONOMY_LIGHT_RVIZ_ROS_DOMAIN_ID:-}"
+RVIZ_CONFIG_FILE="${AUTONOMY_LIGHT_RVIZ_CONFIG:-}"
 SIM_TOPIC_PREFIX="${AUTONOMY_LIGHT_SIM_TOPIC_PREFIX-/f4}"
 RAW_LIDAR_TOPIC=""
 RAW_LIDAR2_TOPIC=""
@@ -125,6 +133,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --vis)
       VIS="true"
+      shift
+      ;;
+    --rviz)
+      RVIZ="true"
+      shift
+      ;;
+    --no-rviz)
+      RVIZ="false"
+      shift
+      ;;
+    --rviz-config)
+      RVIZ_CONFIG_FILE="${2:?--rviz-config requires a file path}"
+      shift 2
+      ;;
+    --rviz-config=*)
+      RVIZ_CONFIG_FILE="${1#--rviz-config=}"
       shift
       ;;
     --vis-topic)
@@ -276,6 +300,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${RVIZ}" == "auto" ]]; then
+  if [[ -n "${SAVED_MAP_FILE}" ]]; then
+    RVIZ="true"
+  else
+    RVIZ="false"
+  fi
+fi
 
 if [[ -n "${SAVED_MAP_FILE}" && ! -f "${SAVED_MAP_FILE}" ]]; then
   echo "error: saved map PCD not found: ${SAVED_MAP_FILE}" >&2
@@ -441,6 +473,27 @@ print("" if domain is None else str(domain).strip())
 PY
 }
 
+read_global_map_ros_domain_config() {
+  local config_file="$1"
+  /usr/bin/python3 - "${config_file}" <<'PY'
+import os
+import sys
+
+import yaml
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    data = yaml.safe_load(stream) or {}
+
+params = ((data.get("autonomy_light") or {}).get("ros__parameters")) or {}
+fallback = params.get("external_ros_domain_id",
+                      params.get("internal_ros_domain_id",
+                                 os.environ.get("ROS_DOMAIN_ID", "0")))
+global_map = params.get("point_lio_global_map") or {}
+domain = global_map.get("ros_domain_id", fallback) if global_map.get("enabled", True) else fallback
+print("" if domain is None else str(domain).strip())
+PY
+}
+
 height_map_vis_script() {
   if [[ -x "${SCRIPT_DIR}/scripts/height_map_vis.py" ]]; then
     echo "${SCRIPT_DIR}/scripts/height_map_vis.py"
@@ -452,6 +505,18 @@ height_map_vis_script() {
   fi
   echo "error: height_map_vis.py not found next to launch.sh or in scripts/." >&2
   exit 1
+}
+
+rviz_config_path() {
+  if [[ -n "${RVIZ_CONFIG_FILE}" ]]; then
+    echo "${RVIZ_CONFIG_FILE}"
+    return
+  fi
+  if [[ -f "${SCRIPT_DIR}/config/autonomy_light_relocalization.rviz" ]]; then
+    echo "${SCRIPT_DIR}/config/autonomy_light_relocalization.rviz"
+    return
+  fi
+  echo "${SCRIPT_DIR}/../../share/autonomy_light/config/autonomy_light_relocalization.rviz"
 }
 
 effective_config_path() {
@@ -965,18 +1030,30 @@ AUTONOMY_LIGHT_COMMAND=(
   "$@"
 )
 
-if [[ "${VIS}" != "true" ]]; then
+if [[ "${VIS}" != "true" && "${RVIZ}" != "true" ]]; then
   exec "${AUTONOMY_LIGHT_COMMAND[@]}"
 fi
 
-VIS_SCRIPT="$(height_map_vis_script)"
-if [[ -z "${VIS_ROS_DOMAIN_ID}" ]]; then
-  VIS_ROS_DOMAIN_ID="$(read_external_ros_domain_config "${EFFECTIVE_CONFIG_FILE}")"
+if [[ "${VIS}" == "true" ]]; then
+  VIS_SCRIPT="$(height_map_vis_script)"
+  if [[ -z "${VIS_ROS_DOMAIN_ID}" ]]; then
+    VIS_ROS_DOMAIN_ID="$(read_external_ros_domain_config "${EFFECTIVE_CONFIG_FILE}")"
+  fi
+fi
+if [[ "${RVIZ}" == "true" ]]; then
+  RVIZ_CONFIG_FILE="$(rviz_config_path)"
+  if [[ ! -f "${RVIZ_CONFIG_FILE}" ]]; then
+    echo "error: RViz config not found: ${RVIZ_CONFIG_FILE}" >&2
+    exit 1
+  fi
+  if [[ -z "${RVIZ_ROS_DOMAIN_ID}" ]]; then
+    RVIZ_ROS_DOMAIN_ID="$(read_global_map_ros_domain_config "${EFFECTIVE_CONFIG_FILE}")"
+  fi
 fi
 
 cleanup() {
   local pid
-  for pid in "${AUTONOMY_LIGHT_PID:-}" "${VIS_PID:-}"; do
+  for pid in "${AUTONOMY_LIGHT_PID:-}" "${VIS_PID:-}" "${RVIZ_PID:-}"; do
     if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
       kill -INT "${pid}" >/dev/null 2>&1 || true
     fi
@@ -987,11 +1064,23 @@ trap cleanup EXIT INT TERM
 "${AUTONOMY_LIGHT_COMMAND[@]}" &
 AUTONOMY_LIGHT_PID="$!"
 
-echo "height-map vis: topic=${VIS_TOPIC} fps=${VIS_FPS} scale=${VIS_SCALE} ROS_DOMAIN_ID=${VIS_ROS_DOMAIN_ID}"
-(
-  export ROS_DOMAIN_ID="${VIS_ROS_DOMAIN_ID}"
-  exec "${VIS_SCRIPT}" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}"
-) &
-VIS_PID="$!"
+if [[ "${VIS}" == "true" ]]; then
+  echo "height-map vis: topic=${VIS_TOPIC} fps=${VIS_FPS} scale=${VIS_SCALE} ROS_DOMAIN_ID=${VIS_ROS_DOMAIN_ID}"
+  (
+    export ROS_DOMAIN_ID="${VIS_ROS_DOMAIN_ID}"
+    exec "${VIS_SCRIPT}" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}"
+  ) &
+  VIS_PID="$!"
+fi
+
+if [[ "${RVIZ}" == "true" ]]; then
+  echo "RViz2 saved-map initial pose: config=${RVIZ_CONFIG_FILE} ROS_DOMAIN_ID=${RVIZ_ROS_DOMAIN_ID}"
+  echo "RViz2: click '2D Pose Estimate', then drag an arrow at the robot pose."
+  (
+    export ROS_DOMAIN_ID="${RVIZ_ROS_DOMAIN_ID}"
+    exec rviz2 -d "${RVIZ_CONFIG_FILE}"
+  ) &
+  RVIZ_PID="$!"
+fi
 
 wait "${AUTONOMY_LIGHT_PID}"

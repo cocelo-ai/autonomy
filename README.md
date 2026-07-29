@@ -55,6 +55,14 @@ against the refined PCD with:
 ./launch.sh --real --map maps/point_lio_map_YYYYMMDD_HHMMSS.pcd
 ```
 
+Saved-map mode opens RViz2 automatically. Wait for the saved map to appear,
+click **2D Pose Estimate**, then click and drag an arrow from the robot's
+approximate position in its forward direction. RViz publishes `/initialpose`;
+the runtime converts it into a `map -> odom` guess and validates it with one
+bounded GICP instead of searching nine automatic pose candidates. Height-map
+output starts after that validation succeeds. Use `--no-rviz` for a headless
+launch where another client publishes `/initialpose`.
+
 When using the installed Debian package, use `autonomy-light-mapping` instead
 of `./mapping.sh` and `autonomy-light` instead of `./launch.sh`:
 
@@ -78,26 +86,27 @@ loop closure passes its fitness and overlap gates; otherwise the dense refined
 Point-LIO map is preserved. Wait for the `Mapping pose graph optimized` or
 `found no verified loop closures` log before considering the map complete.
 
-The first 2 seconds of registered Point-LIO scans are accumulated into an odom
-submap, globally matched to the PCD with FPFH/RANSAC, and refined with GICP.
-After initialization, a five-second rolling Point-LIO submap is aligned to a
-local ROI of the saved PCD at 1 Hz. Accepted measurements are low-pass filtered
-into `map -> odom`; Point-LIO remains the high-rate `odom -> lidar_link` source.
+Before initialization, heartbeat reports
+`relocalizing:phase=waiting_for_initial_pose`. The RViz pose is checked against
+a bounded, voxelized source and target with one short GICP. If it is rejected,
+the console asks for another **2D Pose Estimate**. After initialization, a
+rolling Point-LIO submap is aligned to a local ROI of the saved PCD at 1 Hz.
+Accepted measurements are low-pass filtered into `map -> odom`; Point-LIO
+remains the high-rate `odom -> lidar_link` source.
 `saved_map_frame` defaults to `map`. Height maps are withheld until saved-map
 relocalization succeeds and are extracted from the saved PCD around that
 corrected pose. Check
 `/autonomy_light/heartbeat` for `waiting_for_saved_map_relocalization` or a
 `ready:...:relocalization_fitness=...` state.
 
-During initialization, heartbeat reports the active phase and accumulated-point
-count, for example `relocalizing:phase=collecting_submap:submap_points=...`.
-The console also logs collection, global FPFH/RANSAC matching, and GICP
-refinement. The saved PCD is published with transient-local QoS on
+During initialization, the console logs receipt, bounded-GICP validation, and
+acceptance or rejection of the RViz pose. The saved PCD is published with
+transient-local QoS on
 `/autonomy_light/saved_map` in `saved_map_frame` (default: `map`) and is
 republished every 2 seconds. It uses the same visualization `ROS_DOMAIN_ID` as
 the Point-LIO global map, configured by `point_lio_global_map.ros_domain_id`.
-In RViz, set the Fixed Frame to `map` (or your configured `saved_map_frame`)
-and add `/autonomy_light/saved_map` as a `PointCloud2` display.
+The bundled RViz config sets Fixed Frame `map`, displays that topic, and
+publishes the initial pose on `/initialpose`.
 
 The same rolling-submap and filtered `map -> odom` path is enabled without
 `--map`; in that mode the target is the accumulated refined Point-LIO global

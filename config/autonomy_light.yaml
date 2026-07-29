@@ -102,11 +102,17 @@ autonomy_light:
       horizontal: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
       vertical: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
     # When saved_map_file is set, estimate map_from_odom from Point-LIO's
-    # registered scan. Prefer fast automatic local GICP initialization; the
-    # expensive global FPFH/RANSAC path is left off for quick saved-map startup.
+    # registered scan. RViz supplies a close initial pose, then one bounded
+    # GICP validates it before height-map output starts.
     saved_map_localization:
       enabled: true
       global_initialization: false
+      initial_pose:
+        enabled: true
+        topic: "/initialpose"
+        wait_for_input: true
+        # Fitness gate for the fast, coarse initial-pose GICP.
+        max_fitness: 0.10
       # Used only when global_initialization is re-enabled.
       update_interval_sec: 1.0
       initial_submap_duration_sec: 0.8
@@ -137,7 +143,7 @@ autonomy_light:
       global_inlier_fraction: 0.20
       max_correspondence_distance: 0.50
       gicp_max_iterations: 20
-      max_fitness: 0.02
+      max_fitness: 0.1
       max_tracking_translation_step: 0.60
       min_scan_points: 80
     # Low-rate global correction. Point-LIO stays the high-rate odom source;
