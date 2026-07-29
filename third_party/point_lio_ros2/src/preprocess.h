@@ -146,6 +146,7 @@ public:
     void process(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, PointCloudXYZI::Ptr &pcl_out);
 
     void set(bool feat_en, int lid_type, double bld, int pfilt_num);
+    void set_horizontal_fov(double fov_degree, double center_degree);
 
     // sensor_msgs::msg::PointCloud2::ConstSharedPtr pointcloud;
     PointCloudXYZI pl_full, pl_corn, pl_surf;
@@ -154,11 +155,18 @@ public:
     float time_unit_scale;
     int lidar_type, point_filter_num, N_SCANS, SCAN_RATE, time_unit;
     double blind;
+    double horizontal_fov_degree;
+    double horizontal_fov_center_degree;
+    double horizontal_fov_cos_threshold;
+    double horizontal_fov_center_cos;
+    double horizontal_fov_center_sin;
     bool given_offset_time;
     //ros::Publisher pub_full, pub_surf, pub_corn;
 
 
 private:
+    bool in_horizontal_fov(float x, float y) const;
+
     void avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
     void avia_handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
 

@@ -39,6 +39,8 @@
       acc_cov_input: 0.1
       plane_thr: 0.1
       match_s: 81.0
+      # Internal Point-LIO map-segmentation FOV, not raw LiDAR crop.
+      # Raw horizontal crop is configured in autonomy_light.yaml.
       fov_degree: 360.0
       det_range: 100.0
       gravity_align: true

@@ -110,6 +110,8 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<int>("preprocess.scan_line", 16);
     nh->declare_parameter<int>("preprocess.scan_rate", 10);
     nh->declare_parameter<int>("preprocess.timestamp_unit", 1);
+    nh->declare_parameter<double>("preprocess.horizontal_fov_degree", 360.0);
+    nh->declare_parameter<double>("preprocess.horizontal_fov_center_deg", 0.0);
     nh->declare_parameter<double>("mapping.match_s", 81);
     nh->declare_parameter<bool>("mapping.gravity_align", true);
     nh->declare_parameter<std::vector<double>>("mapping.gravity", {0, 0, -9.810});
@@ -197,6 +199,16 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("preprocess.scan_line", p_pre->N_SCANS);
     nh->get_parameter("preprocess.scan_rate", p_pre->SCAN_RATE);
     nh->get_parameter("preprocess.timestamp_unit", p_pre->time_unit);
+    double horizontal_fov_degree = 360.0;
+    double horizontal_fov_center_deg = 0.0;
+    nh->get_parameter("preprocess.horizontal_fov_degree", horizontal_fov_degree);
+    nh->get_parameter("preprocess.horizontal_fov_center_deg", horizontal_fov_center_deg);
+    p_pre->set_horizontal_fov(horizontal_fov_degree, horizontal_fov_center_deg);
+    RCLCPP_INFO(
+        nh->get_logger(),
+        "Point-LIO raw horizontal FOV crop: degree=%.3f center_deg=%.3f",
+        p_pre->horizontal_fov_degree,
+        p_pre->horizontal_fov_center_degree);
     nh->get_parameter("mapping.match_s", match_s);
     nh->get_parameter("mapping.gravity_align", gravity_align);
     nh->get_parameter("mapping.gravity", gravity);

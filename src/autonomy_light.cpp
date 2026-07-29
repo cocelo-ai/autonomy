@@ -1015,10 +1015,13 @@ private:
       "point_lio_path_topic", point_lio_path_topic_);
     point_lio_registered_topic_ = declare_parameter<std::string>(
       "point_lio_registered_topic", point_lio_registered_topic_);
-    point_lio_fov_degree_ = std::clamp(
-      declare_parameter<double>("point_lio_fov_degree", point_lio_fov_degree_),
+    raw_lidar_horizontal_fov_degree_ = std::clamp(
+      declare_parameter<double>(
+        "raw_lidar_horizontal_fov_degree", raw_lidar_horizontal_fov_degree_),
       1.0,
       360.0);
+    raw_lidar_horizontal_fov_center_deg_ = declare_parameter<double>(
+      "raw_lidar_horizontal_fov_center_deg", raw_lidar_horizontal_fov_center_deg_);
     const bool requested_global_map = declare_parameter<bool>(
       "point_lio_global_map.enabled", point_lio_global_map_enabled_);
     point_lio_global_map_topic_ = declare_parameter<std::string>(
@@ -3116,6 +3119,11 @@ private:
       if (command.empty()) {
         command = defaultPointLioCommand();
       }
+      RCLCPP_INFO(
+        get_logger(),
+        "Point-LIO raw horizontal FOV crop param: degree=%.3f center_deg=%.3f",
+        raw_lidar_horizontal_fov_degree_,
+        raw_lidar_horizontal_fov_center_deg_);
       child_processes_.start(get_logger(), "Point-LIO", command);
     }
   }
@@ -3155,11 +3163,12 @@ private:
       "-p", "odom.child_to_body_T:=" + vectorParam(child_to_body_t),
       "-p", "odom.child_to_body_R:=" + matrixParam(child_to_body_r),
       "-p", "odom.publish_tf:=false",
-      "-p", "mapping.fov_degree:=" + shortDouble(point_lio_fov_degree_),
       "-p", "preprocess.lidar_type:=1",
       "-p", "preprocess.timestamp_unit:=3",
       "-p", "preprocess.scan_line:=4",
       "-p", "preprocess.blind:=0.5",
+      "-p", "preprocess.horizontal_fov_degree:=" + shortDouble(raw_lidar_horizontal_fov_degree_),
+      "-p", "preprocess.horizontal_fov_center_deg:=" + shortDouble(raw_lidar_horizontal_fov_center_deg_),
       "-p", "point_filter_num:=1",
       "-p", std::string("publish.path_en:=") + (mapping_only_ ? "false" : "true"),
       "-p", std::string("publish.scan_publish_en:=") +
@@ -5854,7 +5863,8 @@ private:
   std::string point_lio_odom_topic_{"/aft_mapped_to_init"};
   std::string point_lio_path_topic_{"/path"};
   std::string point_lio_registered_topic_{"/cloud_registered"};
-  double point_lio_fov_degree_{360.0};
+  double raw_lidar_horizontal_fov_degree_{360.0};
+  double raw_lidar_horizontal_fov_center_deg_{0.0};
   bool point_lio_global_map_enabled_{true};
   std::string point_lio_global_map_topic_{"/point_lio/global_map"};
   std::string point_lio_global_map_refined_topic_{"/point_lio/global_map_refined"};

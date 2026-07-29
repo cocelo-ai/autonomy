@@ -1,6 +1,7 @@
 #include "preprocess.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -72,7 +73,14 @@ bool is_valid_livox_tag(const std::uint8_t tag)
 }  // namespace
 
 Preprocess::Preprocess()
-        : lidar_type(AVIA), blind(0.01), point_filter_num(1) {
+        : lidar_type(AVIA),
+          blind(0.01),
+          point_filter_num(1),
+          horizontal_fov_degree(360.0),
+          horizontal_fov_center_degree(0.0),
+          horizontal_fov_cos_threshold(-1.0),
+          horizontal_fov_center_cos(1.0),
+          horizontal_fov_center_sin(0.0) {
     inf_bound = 10;
     N_SCANS = 6;
     SCAN_RATE = 10;
@@ -104,6 +112,33 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num) {
     lidar_type = lid_type;
     blind = bld;
     point_filter_num = pfilt_num;
+}
+
+void Preprocess::set_horizontal_fov(double fov_degree, double center_degree) {
+    horizontal_fov_degree = std::max(1.0, std::min(360.0, fov_degree));
+    horizontal_fov_center_degree = center_degree;
+    const double center_rad = horizontal_fov_center_degree * M_PI / 180.0;
+    horizontal_fov_center_cos = std::cos(center_rad);
+    horizontal_fov_center_sin = std::sin(center_rad);
+    if (horizontal_fov_degree >= 359.999) {
+        horizontal_fov_cos_threshold = -1.0;
+    } else {
+        horizontal_fov_cos_threshold = std::cos(0.5 * horizontal_fov_degree * M_PI / 180.0);
+    }
+}
+
+bool Preprocess::in_horizontal_fov(float x, float y) const {
+    if (horizontal_fov_degree >= 359.999) {
+        return true;
+    }
+    const double norm = std::hypot(static_cast<double>(x), static_cast<double>(y));
+    if (norm <= 1.0e-6) {
+        return true;
+    }
+    const double dot =
+        (static_cast<double>(x) * horizontal_fov_center_cos +
+        static_cast<double>(y) * horizontal_fov_center_sin) / norm;
+    return dot >= horizontal_fov_cos_threshold;
 }
 
 void Preprocess::process(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg, PointCloudXYZI::Ptr &pcl_out) {
@@ -227,7 +262,7 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
             std::fabs(dst.z - prev.z) > 1.0e-7F;
         const bool outside_blind =
             dst.x * dst.x + dst.y * dst.y + dst.z * dst.z > static_cast<float>(blind * blind);
-        if (non_duplicate && outside_blind) {
+        if (non_duplicate && outside_blind && in_horizontal_fov(dst.x, dst.y)) {
             pl_surf.push_back(dst);
         }
     }
@@ -304,7 +339,8 @@ void Preprocess::avia_handler(const sensor_msgs::msg::PointCloud2::SharedPtr &ms
         if (!std::isfinite(added_pt.x) || !std::isfinite(added_pt.y) || !std::isfinite(added_pt.z)) {
             continue;
         }
-        if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z <= blind * blind) {
+        if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z <= blind * blind ||
+            !in_horizontal_fov(added_pt.x, added_pt.y)) {
             continue;
         }
 
@@ -342,7 +378,10 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2::SharedPtr &
         double range = pl_orig.points[i].x * pl_orig.points[i].x + pl_orig.points[i].y * pl_orig.points[i].y +
                        pl_orig.points[i].z * pl_orig.points[i].z;
 
-        if (range < (blind * blind)) continue;
+        if (range < (blind * blind) ||
+            !in_horizontal_fov(pl_orig.points[i].x, pl_orig.points[i].y)) {
+            continue;
+        }
 
         Eigen::Vector3d pt_vec;
         PointType added_pt;
@@ -440,7 +479,8 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2::SharedPtr
         if (i % point_filter_num == 0) {
             if (added_pt.x * added_pt.x
                 + added_pt.y * added_pt.y
-                + added_pt.z * added_pt.z > (blind * blind))
+                + added_pt.z * added_pt.z > (blind * blind) &&
+                in_horizontal_fov(added_pt.x, added_pt.y))
             {
                 pl_surf.points.push_back(added_pt);
             }
@@ -480,7 +520,8 @@ void Preprocess::unilidar_handler(const sensor_msgs::msg::PointCloud2::SharedPtr
 
       added_pt.curvature = pl_orig.points[i].time * time_unit_scale; 
 
-      if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z > (blind * blind))
+      if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z > (blind * blind) &&
+          in_horizontal_fov(added_pt.x, added_pt.y))
       {
         pl_surf.points.push_back(added_pt);
       }
@@ -571,7 +612,8 @@ void Preprocess::hesai_handler(const sensor_msgs::msg::PointCloud2::SharedPtr &m
         }
 
         if (i % point_filter_num == 0) {
-            if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z > (blind * blind)) {
+            if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z > (blind * blind) &&
+                in_horizontal_fov(added_pt.x, added_pt.y)) {
                 pl_surf.points.push_back(added_pt);
             }
         }
