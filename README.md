@@ -54,6 +54,29 @@ height_map:
 발행한다. `valid=0`인 `unknown` 값은 평지 관측이 아니므로 Isaac Lab 정책에서는
 별도 observation으로 사용해야 한다.
 
+## Height-map transport
+
+```yaml
+height_map_output:
+  transport: "ros2" # ros2 | cyclone_dds | both
+  cyclone_dds:
+    domain_id: 1
+    topic: "height_map"
+    type: "core_dds::HeightMap"
+    history_depth: 1
+```
+
+`ros2`는 기존 ROS 2 `HeightMap`, quality, visualization topic 출력이다.
+`cyclone_dds`는 다른 플랫폼을 위해 Cyclone DDS topic `height_map`에
+`core_dds::HeightMap { sequence<float> data; }`만 직접 발행한다. payload의 순서,
+셀 수와 unknown 값은 ROS `HeightMap.data`와 동일하다. `both`는 두 출력을 함께
+발행하므로 플랫폼 전환 중 검증에 사용한다. DDS-only에서는 ROS height-map,
+quality, visualization topic을 발행하지 않는다.
+
+빌드에는 Cyclone DDS가 필요하다. Ubuntu ROS 환경에서는 보통
+`sudo apt install ros-$ROS_DISTRO-cyclonedds`로 설치하며, 다른 DDS participant와
+domain/network 설정을 맞추려면 동일한 `CYCLONEDDS_URI`를 사용한다.
+
 ## LiDAR rate
 
 `livox_publish_freq: 50.0`은 LiDAR의 물리적 측정 속도가 아니라 드라이버가
@@ -81,6 +104,7 @@ CPU 여유와 Super-LIO 처리율은 `ros2 topic hz /lio/cloud_world`로 확인�
 | output | `/autonomy_light/height_map_quality` | `autonomy_light/HeightMapQuality` | validity, variance, age |
 | output | `/autonomy_light/height_map` | `sensor_msgs/PointCloud2` | visualization grid |
 | output | `/autonomy_light/live_map` | `sensor_msgs/PointCloud2` | sparse voxel PCD |
+| optional output | `height_map` | `core_dds::HeightMap` | direct Cyclone DDS custom payload |
 
 모든 토픽은 `ros_domain_id` 하나를 사용한다. `world` frame은 사용하지 않으며,
 normal mode는 `odom`, relocation mode는 `map`이 global frame이다.

@@ -30,3 +30,7 @@ Use `global` only when a persistent PCD is the intended terrain reference.
 The global source does not age out; it should not be used as a substitute for
 dynamic-obstacle sensing. In Isaac Lab, train with the quality channels and
 the same unknown convention as the deployed controller.
+
+For a non-ROS consumer, choose `height_map_output.transport: cyclone_dds`.
+It sends the same `float` grid at `publish_rate_hz`, without quality metadata;
+use `both` while validating equivalence against ROS `HeightMap.data`.

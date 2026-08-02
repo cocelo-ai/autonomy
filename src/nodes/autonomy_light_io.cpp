@@ -123,6 +123,7 @@ void AutonomyLightNode::onTimer() {
     heartbeat.data = "waiting_for_super_lio_map";
   } else {
     heartbeat.data = "ready:source=" + mapper_config_.source +
+                     ":transport=" + height_map_transport_ +
                      ":odom=" + std::to_string(odom_count_) +
                      ":cloud=" + std::to_string(cloud_count_);
   }
@@ -170,19 +171,31 @@ void AutonomyLightNode::publishMap() {
 }
 
 void AutonomyLightNode::publishHeight(const HeightGrid &grid) {
+  std::vector<float> height_data(grid.spec.size(),
+                                 static_cast<float>(unknown_distance_));
+  for (std::size_t index = 0; index < grid.spec.size(); ++index) {
+    if (grid.valid[index] != 0U && std::isfinite(grid.height[index])) {
+      height_data[index] = static_cast<float>(std::clamp(
+          reference_height_ - static_cast<double>(grid.height[index]),
+          distance_min_, distance_max_));
+    }
+  }
+  if (publishesDdsHeight() && dds_height_map_pub_ &&
+      !dds_height_map_pub_->publish(height_data)) {
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+                          "Cyclone DDS height map write failed: %s",
+                          dds_height_map_pub_->error().c_str());
+  }
+  if (!publishesRosHeight()) {
+    return;
+  }
+
   msg::HeightMap data;
   data.header = grid.header;
   data.resolution = static_cast<float>(grid.spec.resolution);
   data.x_length = static_cast<float>(grid.spec.x_length);
   data.y_length = static_cast<float>(grid.spec.y_length);
-  data.data.resize(grid.spec.size(), static_cast<float>(unknown_distance_));
-  for (std::size_t index = 0; index < grid.spec.size(); ++index) {
-    if (grid.valid[index] != 0U && std::isfinite(grid.height[index])) {
-      data.data[index] = static_cast<float>(std::clamp(
-          reference_height_ - static_cast<double>(grid.height[index]),
-          distance_min_, distance_max_));
-    }
-  }
+  data.data = std::move(height_data);
   msg::HeightMapQuality quality;
   quality.header = grid.header;
   quality.resolution = data.resolution;

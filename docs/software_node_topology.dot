@@ -10,11 +10,13 @@ digraph autonomy_light {
        fillcolor="#e9f6ee", color="#32734d"];
   runtime [label="autonomy_light\nTHE ONLY OWNED ROS NODE\n\nElevationMapper (in-process)\nrolling posterior | global surface index\nvoxel PCD export",
            fillcolor="#fff4df", color="#a65e00", penwidth="2"];
-  control [label="Controller / Isaac Lab\nheight map + quality", fillcolor="#f5f7fa"];
+  control [label="Controller / Isaac Lab\nROS height map + quality", fillcolor="#f5f7fa"];
+  dds [label="Non-ROS platform\nCyclone DDS consumer", fillcolor="#f5f7fa"];
   rviz [label="RViz / PCD consumer", fillcolor="#f5f7fa"];
 
   livox -> lio [label="Livox CustomMsg + IMU"];
   lio -> runtime [label="/lio/odom\n/lio/cloud_world"];
   runtime -> control [label="/autonomy_light/height_map_data\n/height_map_quality\n/odom, TF"];
+  runtime -> dds [label="DDS: height_map\ncore_dds::HeightMap", style=dashed];
   runtime -> rviz [label="/autonomy_light/live_map\n/height_map"];
 }

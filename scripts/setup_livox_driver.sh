@@ -96,6 +96,7 @@ install_apt_dependencies() {
     libtbb-dev \
     python3-catkin-pkg-modules \
     "ros-${ROS_DISTRO_NAME}-ament-cmake-auto" \
+    "ros-${ROS_DISTRO_NAME}-cyclonedds" \
     "ros-${ROS_DISTRO_NAME}-pcl-conversions" \
     "ros-${ROS_DISTRO_NAME}-pcl-ros" \
     "ros-${ROS_DISTRO_NAME}-rclcpp-components" \

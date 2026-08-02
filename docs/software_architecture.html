@@ -19,7 +19,7 @@
 </head>
 <body>
   <h1>autonomy_light software architecture</h1>
-  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-02</p>
+  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-03</p>
 
   <div class="rule"><strong>Design decision.</strong> SLAM and relocalization are Super-LIO responsibilities.
   This package owns one ROS node only: it converts Super-LIO output into a robust elevation map and a sparse PCD.</div>
@@ -42,6 +42,7 @@
     <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Controller distance grid.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/height_map_quality</code></td><td>Per-cell validity, variance, age.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
+    <tr><td>optional output</td><td><code>height_map</code></td><td>Direct Cyclone DDS <code>core_dds::HeightMap</code> payload for a non-ROS peer.</td></tr>
   </table>
   <p>TF is <code>odom|map → base_link → base_link_gravity</code> and static
   <code>base_link → lidar_link</code>. Normal operation uses <code>odom</code>; a saved map runs
@@ -56,6 +57,14 @@
   </table>
   <p>Both sources use the same output message. <code>valid=0</code> means the distance value is an
   unknown placeholder, not measured flat ground; Isaac Lab should consume the quality channels.</p>
+
+  <h2>Transport selection</h2>
+  <p><code>height_map_output.transport</code> selects <code>ros2</code>,
+  <code>cyclone_dds</code>, or <code>both</code>. The direct DDS option uses the installed IDL
+  <code>core_dds::HeightMap { sequence&lt;float&gt; data; }</code>, configurable domain and topic,
+  and best-effort keep-last delivery. Its flat, row-major data sequence has exactly the same
+  values and unknown convention as ROS <code>HeightMap.data</code>; geometry and quality remain
+  ROS-message metadata. <code>both</code> is the migration/validation mode.</p>
 
   <h2>Removed ownership</h2>
   <ul>

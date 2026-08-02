@@ -22,3 +22,20 @@ locally generated `map → odom` correction exist.
 `HeightMap.data` is `reference_height - terrain_height`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:
 `valid=0` means `data` contains only the configured unknown placeholder.
+
+## Cyclone DDS transport
+
+Set `height_map_output.transport` to `cyclone_dds` for a direct DDS output, or
+`both` to retain the ROS 2 outputs during migration. The installed IDL is
+`resources/idl/HeightMap.idl` and defines exactly:
+
+```idl
+module core_dds { struct HeightMap { sequence<float> data; }; };
+```
+
+The configurable default is domain `1`, topic `height_map`, type
+`core_dds::HeightMap`, best-effort keep-last history depth `1`. Its sole field
+has the same row-major cell order, length and unknown convention as ROS
+`HeightMap.data`; it intentionally carries no header, geometry or quality
+channels. Consumers must share the grid configuration and read the ROS quality
+stream when that metadata is required.

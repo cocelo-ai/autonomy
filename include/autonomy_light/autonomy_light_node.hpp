@@ -1,6 +1,7 @@
 #pragma once
 
 #include "autonomy_light/child_processes.hpp"
+#include "autonomy_light/dds_height_map_publisher.hpp"
 #include "autonomy_light/elevation_mapper.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -37,6 +38,7 @@ private:
   void loadParameters();
   void loadSavedMap();
   void createInterfaces();
+  void createDdsOutput();
   void startProcesses();
   [[nodiscard]] std::vector<std::string> superLioCommand() const;
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr message);
@@ -47,6 +49,8 @@ private:
   void publishPose(const nav_msgs::msg::Odometry &odom, double floor_z);
   void publishStaticTransform();
   void saveMap();
+  [[nodiscard]] bool publishesRosHeight() const;
+  [[nodiscard]] bool publishesDdsHeight() const;
   [[nodiscard]] nav_msgs::msg::Odometry baseOdom(
       const nav_msgs::msg::Odometry &lidar_odom) const;
   [[nodiscard]] Pose2_5D poseOf(const nav_msgs::msg::Odometry &odom) const;
@@ -71,6 +75,11 @@ private:
   double distance_min_{0.0};
   double distance_max_{0.75};
   double unknown_distance_{0.48};
+  std::string height_map_transport_{"ros2"};
+  std::uint32_t dds_height_map_domain_id_{1U};
+  std::string dds_height_map_topic_{"height_map"};
+  std::string dds_height_map_type_{"core_dds::HeightMap"};
+  std::uint32_t dds_height_map_history_depth_{1U};
   bool mapping_only_{false};
   std::string mapping_pcd_file_;
   std::string saved_map_file_;
@@ -109,6 +118,7 @@ private:
   bool shutdown_requested_{false};
 
   ChildProcesses children_;
+  std::unique_ptr<DdsHeightMapPublisher> dds_height_map_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

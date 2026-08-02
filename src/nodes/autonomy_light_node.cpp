@@ -11,9 +11,10 @@ AutonomyLightNode::AutonomyLightNode() : Node("autonomy_light") {
   publishStaticTransform();
   startProcesses();
   RCLCPP_INFO(get_logger(),
-              "Elevation runtime ready: source=%s grid=%ux%u @ %.3fm frame=%s",
-              mapper_config_.source.c_str(), grid_spec_.width(), grid_spec_.height(),
-              grid_spec_.resolution, global_frame_.c_str());
+              "Elevation runtime ready: source=%s transport=%s grid=%ux%u @ %.3fm frame=%s",
+              mapper_config_.source.c_str(), height_map_transport_.c_str(),
+              grid_spec_.width(), grid_spec_.height(), grid_spec_.resolution,
+              global_frame_.c_str());
 }
 
 AutonomyLightNode::~AutonomyLightNode() {
@@ -100,6 +101,25 @@ void AutonomyLightNode::loadParameters() {
   distance_min_ = declare_parameter<double>("height_map_distance.min", distance_min_);
   distance_max_ = declare_parameter<double>("height_map_distance.max", distance_max_);
   unknown_distance_ = declare_parameter<double>("height_map_distance.unknown", unknown_distance_);
+  height_map_transport_ = declare_parameter<std::string>(
+      "height_map_output.transport", height_map_transport_);
+  if (height_map_transport_ != "ros2" && height_map_transport_ != "cyclone_dds" &&
+      height_map_transport_ != "both") {
+    throw std::invalid_argument(
+        "height_map_output.transport must be ros2, cyclone_dds, or both");
+  }
+  const auto dds_domain = declare_parameter<std::int64_t>(
+      "height_map_output.cyclone_dds.domain_id", dds_height_map_domain_id_);
+  dds_height_map_domain_id_ = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+      dds_domain, 0, std::numeric_limits<std::uint32_t>::max()));
+  dds_height_map_topic_ = declare_parameter<std::string>(
+      "height_map_output.cyclone_dds.topic", dds_height_map_topic_);
+  dds_height_map_type_ = declare_parameter<std::string>(
+      "height_map_output.cyclone_dds.type", dds_height_map_type_);
+  const auto dds_history = declare_parameter<std::int64_t>(
+      "height_map_output.cyclone_dds.history_depth", dds_height_map_history_depth_);
+  dds_height_map_history_depth_ = static_cast<std::uint32_t>(
+      std::clamp<std::int64_t>(dds_history, 1, 1000));
   mapping_only_ = declare_parameter<bool>("mapping_only", mapping_only_);
   mapping_pcd_file_ = declare_parameter<std::string>("mapping_pcd_file", mapping_pcd_file_);
   saved_map_file_ = declare_parameter<std::string>("saved_map_file", saved_map_file_);
@@ -156,6 +176,7 @@ void AutonomyLightNode::loadSavedMap() {
 void AutonomyLightNode::createInterfaces() {
   const auto data_qos = rclcpp::SensorDataQoS();
   const auto output_qos = rclcpp::QoS(10).reliable();
+  createDdsOutput();
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       super_lio_odom_topic_, output_qos,
       [this](nav_msgs::msg::Odometry::SharedPtr msg) { onOdom(std::move(msg)); });
@@ -169,7 +190,7 @@ void AutonomyLightNode::createInterfaces() {
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(odom_output_topic_, output_qos);
   path_pub_ = create_publisher<nav_msgs::msg::Path>(path_output_topic_, output_qos);
   heartbeat_pub_ = create_publisher<std_msgs::msg::String>(heartbeat_topic_, output_qos);
-  if (!mapping_only_) {
+  if (!mapping_only_ && publishesRosHeight()) {
     height_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(height_map_topic_, output_qos);
     height_msg_pub_ = create_publisher<msg::HeightMap>(height_map_msg_topic_, output_qos);
     quality_pub_ = create_publisher<msg::HeightMapQuality>(height_map_quality_topic_, output_qos);
@@ -179,6 +200,32 @@ void AutonomyLightNode::createInterfaces() {
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / publish_rate_hz_));
   timer_ = create_wall_timer(period, [this]() { onTimer(); });
+}
+
+void AutonomyLightNode::createDdsOutput() {
+  if (!publishesDdsHeight() || mapping_only_) {
+    return;
+  }
+  dds_height_map_pub_ = std::make_unique<DdsHeightMapPublisher>(
+      dds_height_map_domain_id_, dds_height_map_topic_, dds_height_map_type_,
+      dds_height_map_history_depth_);
+  if (!dds_height_map_pub_->isReady()) {
+    throw std::runtime_error("Cyclone DDS height map writer failed: " +
+                             dds_height_map_pub_->error());
+  }
+  RCLCPP_INFO(get_logger(),
+              "Cyclone DDS height map enabled: domain=%u topic=%s type=%s "
+              "history=%u",
+              dds_height_map_domain_id_, dds_height_map_topic_.c_str(),
+              dds_height_map_type_.c_str(), dds_height_map_history_depth_);
+}
+
+bool AutonomyLightNode::publishesRosHeight() const {
+  return height_map_transport_ == "ros2" || height_map_transport_ == "both";
+}
+
+bool AutonomyLightNode::publishesDdsHeight() const {
+  return height_map_transport_ == "cyclone_dds" || height_map_transport_ == "both";
 }
 
 void AutonomyLightNode::startProcesses() {

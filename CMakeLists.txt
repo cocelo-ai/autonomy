@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(CycloneDDS REQUIRED CONFIG)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -24,6 +25,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HeightMap.msg"
   "msg/HeightMapQuality.msg"
   DEPENDENCIES std_msgs
+)
+
+idlc_generate(
+  TARGET autonomy_light_dds_types
+  FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/idl/HeightMap.idl"
 )
 
 ament_export_dependencies(rosidl_default_runtime)
@@ -86,6 +93,8 @@ else()
 endif()
 
 target_link_libraries(autonomy_light_node
+  autonomy_light_dds_types
+  CycloneDDS::ddsc
   ${PCL_LIBRARIES}
 )
 
@@ -94,7 +103,7 @@ install(TARGETS
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY config
+install(DIRECTORY config resources
   DESTINATION share/${PROJECT_NAME}
 )
 

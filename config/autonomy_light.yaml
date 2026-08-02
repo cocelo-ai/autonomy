@@ -26,6 +26,17 @@ autonomy_light:
       min: 0.0
       max: 0.75
       unknown: 0.48
+    # Select the controller height-map transport.
+    # ros2 publishes autonomy_light/msg/HeightMap plus ROS quality/visual topics.
+    # cyclone_dds publishes only core_dds::HeightMap { sequence<float> data; }.
+    # both is useful during migration and validation.
+    height_map_output:
+      transport: "ros2"             # ros2 | cyclone_dds | both
+      cyclone_dds:
+        domain_id: 1
+        topic: "height_map"
+        type: "core_dds::HeightMap"
+        history_depth: 1
 
     # Choose the source explicitly.
     # rolling: short-lived Bayesian surface posterior (recommended for control).
