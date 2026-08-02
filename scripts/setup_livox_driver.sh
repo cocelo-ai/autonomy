@@ -12,7 +12,7 @@ What it does:
   1. Installs common Ubuntu/ROS build dependencies unless --skip-apt is used.
   2. Installs Livox-SDK2 to /usr/local unless it is already installed or --skip-sdk is used.
   3. Links this repo's third_party/livox_ros_driver2 into <workspace>/src/livox_ros_driver2.
-  4. Optionally builds livox_ros_driver2 and autonomy_light with --build.
+  4. Optionally builds livox_ros_driver2, Super-LIO, and autonomy_light with --build.
 
 Examples:
   scripts/setup_livox_driver.sh
@@ -90,8 +90,10 @@ install_apt_dependencies() {
     build-essential \
     cmake \
     git \
+    libgoogle-glog-dev \
     libapr1-dev \
     libpcl-dev \
+    libtbb-dev \
     python3-catkin-pkg-modules \
     "ros-${ROS_DISTRO_NAME}-ament-cmake-auto" \
     "ros-${ROS_DISTRO_NAME}-pcl-conversions" \
@@ -183,8 +185,11 @@ build_workspace() {
   cd "${WORKSPACE_DIR}"
   local build_python
   build_python="$(detect_build_python)"
-  colcon build --packages-up-to livox_ros_driver2 autonomy_light \
-    --base-paths "${WORKSPACE_DIR}" "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
+  colcon build --packages-up-to livox_ros_driver2 super_lio autonomy_light \
+    --base-paths \
+      "${WORKSPACE_DIR}" \
+      "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
+      "${WORKSPACE_DIR}/third_party/super_lio_ros2" \
     --cmake-args \
       -DROS_EDITION=ROS2 \
       -DDISTRO_ROS="${ROS_DISTRO_NAME}" \

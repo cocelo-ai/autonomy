@@ -6,14 +6,14 @@ usage() {
 Usage:
   build.sh [options]
 
-Build autonomy-light, its ROS interfaces, and its vendored Livox ROS Driver2.
+Build autonomy-light, Super-LIO, its ROS interfaces, and its vendored Livox ROS Driver2.
 
 Options:
   --skip-apt          Do not install Ubuntu/ROS dependencies.
   --skip-sdk          Do not build/install Livox-SDK2.
   --clean             Remove this workspace's build/install/log for these packages first.
   --setup-only        Prepare Livox driver symlink/SDK only; do not run colcon build.
-  --packages PKGS     Packages to build. Default: livox_ros_driver2 autonomy_light.
+  --packages PKGS     Packages to build. Default: livox_ros_driver2 super_lio autonomy_light.
   --ros-distro NAME   ROS distro. Default: ROS_DISTRO or humble.
   -h, --help          Show this help.
 
@@ -32,7 +32,7 @@ SKIP_APT="false"
 SKIP_SDK="false"
 CLEAN="false"
 SETUP_ONLY="false"
-PACKAGES=(livox_ros_driver2 autonomy_light)
+PACKAGES=(livox_ros_driver2 super_lio autonomy_light)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -128,7 +128,10 @@ fi
 cd "${WORKSPACE_DIR}"
 echo "Building packages: ${PACKAGES[*]}"
 colcon build --packages-up-to "${PACKAGES[@]}" \
-  --base-paths "${WORKSPACE_DIR}" "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
+  --base-paths \
+    "${WORKSPACE_DIR}" \
+    "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
+    "${WORKSPACE_DIR}/third_party/super_lio_ros2" \
   --cmake-args \
     -DROS_EDITION=ROS2 \
     -DDISTRO_ROS="${ROS_DISTRO_NAME}" \

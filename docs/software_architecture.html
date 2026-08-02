@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>autonomy_light software architecture</title>
+  <style>
+    @page { size: A4; margin: 16mm; }
+    body { font: 10.5pt/1.45 Arial, "Noto Sans KR", sans-serif; color: #17212b; }
+    h1 { color: #173b5b; font-size: 23pt; margin-bottom: 4px; }
+    h2 { color: #a65e00; border-bottom: 1px solid #d9e2e8; padding-bottom: 4px; margin-top: 20px; }
+    code { background: #f3f6f8; padding: 1px 3px; border-radius: 3px; }
+    .subtitle { color: #52616b; margin-top: 0; }
+    .rule { background: #fff4df; border-left: 4px solid #a65e00; padding: 9px 12px; }
+    img { display: block; width: 100%; max-width: 720px; margin: 12px auto; }
+    table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+    th { background: #edf5fb; } th, td { border: 1px solid #ccd7df; padding: 6px; text-align: left; vertical-align: top; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <h1>autonomy_light software architecture</h1>
+  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-02</p>
+
+  <div class="rule"><strong>Design decision.</strong> SLAM and relocalization are Super-LIO responsibilities.
+  This package owns one ROS node only: it converts Super-LIO output into a robust elevation map and a sparse PCD.</div>
+
+  <img src="software_node_topology.svg" alt="Node topology">
+
+  <h2>Node responsibilities</h2>
+  <table>
+    <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
+    <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
+    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, registered global cloud, and saved-map relocation.</td></tr>
+    <tr><td><code>autonomy_light</code></td><td>this package</td><td>One node: base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
+  </table>
+
+  <h2>Data and TF contract</h2>
+  <table>
+    <tr><th>Direction</th><th>Topic</th><th>Meaning</th></tr>
+    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO LiDAR pose; converted to <code>base_link</code>.</td></tr>
+    <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered cloud in the current global frame.</td></tr>
+    <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Controller distance grid.</td></tr>
+    <tr><td>output</td><td><code>/autonomy_light/height_map_quality</code></td><td>Per-cell validity, variance, age.</td></tr>
+    <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
+  </table>
+  <p>TF is <code>odom|map → base_link → base_link_gravity</code> and static
+  <code>base_link → lidar_link</code>. Normal operation uses <code>odom</code>; a saved map runs
+  Super-LIO <code>relocation_node</code> and uses <code>map</code>. There is no <code>world</code>
+  frame and no locally computed <code>map → odom</code> correction.</p>
+
+  <h2>Elevation source selection</h2>
+  <table>
+    <tr><th>Configuration</th><th>Algorithm</th><th>Use</th></tr>
+    <tr><td><code>height_map.source: rolling</code></td><td>Bounded Bayesian ground/upper posterior with measurement variance, aging and outlier gate.</td><td>Default for control and sim-to-real.</td></tr>
+    <tr><td><code>height_map.source: global</code></td><td>Persistent, PCD-derived sparse surface index.</td><td>Repeatable terrain reference from a saved or accumulated map.</td></tr>
+  </table>
+  <p>Both sources use the same output message. <code>valid=0</code> means the distance value is an
+  unknown placeholder, not measured flat ground; Isaac Lab should consume the quality channels.</p>
+
+  <h2>Removed ownership</h2>
+  <ul>
+    <li>Local pose graph, Scan Context loop closure, and map reconstruction</li>
+    <li>FPFH/GICP initial localization and runtime map correction</li>
+    <li>Secondary LiDAR merger and custom ROS-domain bridge executors</li>
+    <li>Separate raw/refined/ROI map pipelines and duplicated path subscription</li>
+  </ul>
+  <p>These removals make the state path linear: Super-LIO localizes; one node maps elevation.</p>
+</body>
+</html>

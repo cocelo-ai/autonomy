@@ -6,13 +6,14 @@ usage() {
 Usage:
   scripts/package_deb.sh [options]
 
-Build a source-free runtime .deb for autonomy-light.
+Build a runtime .deb for autonomy-light.
 
 Assumption:
   The target already has the same Ubuntu/ROS 2 pair used to build this package.
   This package bundles the autonomy-light runtime, generated custom message
-  interface, vendored Livox ROS driver2 install tree, Point-LIO runtime, docs,
-  examples, and Livox-SDK2 shared library when found under /usr/local/lib.
+  interface, vendored Livox ROS driver2 and Super-LIO runtime, Super-LIO GPLv3
+  source, docs, examples, and Livox-SDK2 shared library when found under
+  /usr/local/lib.
 
 Options:
   --version VERSION       Debian package version. Default: package.xml version.
@@ -330,11 +331,11 @@ STAGE_ROOT="$(mktemp -d /tmp/${PACKAGE_NAME}.XXXXXX)"
 trap 'rm -rf "${STAGE_ROOT}"' EXIT
 
 if [[ "${SKIP_BUILD}" != "true" ]]; then
-  "${REPO_DIR}/build.sh" --ros-distro "${ROS_DISTRO_NAME}" --packages livox_ros_driver2 autonomy_light
+  "${REPO_DIR}/build.sh" --ros-distro "${ROS_DISTRO_NAME}" --packages livox_ros_driver2 super_lio autonomy_light
 fi
 
 INSTALL_ROOT="${WORKSPACE_DIR}/install"
-for pkg in autonomy_light livox_ros_driver2; do
+for pkg in autonomy_light basic livox_ros_driver2 super_lio; do
   if [[ ! -d "${INSTALL_ROOT}/${pkg}" ]]; then
     echo "error: missing install tree: ${INSTALL_ROOT}/${pkg}" >&2
     echo "hint: run ${REPO_DIR}/build.sh first, or omit --skip-build." >&2
@@ -384,14 +385,22 @@ do
 done
 
 copy_install_tree "${INSTALL_ROOT}/autonomy_light" "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/"
+copy_install_tree "${INSTALL_ROOT}/basic" "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/"
 copy_install_tree "${INSTALL_ROOT}/livox_ros_driver2" "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/"
+copy_install_tree "${INSTALL_ROOT}/super_lio" "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/"
 
 mkdir -p "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/share/colcon-core/packages"
 copy_if_exists \
   "${INSTALL_ROOT}/share/colcon-core/packages/autonomy_light" \
   "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/share/colcon-core/packages/"
 copy_if_exists \
+  "${INSTALL_ROOT}/share/colcon-core/packages/basic" \
+  "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/share/colcon-core/packages/"
+copy_if_exists \
   "${INSTALL_ROOT}/share/colcon-core/packages/livox_ros_driver2" \
+  "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/share/colcon-core/packages/"
+copy_if_exists \
+  "${INSTALL_ROOT}/share/colcon-core/packages/super_lio" \
   "${STAGE_ROOT}/opt/cocelo/autonomy-light/install/share/colcon-core/packages/"
 
 cp -aL "${REPO_DIR}/config/autonomy_light.yaml" \
@@ -404,6 +413,9 @@ cp -aL "${REPO_DIR}/README.md" "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/READ
 if [[ -d "${REPO_DIR}/docs" ]]; then
   cp -aL "${REPO_DIR}/docs/." "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/"
 fi
+mkdir -p "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/super_lio-source"
+cp -aL "${REPO_DIR}/third_party/super_lio_ros2/." \
+  "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/super_lio-source/"
 if [[ -d "${REPO_DIR}/examples" ]]; then
   mkdir -p "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/examples"
   cp -aL "${REPO_DIR}/examples/." "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/examples/"
@@ -431,14 +443,15 @@ artifacts while assuming the target system already provides:
 Bundled in this package:
 
 - autonomy_light binaries and launch/config resources
-- autonomy_light/msg/HeightMap generated C++/Python type support
+- autonomy_light/msg/HeightMap and HeightMapQuality generated C++/Python type support
 - vendored livox_ros_driver2 binaries and message type support
-- Point-LIO runtime binary installed by autonomy_light
+- Super-LIO and basic ROS 2 runtime packages
+- Corresponding Super-LIO GPLv3 source and license
 - Livox-SDK2 shared library when available at build time
 - receiver SDK example and documentation
 
 The package deliberately does not bundle /opt/ros/${ROS_DISTRO_NAME} or system
-libraries such as glibc/libstdc++.
+libraries such as glibc/libstdc++/glog/TBB.
 EOF
 
 cat > "${STAGE_ROOT}/usr/bin/autonomy-light" <<EOF
@@ -506,6 +519,7 @@ echo
 
 echo "== message interface =="
 ros2 interface show autonomy_light/msg/HeightMap
+ros2 interface show autonomy_light/msg/HeightMapQuality
 echo
 
 echo "== height map manual debug config =="
@@ -521,11 +535,11 @@ echo "== external domain topics =="
 ROS_DOMAIN_ID=0 ros2 topic list | egrep 'autonomy_light|/tf|/path' || true
 echo
 
-echo "== local_map leakage check on external domain =="
-if ROS_DOMAIN_ID=0 ros2 topic list | grep -q '^/point_lio/local_map$'; then
-  echo "warning: /point_lio/local_map is visible on ROS_DOMAIN_ID=0"
+echo "== Super-LIO stream leakage check on external domain =="
+if ROS_DOMAIN_ID=0 ros2 topic list | grep -q '^/lio/'; then
+  echo "warning: a /lio/* topic is visible on ROS_DOMAIN_ID=0"
 else
-  echo "ok: /point_lio/local_map is not visible on ROS_DOMAIN_ID=0"
+  echo "ok: Super-LIO streams are not visible on ROS_DOMAIN_ID=0"
 fi
 EOF
 chmod 0755 "${STAGE_ROOT}/usr/bin/autonomy-light-doctor"
@@ -556,8 +570,9 @@ Architecture: ${ARCH}
 Maintainer: Cocelo <todo@example.com>
 Depends: bash, sudo, iproute2, python3, python3-numpy, python3-opencv
 Description: Cocelo autonomy-light runtime
- Source-free runtime bundle for Livox MID360/MID360s driver, Point-LIO mapping, and
- control-facing autonomy-light height map outputs. This package assumes ROS 2
+ Runtime bundle for Livox MID360/MID360s driver, Super-LIO mapping, and
+ control-facing autonomy-light height map outputs. Corresponding Super-LIO GPLv3
+ source is installed under /usr/share/doc/cocelo-autonomy-light. This package assumes ROS 2
  ${ROS_DISTRO_NAME} is already installed on the target system.
 EOF
 
@@ -589,7 +604,7 @@ fi
 find "${STAGE_ROOT}" -type d -exec chmod 0755 {} +
 find "${STAGE_ROOT}/opt/cocelo/autonomy-light" -type f -name '*.sh' -exec chmod 0755 {} +
 find "${STAGE_ROOT}/opt/cocelo/autonomy-light/install" -type f \
-  \( -path '*/lib/autonomy_light/*' -o -path '*/lib/livox_ros_driver2/*' \) \
+  \( -path '*/lib/autonomy_light/*' -o -path '*/lib/livox_ros_driver2/*' -o -path '*/lib/super_lio/*' \) \
   -exec chmod 0755 {} +
 
 mkdir -p "${OUTPUT_DIR}"

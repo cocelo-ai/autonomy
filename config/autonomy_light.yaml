@@ -1,345 +1,88 @@
 autonomy_light:
   ros__parameters:
-    # Frames and LiDAR poses.
+    # One ROS domain and one runtime node. Set ROS_DOMAIN_ID before launch, or
+    # let launch.sh export this value.
+    ros_domain_id: 0
+
+    # Super-LIO publishes LiDAR poses; autonomy_light publishes base_link.
     target_frame: "base_link"
     height_map_frame: "base_link_gravity"
     lidar_frame: "lidar_link"
-    lidar2_frame: "lidar2_link"
-
-    # LiDAR 1 pose in target_frame. These values are base_link -> lidar_link;
-    # the TF tree publishes the inverse lidar_link -> base_link edge. They also
-    # initialize Point-LIO's output frame so map/odom/base remain robot-aligned
-    # when the LiDAR is inverted or yawed/pitched relative to the chassis.
+    odom_frame: "odom"             # becomes map when saved_map_file is set
     target_to_lidar_xyz: [0.234, 0.0, 0.077]
     target_to_lidar_rpy: [0.0, 0.7854, 0.0]
 
-    # LiDAR 2 pose in target_frame. Used only when raw_lidar2_topic is set.
-    target_to_lidar2_xyz: [0.038335, 0.00162081, 0.138986]
-    target_to_lidar2_rpy: [3.1416, 0.0, 0.0]
-
-    # User-facing setup: robot-centric elevation map geometry.
-    elevation_resolution: 0.1
-    elevation_x_length: 1.8
-    elevation_y_length: 0.8
-    height_origin:
-      # local_floor keeps the height map from riding on small odom z jitter caused by roll/pitch.
-      # Use odom for the old behavior, or fixed for a map-level z origin.
-      mode: "local_floor"
-      fixed_z: 0.0
-      # The global-map floor estimate is intentionally low-pass filtered to
-      # prevent small Point-LIO z jitter from moving the entire height surface.
-      filter_alpha: 0.18
-      max_step: 0.015
-      floor_radius: 0.6
-      floor_percentile: 0.20
-      floor_min_points: 20
-    # Transform mode for height_map_frame under base_link.
-    # floor: existing behavior, follow the filtered floor/height_origin z.
-    # base_fixed: keep base_link -> height_map_frame at a fixed base_link z.
-    height_map_frame_mode: "floor" # base_fixed
-    height_map_frame_fixed_z: 0.48
+    # Robot-centric, gravity-aligned output grid.
+    elevation_resolution: 0.10
+    elevation_x_length: 1.80
+    elevation_y_length: 0.80
+    elevation_min_z: -2.0
+    elevation_max_z: 2.0
     publish_rate_hz: 50.0
+    height_origin:
+      floor_radius: 0.60
+    height_map_distance:
+      reference_height: 0.48
+      min: 0.0
+      max: 0.75
+      unknown: 0.48
 
-    # Offline mapping mode. Normally leave these false/default and use
-    # ./mapping.sh, which overrides them at runtime.
+    # Choose the source explicitly.
+    # rolling: short-lived Bayesian surface posterior (recommended for control).
+    # global: persistent PCD-derived surface index (repeatable map reference).
+    height_map:
+      source: "rolling"             # rolling | global
+    rolling_elevation:
+      max_age_sec: 0.45
+      upper_max_age_sec: 0.25
+      max_radius_m: 2.0
+      base_variance: 0.0004
+      range_variance_factor: 0.0005
+      process_variance_per_sec: 0.0025
+      max_variance: 0.04
+      outlier_variance: 0.0025
+      mahalanobis_threshold: 3.0
+    algorithm:
+      min_z:
+        min_points_per_cell: 2
+        obstacle_min_height: 0.035
+      frame_aggregation:
+        cell_height_percentile: 0.15
+
+    # Persistent sparse voxel PCD: RViz, saved-map input, and global source.
+    live_global_map:
+      topic: "/autonomy_light/live_map"
+      voxel_leaf_size: 0.03
+      max_points: 2000000
+      publish_interval_sec: 1.0
+
+    # `mapping.sh` sets these. No local pose graph is run in this package.
     mapping_only: false
-    # Set only by mapping.sh. In mapping-only mode this enables the refined
-    # global-map accumulator and writes that precision map on shutdown.
-    mapping_refined_pcd_file: ""
-    # Offline full-SLAM refinement used by mapping.sh. Point-LIO supplies the
-    # high-rate local odometry; loop closures are verified before a 4-DoF
-    # (XYZ + yaw) pose-graph optimization reconstructs the final refined PCD.
-    # IMU roll/pitch are deliberately retained from Point-LIO for stability.
-    mapping_slam:
-      enabled: true
-      # Fast shutdown by default: save the live refined global-map snapshot.
-      # Enable this only when you need final loop-optimized map reconstruction.
-      save_optimized_on_shutdown: false
-      keyframe_distance_m: 0.5
-      keyframe_yaw_deg: 7.5
-      keyframe_voxel_leaf_size: 0.03
-      keyframe_max_points: 15000
-      scan_context:
-        rings: 20
-        sectors: 60
-        max_radius: 40.0
-        max_distance: 0.18
-        candidate_count: 10
-      loop:
-        min_keyframe_separation: 30
-        # Verify every fifth keyframe; keyframes remain 0.5 m apart, so this
-        # still tests loop opportunities about every 2.5 m without making
-        # shutdown optimization unnecessarily slow.
-        query_stride: 5
-        submap_neighbors: 3
-        voxel_leaf_size: 0.05
-        max_correspondence_distance: 0.75
-        max_fitness: 0.025
-        min_inlier_fraction: 0.35
-      optimizer_iterations: 20
-      loop_weight: 20.0
-    point_lio_pcd_save_en: false
-    point_lio_pcd_save_interval: -1
-    point_lio_pcd_save_file: ""
-    child_shutdown_grace_sec: 0.8
+    mapping_pcd_file: ""
     saved_map_file: ""
-    # Global map frame. `map -> odom` is published after runtime localization.
     saved_map_frame: "map"
     saved_map_topic: "/autonomy_light/saved_map"
-    # Voxel size for the latched RViz/debug copy of the saved map.
-    saved_map_publish_voxel_leaf_size: 0.01
-    # Re-publish on the map-visualization domain so RViz can attach after launch
-    # even when its QoS durability is left at the default.
-    saved_map_republish_interval_sec: 2.0
-    # Force map -> odom to identity and ignore runtime map correction transforms.
-    # Useful when relocalization or loop correction makes the map frame unstable.
-    force_identity_map_to_odom: false
-    # Optional map-frame reference axes for publishing robot yaw relative to a
-    # measured global direction. Each line is [x1, y1, z1, x2, y2, z2].
-    global_rotation_reference:
-      enabled: false
-      topic: "/autonomy_light/global_rotation"
-      horizontal: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-      vertical: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-    # When saved_map_file is set, estimate map_from_odom from Point-LIO's
-    # registered scan. RViz supplies a close initial pose, then one bounded
-    # GICP validates it before height-map output starts.
-    saved_map_localization:
-      enabled: true
-      global_initialization: false
-      initial_pose:
-        enabled: true
-        topic: "/initialpose"
-        wait_for_input: true
-        # Fitness gate for the fast, coarse initial-pose GICP.
-        max_fitness: 0.10
-      # Used only when global_initialization is re-enabled.
-      update_interval_sec: 1.0
-      initial_submap_duration_sec: 0.8
-      initial_submap_min_points: 300
-      initial_submap_max_points: 12000
-      scan_voxel_leaf_size: 0.05
-      map_voxel_leaf_size: 0.05
-      # FPFH/RANSAC is only a coarse global initializer. Run it on a bounded
-      # 15 cm representation, then retain the 5 cm clouds for precise GICP.
-      global_feature_voxel_leaf_size: 0.15
-      global_feature_max_points: 6000
-      global_source_max_points: 4000
-      # Fast bounded search used only before the first saved-map localization.
-      # It improves local GICP when the robot starts near, but not exactly at,
-      # the saved-map pose without paying the cost of full FPFH/RANSAC.
-      initial_local_search:
-        enabled: true
-        yaw_search_deg: 15.0
-        xy_search_m: 0.35
-        max_candidates: 9
-        voxel_leaf_size: 0.12
-        max_points: 3500
-        iterations: 8
-        max_correspondence_distance: 0.8
-      normal_radius: 0.45
-      feature_radius: 0.75
-      global_max_iterations: 1500
-      global_inlier_fraction: 0.20
-      max_correspondence_distance: 0.50
-      gicp_max_iterations: 20
-      max_fitness: 0.1
-      max_tracking_translation_step: 0.60
-      min_scan_points: 80
-    # Low-rate global correction. Point-LIO stays the high-rate odom source;
-    # With a saved map this aligns a rolling submap to the immutable map. Without
-    # a map, Scan Context + verified loop closures update map -> odom instead of
-    # continuously registering against the node's own growing live map.
-    runtime_localization:
-      enabled: true
-      update_interval_sec: 1.0
-      submap_duration_sec: 1.0
-      submap_voxel_leaf_size: 0.05
-      submap_max_points: 10000
-      target_radius_m: 5.0
-      filter_alpha: 0.6
-      max_translation_innovation_m: 0.50
-      max_yaw_innovation_deg: 5.0
 
-    # ROS 2 domain split: keep heavy perception internal, publish only control-facing
-    # outputs on the external domain. point_lio_global_map.ros_domain_id below
-    # independently selects the RViz/debug domain for the refined global map.
-    internal_ros_domain_id: 0
-    external_ros_domain_id: 0
-    
-    # Livox driver setup.
-    livox_model: "mid360"
-
-    # LiDAR 1: default single-LiDAR path. For one physical LiDAR, only these
-    # fields need to be set.
-    livox_interface: "eno1"
-    livox_host_ip: "192.168.1.50/24" 
-    livox_lidar_ip: "192.168.1.121"
-
-    # LiDAR 2: optional. Set livox_lidar2_ip to start a second Livox driver.
-    # If LiDAR 2 is connected through USB-to-Ethernet, put that interface here
-    # and give it a different host IP such as 192.168.2.50/24.
-    # Leave livox_lidar2_ip empty to keep the existing single-LiDAR behavior.
-    livox2_interface: ""
-    livox_lidar2_ip: ""
-    livox_host2_ip: ""
-
-    # Raw Livox topics.
-    # - Single LiDAR keeps the existing Livox topics: livox/lidar, livox/imu.
-    # - When livox_lidar2_ip is set, launch.sh automatically uses /livox1/*
-    #   and /livox2/* unless these topics are explicitly overridden.
-    # - Point-LIO always uses LiDAR 1 IMU; LiDAR 2 IMU is exposed only for
-    #   inspection/debugging.
-    raw_lidar_topic: "livox/lidar"
-    raw_lidar2_topic: ""
+    # Super-LIO's native relocation_node owns saved-map localization.
+    # No FPFH/GICP or map->odom correction exists in autonomy_light.
+    raw_lidar_topic: "/livox/lidar"
+    raw_imu_topic: "/livox/imu"
     raw_lidar_msg_type: "livox_custom"
-    raw_imu_topic: "livox/imu"
-    raw_imu2_topic: "/livox2/imu"
-    monitor_raw_lidar: false
+    super_lio_odom_topic: "/lio/odom"
+    super_lio_registered_topic: "/lio/cloud_world"
+    super_lio_config_file: ""
+    start_lidar_driver: true
+    start_super_lio: true
+    # ROS message aggregation rate. It does not change the LiDAR's physical
+    # sampling rate; 50 Hz yields shorter clouds and lower algorithmic latency.
+    livox_publish_freq: 50.0
+    child_use_sim_time: false
+    child_shutdown_grace_sec: 0.8
 
-    # Two-LiDAR merge output. Enabled only when raw_lidar2_topic is non-empty.
-    # Both clouds are transformed into target_frame before Point-LIO sees them.
-    merged_lidar_topic: "/autonomy_light/merged_lidar"
-    lidar_merge:
-      sync_tolerance: 0.005
-      max_queue_size: 8
-      publish_lidar1_on_sync_miss: false
-    point_lio_odom_topic: "/aft_mapped_to_init"
-    point_lio_path_topic: "/path"
-    point_lio_registered_topic: "/cloud_registered"
-    # Crop raw LiDAR points horizontally before Point-LIO uses them.
-    # 360 disables the crop. Center 0 deg is +X in the LiDAR/Point-LIO input frame.
-    raw_lidar_horizontal_fov_degree: 200.0
-    raw_lidar_horizontal_fov_center_deg: 0.0
-    # Full trajectory map built from Point-LIO registered scans. This is the
-    # only live source used to construct the height map.
-    point_lio_global_map:
-      enabled: true
-      topic: "/point_lio/global_map"
-      # Refined, edge-preserving surfel map. This is the live map used for
-      # height extraction; publish it as a separate RViz topic to compare with
-      # the lighter raw visualization map above.
-      refined_topic: "/point_lio/global_map_refined"
-      roi_topic: "/point_lio/roi_map"
-      # Change this ID to view only the global map from a separate RViz domain.
-      # For example: ROS_DOMAIN_ID=17 rviz2
-      ros_domain_id: 0
-      use_for_height_map: true
-      height_voxel_leaf_size: 0.01
-      height_max_points: 4000000
-      voxel_leaf_size: 0.05
-      publish_interval_sec: 1.0
-      max_points: 500000
-      # RViz copy of the high-resolution refined map. The internal height-map
-      # store remains at height_voxel_leaf_size (1 cm).
-      refined_visual_voxel_leaf_size: 0.02
-      refined_visual_max_points: 1500000
-      roi:
-        enabled: true
-        min_x: -5.0
-        max_x: 5.0
-        min_y: -5.0
-        max_y: 5.0
-        min_z: -0.5
-        max_z: 0.0
-      refinement:
-        # Per registered scan: discard statistically isolated returns before
-        # centimetre-level surfel fusion. This removes flying points without
-        # fitting across stair edges.
-        mean_k: 16
-        stddev_multiplier: 0.8
+    # Control and visualization outputs, all in ros_domain_id.
     odom_output_topic: "/autonomy_light/odom"
+    path_output_topic: "/autonomy_light/path"
     height_map_topic: "/autonomy_light/height_map"
     height_map_msg_topic: "/autonomy_light/height_map_data"
-    # Keep this distinct from point_lio_path_topic. Using the same topic in the
-    # same ROS domain makes autonomy-light receive and republish its own path.
-    path_output_topic: "/autonomy_light/path"
-    height_map_debug:
-      # When enabled, publish a constant height map for receiver/control debugging
-      # without requiring Point-LIO map input. /autonomy_light/height_map_data is
-      # filled directly with manual_value.
-      manual_mode: false
-      manual_value: 0.48
-    # The source map is kept at 1 cm for terrain extraction while Point-LIO
-    # observations are roughly 5 cm apart. Fill only short, level gaps.
-    interpolation_max_passes: 4
-    interpolation_min_neighbors: 3
-    interpolation_max_height_diff: 0.02
-    fill_remaining_height: 0.0
-    initial_floor_seed_fill:
-      # Startup-only seed for blind cells under/near the robot. It estimates floor
-      # height from the ROI side band and the ring just outside the ROI, then fills
-      # remaining unknown cells once before falling back to fill_remaining_height.
-      enabled: true
-      side_width: 0.20
-      search_margin: 0.40
-      cluster_band: 0.08
-      lower_fraction: 0.70
-    algorithm:
-      # robust: existing autonomy-light selector, autonomy_min_z: autonomy MinZElevationBackend style.
-      elevation_backend: "autonomy_min_z"
-      clipping:
-        enabled: true
-        min_z: 0.0
-        max_z: 0.48
-      min_z:
-        # Terrain requires a denser lower-surface cluster.  Sparse top-surface
-        # returns are independently retained as obstacles after terrain filtering.
-        min_points_per_cell: 3
-        supported_min_enabled: true
-        # A terrain sample must agree with nearby low returns within 2.5 cm;
-        # isolated low noise no longer becomes the selected ground surface.
-        support_band: 0.025
-        obstacle_override_enabled: true
-        obstacle_min_height: 0.035
-        obstacle_min_points: 1
-        obstacle_support_band: 0.06
-        # Project only obstacle tops into the neighboring height-map cells so
-        # Point-LIO's coarser local-map voxels still produce a continuous edge.
-        obstacle_projection_radius_cells: 0
-      cloud_registered_fill:
-        enabled: false
-        percentile: 0.15
-        min_points_per_cell: 2
-        # Disabled with the local registered-scan fallback. Missing cells are
-        # handled from the stable global map instead.
-        initial_floor_fill_enabled: false
-        initial_floor_max_local_coverage: 0.25
-        floor_min_points: 20
-        floor_support_band: 0.08
-        initial_keep_min_support: 3
-      frame_aggregation:
-        robust_height_gate: 0.025
-        intra_cell_min_support_gap: 0.02
-        intra_cell_min_support_count: 3
-        edge_mix_height_diff: 0.02
-        edge_prefer_prev_support_count: 0
-        fill_missing_from_previous_grid: false
-        cell_height_percentile: 0.15
-        # Applied only to terrain; obstacle candidates are overlaid afterwards so
-        # their edges do not leave temporal or spatial smoothing tails.
-        temporal_alpha: 0.85
-      isolated_filter:
-        # Remove sparse spikes against a 5 x 5-cell neighborhood before
-        # smoothing. The 2 cm compatibility test protects real edges.
-        radius: 2
-        min_support_neighbors: 5
-        support_height_diff: 0.02
-        outlier_height_diff: 0.025
-        every_n_frames: 1
-      hole_fill:
-        radius: 2
-        min_neighbors: 5
-        max_height_diff: 0.02
-      bilateral:
-        # Smooth valid samples over 2 cm, but never average across a 2.5 cm
-        # discontinuity. Obstacles are overlaid after this terrain-only stage.
-        radius: 2
-        sigma_spatial: 1.3
-        sigma_height: 0.012
-        max_height_diff: 0.025
-        passes: 2
-        every_n_frames: 1
-    start_lidar_driver: true
-    start_point_lio: true
-    child_use_sim_time: false
+    height_map_quality_topic: "/autonomy_light/height_map_quality"
+    heartbeat_topic: "/autonomy_light/heartbeat"

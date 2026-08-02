@@ -1,14 +1,17 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 import launch
 
 ################### user configure parameters for ros2 start ###################
 xfer_format   = 1    # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
 multi_topic   = 0    # 0-All LiDARs share the same topic, 1-One LiDAR one topic
 data_src      = 0    # 0-lidar, others-Invalid data src
-publish_freq  = 10.0 # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
+publish_freq  = 50.0 # Default ROS message aggregation rate in Hz.
 output_type   = 0
 frame_id      = 'livox_frame'
 lvx_file_path = '/home/livox/livox_test.lvx'
@@ -33,15 +36,19 @@ livox_ros2_params = [
 
 
 def generate_launch_description():
+    publish_rate = LaunchConfiguration('publish_freq')
+    params = list(livox_ros2_params)
+    params[3] = {"publish_freq": ParameterValue(publish_rate, value_type=float)}
     livox_driver = Node(
         package='livox_ros_driver2',
         executable='livox_ros_driver2_node',
         name='livox_lidar_publisher',
         output='screen',
-        parameters=livox_ros2_params
+        parameters=params
         )
 
     return LaunchDescription([
+        DeclareLaunchArgument('publish_freq', default_value=str(publish_freq)),
         livox_driver,
         # launch.actions.RegisterEventHandler(
         #     event_handler=launch.event_handlers.OnProcessExit(
