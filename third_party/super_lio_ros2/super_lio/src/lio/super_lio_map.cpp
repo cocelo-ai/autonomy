@@ -35,16 +35,16 @@ void SuperLIO::caceData() {
 
 void SuperLIO::ProcessCaceMap() {
   namespace fs = std::filesystem;
-  PointCloudType::Ptr merged(new PointCloudType());
+  BASIC::PointCloudType::Ptr merged(new BASIC::PointCloudType());
   const auto cache = g_save_map_dir + "/PCD";
   for (const auto& entry : fs::directory_iterator(cache)) {
     if (entry.path().extension() != ".pcd" ||
         entry.path().filename().string().find("scans_") == std::string::npos) continue;
-    PointCloudType cloud;
-    if (pcl::io::loadPCDFile<PointType>(entry.path().string(), cloud) == 0) *merged += cloud;
+    BASIC::PointCloudType cloud;
+    if (pcl::io::loadPCDFile<BASIC::PointType>(entry.path().string(), cloud) == 0) *merged += cloud;
   }
-  pcl::VoxelGrid<PointType> filter;
-  PointCloudType output;
+  pcl::VoxelGrid<BASIC::PointType> filter;
+  BASIC::PointCloudType output;
   filter.setInputCloud(merged);
   filter.setLeafSize(g_map_ds_size, g_map_ds_size, g_map_ds_size);
   if (g_if_filter) filter.filter(output); else output = *merged;
@@ -73,8 +73,8 @@ void SuperLIO::saveMap() {
     ProcessCaceMap();
     return;
   }
-  pcl::VoxelGrid<PointType> filter;
-  PointCloudType output;
+  pcl::VoxelGrid<BASIC::PointType> filter;
+  BASIC::PointCloudType output;
   filter.setInputCloud(point_map_);
   filter.setLeafSize(g_map_ds_size, g_map_ds_size, g_map_ds_size);
   filter.filter(output);
