@@ -77,6 +77,8 @@ public:
   void pub_processing_time(double time, double current_time, double mean_time, double std_time);
 
   void set_global_map(const BASIC::CloudPtr& global_map);
+  void setMapToOdom(const BASIC::SE3& map_to_odom);
+  BASIC::SE3 globalPose(const BASIC::SE3& odom_pose) const;
 
   void set_initial_data(BASIC::SE3& init_pose, bool& flg_get_init_guess, bool flg_finish_init = false);
 
@@ -112,6 +114,8 @@ private:
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   BASIC::V3 last_path_point_ = BASIC::V3(0, 0, -100);
+  BASIC::SE3 map_to_odom_;
+  bool has_map_to_odom_ = false;
 
 /// output.
 private:

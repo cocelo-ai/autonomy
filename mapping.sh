@@ -11,8 +11,7 @@ Mapping options:
   --output-dir DIR       Directory for the default output file. Default: ./maps
   --dry-run              Print the command without starting mapping.
 
-The map is built from Super-LIO's /lio/cloud_world stream, voxelized by the
-single autonomy_light elevation node, and saved on the first Ctrl+C.
+Super-LIO saves the loop-closed pose-graph map on the first Ctrl+C.
 EOF
 }
 
@@ -78,6 +77,7 @@ COMMAND=(
   "${LAUNCH_ARGS[@]}"
   --
   -p "mapping_only:=true"
+  -p "odom_frame:=map"
   -p "mapping_pcd_file:=${OUTPUT_FILE}"
   "${EXTRA_ROS_ARGS[@]}"
 )
@@ -96,7 +96,7 @@ if [[ -e "${OUTPUT_FILE}" ]]; then
   echo "previous refined map moved to: ${backup}"
 fi
 
-echo "mapping mode: Super-LIO global-frame scans -> voxel map=${OUTPUT_FILE}"
+echo "mapping mode: Super-LIO pose-graph SLAM -> map=${OUTPUT_FILE}"
 echo "stop with Ctrl+C once data collection is complete."
 
 "${COMMAND[@]}" &
@@ -136,9 +136,9 @@ fi
 META_FILE="${OUTPUT_FILE}.yaml"
 {
   echo "created_at: \"${TIMESTAMP}\""
-  echo "algorithm: \"Super-LIO\""
+  echo "algorithm: \"Super-LIO pose graph (Scan Context + GICP + iSAM2)\""
   echo "pcd: \"${OUTPUT_FILE}\""
-  echo "voxelized_by: \"autonomy_light\""
+  echo "optimized_by: \"Super-LIO\""
 } > "${META_FILE}"
 echo "saved Super-LIO map: ${OUTPUT_FILE}"
 echo "saved metadata: ${META_FILE}"

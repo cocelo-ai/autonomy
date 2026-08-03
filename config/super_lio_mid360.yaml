@@ -10,8 +10,22 @@
 
     lio.ros.lidar_topic: "/livox/lidar"
     lio.ros.imu_topic: "/livox/imu"
-    # `relocation_node` overrides this to map. Normal mapping uses odom.
+    # Normal LIO uses odom; mapping.sh and relocation use map.
     lio.ros.global_frame: "odom"
+    # Relocation publishes the NDT/ICP correction as map -> odom -> imu.
+    lio.ros.odom_frame: "odom"
+
+    # Enabled by mapping.sh: keyframes + Scan Context + GICP + iSAM2.
+    # The correction is recomputed slowly, but its TF is broadcast at LiDAR rate.
+    lio.slam.enable: false
+    lio.slam.keyframe_distance: 1.0
+    lio.slam.keyframe_yaw_deg: 10.0
+    lio.slam.keyframe_leaf_size: 0.10
+    lio.slam.loop_descriptor_threshold: 0.25
+    lio.slam.loop_fitness_threshold: 0.35
+    lio.slam.loop_max_correspondence: 2.5
+    lio.slam.loop_min_keyframes: 30
+    lio.slam.correction_update_sec: 1.0
 
     lio.sensor.lidar_type: 1 # Livox CustomMsg
     lio.sensor.blind: 0.5
@@ -53,3 +67,9 @@
     lio.output.pub_step: 1
 
     lio.eva.timer: false
+
+    # Saved-map localization keeps a local LIO map and aligns it to the PCD at 1 Hz.
+    lio.relocation.global_update_sec: 1.0
+    lio.relocation.global_search_radius: 40.0
+    lio.relocation.global_fitness_threshold: 0.5
+    lio.relocation.correction_alpha: 0.2

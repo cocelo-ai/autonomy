@@ -1,0 +1,5 @@
+module core_dds {
+  struct HeightMap {
+    sequence<float> data;
+  };
+};

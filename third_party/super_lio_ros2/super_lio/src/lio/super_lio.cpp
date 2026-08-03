@@ -72,8 +72,19 @@ void SuperLIO::init(){
   world_pc_.reset(new PointCloudType());
   ds_world_.reset(new PointCloudType());
 
-  if(g_save_map){
+  if(g_save_map && !g_slam_enable){
     point_map_.reset(new PointCloudType());
+  }
+  if (g_slam_enable) {
+    if (g_global_frame == g_odom_frame) {
+      g_global_frame = "map";
+    }
+    pose_graph_ = std::make_unique<PoseGraph>(PoseGraph::Options{
+        g_slam_keyframe_distance, g_slam_keyframe_yaw_deg * static_cast<float>(M_PI / 180.0),
+        g_slam_keyframe_leaf_size, g_slam_loop_descriptor_threshold,
+        g_slam_loop_fitness_threshold, g_slam_loop_max_correspondence,
+        g_slam_correction_update_sec, g_slam_loop_min_keyframes});
+    data_wrapper_->setMapToOdom(SE3());
   }
   
   points_world_v3_.reserve(21000);
@@ -204,149 +215,9 @@ void SuperLIO::stateProcess(){
     Observe();
     UpdateMap();
   }
+  updatePoseGraph();
   Output();
   caceData();
-}
-
-
-void SuperLIO::caceData(){
-  if(!g_save_map) return;
-  auto state = kf_->GetNavState();
-  Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
-  transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
-  transformation.block<3, 1>(0, 3) = state.p.cast<float>();
-
-  if(g_if_filter){
-    pcl::transformPointCloud(*ds_undistort_, *world_pc_, transformation);
-  }else{
-    pcl::transformPointCloud(*scan_undistort_full_, *world_pc_, transformation);
-  }
-
-  static int scan_wait_num = 0;
-  if(!world_pc_->empty()){
-    *point_map_ += *world_pc_;
-    scan_wait_num++;
-  }
-
-  if(g_pcd_save_interval < 0) {
-    scan_wait_num = 0;
-    return;
-  }
-
-  static bool rm_PCD_dir = false;
-  if(!rm_PCD_dir){
-    rm_PCD_dir = true;
-    std::string cmd = "rm -rf " + g_save_map_dir + "/PCD";
-    [[maybe_unused]] int res;
-    res = system(cmd.c_str());
-    cmd = "mkdir -p " + g_save_map_dir + "/PCD";
-    res = system(cmd.c_str());
-  }
-
-  if (point_map_->size() > 0 && scan_wait_num >= g_pcd_save_interval) {
-    pcd_index_++;
-    std::string map_name(std::string(g_save_map_dir + "/PCD/scans_") + std::to_string(pcd_index_) +
-                               std::string(".pcd"));
-    LOG(INFO) << GREEN << " ---> current scan saved to /PCD/scans_" << pcd_index_ << "  size:  " << point_map_->size() << RESET;
-    pcl::io::savePCDFileBinary(map_name, *point_map_);
-    point_map_->clear();
-    scan_wait_num = 0;
-  }
-}
-
-
-void SuperLIO::ProcessCaceMap(){
-  namespace fs = std::filesystem;
-
-  std::string pcd_folder = g_save_map_dir + "/PCD";
-  std::string output_map_name = g_save_map_dir + "/" + g_map_name;
-
-  LOG(INFO) << YELLOW << " ---> Merging PCD fragments in: " << pcd_folder << RESET;
-
-  PointCloudType::Ptr merged_map(new PointCloudType());
-
-  int count = 0;
-  for (const auto& entry : fs::directory_iterator(pcd_folder)) {
-    if (entry.path().extension() == ".pcd" &&
-      entry.path().filename().string().find("scans_") != std::string::npos) {
-      PointCloudType::Ptr tmp_cloud(new PointCloudType());
-      if (pcl::io::loadPCDFile<PointType>(entry.path().string(), *tmp_cloud) == 0) {
-        *merged_map += *tmp_cloud;
-        count++;
-        // LOG(INFO) << GREEN << " ---> Merged: " << entry.path().filename().string() 
-        //           << "   size: " << tmp_cloud->size() << RESET;
-      } else {
-        LOG(WARNING) << RED << " ---> Failed to load: " << entry.path().string() << RESET;
-      }
-    }
-  }
-
-  LOG(INFO) << YELLOW << " ---> Total merged fragments: " << count << RESET;
-
-  PointCloudType filtered_map;
-
-  if(g_if_filter){
-    LOG(INFO) << YELLOW << " ---> Downsampling merged map before final save..." << RESET;
-    pcl::VoxelGrid<PointType> voxel_filter;
-    voxel_filter.setLeafSize(g_map_ds_size, g_map_ds_size, g_map_ds_size);
-    
-    voxel_filter.setInputCloud(merged_map);
-    voxel_filter.filter(filtered_map);
-  }else{
-    LOG(INFO) << YELLOW << " ---> Not Downsampling merged map before final save..." << RESET;
-    filtered_map = *merged_map;
-  }
-  
-  if (filtered_map.size() > 0) {
-    filtered_map.width = filtered_map.size();
-    filtered_map.height = 1;
-    filtered_map.is_dense = false;
-  }
-
-  pcl::io::savePCDFileBinary(output_map_name, filtered_map);
-
-  LOG(INFO) << GREEN << " ---> Final map saved to: " << output_map_name << RESET;
-  LOG(INFO) << GREEN << " ---> Final map size: " << filtered_map.size() << RESET;
-}
-
-
-void SuperLIO::saveMap(){
-  if(!g_save_map) return;
-  if(g_pcd_save_interval > 0){
-    LOG(INFO) << YELLOW << " ---> Saving last cace ... " << RESET;
-    if (point_map_->size() > 0) {
-      pcd_index_++;
-      std::string map_name(std::string(g_save_map_dir + "/PCD/scans_") + std::to_string(pcd_index_) +
-                                 std::string(".pcd"));
-      LOG(INFO) << GREEN << " ---> current scan saved to /PCD/scans_" << pcd_index_ << "  size:  " << point_map_->size() << RESET;
-      pcl::io::savePCDFileBinary(map_name, *point_map_);
-      point_map_->clear();
-    }
-    LOG(INFO) << GREEN << " ---> Save last cace success. " << RESET;
-    LOG(INFO) << YELLOW << " ---> Process cace map ... " << RESET;
-    ProcessCaceMap();
-    LOG(INFO) << GREEN << " ---> Process cace map success. " << RESET;
-    return;
-  }
-
-  LOG(INFO) << YELLOW << " ---> Saving map..... " << RESET;
-  if(!point_map_->empty()){
-    std::string map_name = g_save_map_dir + "/" + g_map_name;
-    LOG(INFO) << YELLOW << " ---> Save map to: " << map_name << RESET;
-    pcl::VoxelGrid<PointType> voxel_fliter;
-    PointCloudType latst_map;
-    voxel_fliter.setInputCloud(point_map_);
-    voxel_fliter.setLeafSize(g_map_ds_size, g_map_ds_size, g_map_ds_size);
-    voxel_fliter.filter(latst_map);
-    if(latst_map.size() > 0){
-      latst_map.width = latst_map.size();
-      latst_map.height = 1;
-      latst_map.is_dense = false;
-    }
-    pcl::io::savePCDFileBinary(map_name, latst_map);
-    LOG(INFO) << GREEN << " ---> Save map success. File: " << map_name << RESET;
-    LOG(INFO) << GREEN << " ---> Map size: " << latst_map.size() << RESET;
-  }
 }
 
 
@@ -556,14 +427,25 @@ void SuperLIO::UpdateMap() {
 
 }
 
+void SuperLIO::updatePoseGraph() {
+  if (!pose_graph_ || ds_undistort_->empty()) {
+    return;
+  }
+  const auto state = kf_->GetSE3();
+  pose_graph_->addKeyframe(state, ds_undistort_, measures_.lidar.end_time);
+  SE3 map_to_odom;
+  if (pose_graph_->takeCorrection(measures_.lidar.end_time, map_to_odom)) {
+    data_wrapper_->setMapToOdom(map_to_odom);
+  }
+}
+
 
 void SuperLIO::Output(){
   auto state = kf_->GetNavState();
   data_wrapper_->pub_odom(state);  
 
-  Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
-  transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
-  transformation.block<3, 1>(0, 3) = state.p.cast<float>();
+  const SE3 global_pose = data_wrapper_->globalPose(state.GetSE3());
+  Eigen::Matrix4f transformation = global_pose.matrix();
 
   CloudPtr world_pc(new PointCloudType());
   

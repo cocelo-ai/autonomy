@@ -24,6 +24,17 @@ namespace LI2Sup{
   string g_imu_topic;
   string g_lidar_topic;
   string g_global_frame = "map";
+  string g_odom_frame = "odom";
+
+  bool g_slam_enable = false;
+  float g_slam_keyframe_distance = 1.0f;
+  float g_slam_keyframe_yaw_deg = 10.0f;
+  float g_slam_keyframe_leaf_size = 0.1f;
+  float g_slam_loop_descriptor_threshold = 0.25f;
+  float g_slam_loop_fitness_threshold = 0.35f;
+  float g_slam_loop_max_correspondence = 2.5f;
+  int g_slam_loop_min_keyframes = 30;
+  double g_slam_correction_update_sec = 1.0;
 
   int    g_lidar_type;
   float  g_blind2;
@@ -72,7 +83,10 @@ namespace LI2Sup{
   ResidualType g_residual_type = PROB;
 
   /// for relocation
-  bool g_update_map = false;
+  double g_reloc_global_update_sec = 1.0;
+  float g_reloc_global_search_radius = 40.0f;
+  float g_reloc_global_fitness_threshold = 0.5f;
+  float g_reloc_correction_alpha = 0.2f;
   double g_init_px, g_init_py, g_init_pz, g_init_roll, g_init_pitch, g_init_yaw;
 
 }

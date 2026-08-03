@@ -27,6 +27,7 @@ find_package(livox_ros_driver2 REQUIRED)
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED)
 find_package(Glog REQUIRED)
+find_package(GTSAM REQUIRED)
 find_package(basic REQUIRED)
 
 
@@ -71,6 +72,7 @@ ament_target_dependencies(lio PUBLIC
 target_link_libraries(lio PUBLIC
   Eigen3::Eigen
   ${PCL_LIBRARIES}
+  gtsam
   glog
   pthread
   ${cpp_typesupport_target}

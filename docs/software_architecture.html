@@ -30,7 +30,7 @@
   <table>
     <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
     <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
-    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, registered global cloud, and saved-map relocation.</td></tr>
+    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, Scan Context + GICP + iSAM2 full SLAM, saved-map relocation, and continuous <code>map → odom → imu</code> TF.</td></tr>
     <tr><td><code>autonomy_light</code></td><td>this package</td><td>One node: base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
   </table>
 
@@ -46,8 +46,10 @@
   </table>
   <p>TF is <code>odom|map → base_link → base_link_gravity</code> and static
   <code>base_link → lidar_link</code>. Normal operation uses <code>odom</code>; a saved map runs
-  Super-LIO <code>relocation_node</code> and uses <code>map</code>. There is no <code>world</code>
-  frame and no locally computed <code>map → odom</code> correction.</p>
+  Super-LIO <code>relocation_node</code> and uses <code>map</code>. After its NDT→ICP registration
+  succeeds, Super-LIO continuously publishes <code>map → odom → imu</code>; the transform is only
+  recalculated at the configured low global-registration rate. Mapping runs the pose graph in
+  Super-LIO. There is no <code>world</code> frame or duplicate SLAM backend in this package.</p>
 
   <h2>Elevation source selection</h2>
   <table>
@@ -68,8 +70,8 @@
 
   <h2>Removed ownership</h2>
   <ul>
-    <li>Local pose graph, Scan Context loop closure, and map reconstruction</li>
-    <li>FPFH/GICP initial localization and runtime map correction</li>
+    <li>Duplicate local pose graph, Scan Context loop closure, and map reconstruction</li>
+    <li>FPFH/GICP initial localization and runtime map correction outside Super-LIO</li>
     <li>Secondary LiDAR merger and custom ROS-domain bridge executors</li>
     <li>Separate raw/refined/ROI map pipelines and duplicated path subscription</li>
   </ul>

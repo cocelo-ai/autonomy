@@ -29,16 +29,17 @@ private:
   bool kf_init() override;
   bool map_init() override;
   void UpdateMap() override;
-  void Output() override;
+  void updateMapCorrection();
 
 private:
   BASIC::CloudPtr init_obs_data_;
   bool flg_get_init_guess_ = false;
   BASIC::SE3 re_init_pose_;
+  BASIC::SE3 map_to_odom_;
+  double last_global_update_{-1.0};
 };
 
 } // namespace END.
 
 #endif
-
 

@@ -1,70 +1,15 @@
 
 #include "lio/super_lio_reloc.h"
 
-#include <sys/resource.h>
-#include <tbb/parallel_for.h>
-#include <tbb/blocked_range.h>
-#include <tbb/concurrent_vector.h>
-#include <tbb/enumerable_thread_specific.h>
-
+#include <algorithm>
 #include <pcl/registration/icp.h>
 #include <pcl/registration/ndt.h>
-#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/filters/crop_box.h>
 
 
 using namespace BASIC;
 
 namespace LI2Sup{
-
-inline bool calc_plane_coeff(const int N, const std::array<V3, 5>& points, std::array<double, 4>& abcd)
-{
-  Eigen::Vector3d normvec;
-  if (N == 5) {
-    Eigen::Matrix<double, 5, 3> A;
-    Eigen::Matrix<double, 5, 1> b;
-    for (int j = 0; j < 5; j++) {
-      A.row(j) = points[j].cast<double>();
-      b(j) = -1.0;
-    }
-    normvec = A.colPivHouseholderQr().solve(b);
-  }
-  else {
-    Eigen::Matrix<double, 4, 3> A;
-    Eigen::Matrix<double, 4, 1> b;
-
-    for (int j = 0; j < N; j++) {
-      A.row(j) = points[j].cast<double>();
-      b(j) = -1.0;
-    }
-    normvec = A.colPivHouseholderQr().solve(b);
-  }
-
-  double n = normvec.norm();
-  if (n < 1e-6f) return false;
-
-  abcd[3] = 1.0 / n;
-  normvec *= abcd[3];
-  abcd[0] = normvec[0];
-  abcd[1] = normvec[1];
-  abcd[2] = normvec[2];
-  
-  for (int i = 0; i < N; ++i) {
-    const V3& p = points[i];
-    auto dist = abcd[0] * p(0) + abcd[1] * p(1) + abcd[2] * p(2) + abcd[3];
-    if (std::abs(dist) > 0.1) return false;
-  }
-  return true;
-}
-
-
-inline bool compute_error(
-  const std::array<double, 4>& abcd, const V3& point, 
-  const float length, scalar& error)
-{
-  error = abcd[0] * point[0] + abcd[1] * point[1] + abcd[2] * point[2] + abcd[3];
-  return length > 81 * error * error;
-}
-
 
 void SuperLIOReLoc::init(){
   ivox_.reset(new OctVoxMapType(OctVoxMapType::Options{g_ivox_resolution, g_ivox_capacity}));
@@ -107,15 +52,6 @@ bool SuperLIOReLoc::map_init(){
 
   std::vector<int> useless_indices;
   pcl::removeNaNFromPointCloud(*point_map_, *point_map_, useless_indices);
-
-  VV3 point_map_v3;
-  point_map_v3.reserve(point_map_->size());
-  for(const auto& point: *point_map_){
-    V3 pt(point.x, point.y, point.z);
-    point_map_v3.push_back(pt);
-  }
-
-  ivox_->insert(point_map_v3);
 
   LOG(INFO) << GREEN << " ---> Load map success. File: " << map_name << RESET;
   LOG(INFO) << GREEN << " ---> Map size: " << point_map_->size() << RESET;
@@ -249,16 +185,24 @@ bool SuperLIOReLoc::kf_init(){
   float imu_scale = g_gravity_norm / mean_acce.norm();
   kf_->SetInitialConditions(options, mean_gyro, V3::Zero(), imu_scale, ref_gravity);
   auto state = kf_->GetSysState();
-  /// The horizontal initial state of the imu in the robot coordinate system.
-  state.R = SO3(init_guess_T.block<3, 3>(0, 0));
-  state.p = init_guess_T.block<3, 1>(0, 3);
-  state.timestamp = -1.0;
+  const SE3 odom_to_imu(SO3(rot), V3::Zero());
+  state.R = odom_to_imu.so3();
+  state.p = odom_to_imu.t_;
+  state.timestamp = measures_.imu.back().secs;
   kf_->SetX(state);
   sys_init_pose_ = kf_->GetSE3();
+  map_to_odom_ = SE3(init_guess_T) * odom_to_imu.inverse();
+  data_wrapper_->setMapToOdom(map_to_odom_);
+  VV3 initial_points;
+  initial_points.reserve(init_obs_data_->size());
+  for (const auto& point : init_obs_data_->points) {
+    initial_points.push_back(odom_to_imu * (g_lidar_imu * V3(point.x, point.y, point.z)));
+  }
+  ivox_->insert(initial_points);
+  kf_->SetLastObsTime(measures_.lidar.end_time);
+  last_global_update_ = measures_.lidar.end_time;
 
   {
-    point_map_->clear();
-    point_map_.reset(new PointCloudType());
     init_obs_data_->clear();
     init_obs_data_ = nullptr;
     data_wrapper_->set_initial_data(re_init_pose_, flg_get_init_guess_, true);
@@ -269,60 +213,56 @@ bool SuperLIOReLoc::kf_init(){
 
 
 void SuperLIOReLoc::UpdateMap() {
-  if(!g_update_map) return;
-  
-  static int __update_delay = 100;
-  if(__update_delay > 0){
-    __update_delay--;
-    std::cout << "Update map Delay: " << 100 - __update_delay << " %" << std::endl;
-    return;
+  SuperLIO::UpdateMap();
+  const double stamp = measures_.lidar.end_time;
+  if (stamp - last_global_update_ >= g_reloc_global_update_sec) {
+    last_global_update_ = stamp;
+    updateMapCorrection();
   }
-
-  const size_t ptsize = ds_undistort_->size();
-  if (ptsize == 0) return;
-  
-  last_pose_ = kf_->GetSE3();
-  points_world_v3_.resize(ptsize);
-  
-  const auto R = last_pose_.R_;
-  const auto t = last_pose_.t_;
-  
-  for (size_t i = 0; i < ptsize; ++i) {
-    const auto& pt = points_body_v3_[i];
-    points_world_v3_[i] = R * pt + t;
-  }
-  
-  ivox_->insert(points_world_v3_);
-
 }
 
 
-void SuperLIOReLoc::Output() {
-  auto state = kf_->GetNavState();
-  data_wrapper_->pub_odom(state);  
-
-  Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
-  transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
-  transformation.block<3, 1>(0, 3) = state.p.cast<float>();
-
-  CloudPtr world_pc(new PointCloudType());
-  
-  if(g_visual_map){
-    static int count = -1;
-    count++;
-    if(count % g_pub_step != 0){
-      return;
-    }
-    count = 0;
-    if(g_visual_dense){
-      pcl::transformPointCloud(*scan_undistort_full_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }else{
-      pcl::transformPointCloud(*ds_undistort_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }
+void SuperLIOReLoc::updateMapCorrection() {
+  if (point_map_->empty() || ds_undistort_->empty()) {
+    return;
   }
-
+  const SE3 odom_to_imu = kf_->GetSE3();
+  const SE3 predicted = map_to_odom_ * odom_to_imu;
+  pcl::CropBox<PointType> crop;
+  crop.setInputCloud(point_map_);
+  const float radius = g_reloc_global_search_radius;
+  crop.setMin(Eigen::Vector4f(predicted.t_[0] - radius, predicted.t_[1] - radius,
+                              predicted.t_[2] - radius, 1.0F));
+  crop.setMax(Eigen::Vector4f(predicted.t_[0] + radius, predicted.t_[1] + radius,
+                              predicted.t_[2] + radius, 1.0F));
+  CloudPtr target(new PointCloudType());
+  crop.filter(*target);
+  if (target->size() < 100U) {
+    return;
+  }
+  pcl::NormalDistributionsTransform<PointType, PointType> ndt;
+  ndt.setInputSource(ds_undistort_);
+  ndt.setInputTarget(target);
+  ndt.setResolution(1.0);
+  ndt.setMaximumIterations(15);
+  PointCloudType aligned;
+  ndt.align(aligned, predicted.matrix());
+  pcl::IterativeClosestPoint<PointType, PointType> icp;
+  icp.setInputSource(ds_undistort_);
+  icp.setInputTarget(target);
+  icp.setMaxCorrespondenceDistance(3.0);
+  icp.setMaximumIterations(24);
+  icp.align(aligned, ndt.getFinalTransformation());
+  if (!icp.hasConverged() || icp.getFitnessScore() > g_reloc_global_fitness_threshold) {
+    return;
+  }
+  const SE3 target_correction = SE3(icp.getFinalTransformation()) * odom_to_imu.inverse();
+  const float alpha = std::clamp(g_reloc_correction_alpha, 0.0F, 1.0F);
+  const Quat rotation(map_to_odom_.R_);
+  const Quat target_rotation(target_correction.R_);
+  map_to_odom_ = SE3(rotation.slerp(alpha, target_rotation).toRotationMatrix(),
+                      (1.0F - alpha) * map_to_odom_.t_ + alpha * target_correction.t_);
+  data_wrapper_->setMapToOdom(map_to_odom_);
 }
 
 

@@ -15,7 +15,7 @@ digraph autonomy_light {
   rviz [label="RViz / PCD consumer", fillcolor="#f5f7fa"];
 
   livox -> lio [label="Livox CustomMsg + IMU"];
-  lio -> runtime [label="/lio/odom\n/lio/cloud_world"];
+  lio -> runtime [label="/lio/odom\n/lio/cloud_world\nfull SLAM / relocation: map → odom → imu TF"];
   runtime -> control [label="/autonomy_light/height_map_data\n/height_map_quality\n/odom, TF"];
   runtime -> dds [label="DDS: height_map\ncore_dds::HeightMap", style=dashed];
   runtime -> rviz [label="/autonomy_light/live_map\n/height_map"];

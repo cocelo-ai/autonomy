@@ -14,10 +14,15 @@ LiDAR odometry를 소비하고, robot-centric elevation map을 발행한다.
 | output | `/autonomy_light/height_map` | `sensor_msgs/msg/PointCloud2` | `base_link_gravity` |
 | output | `/autonomy_light/live_map` | `sensor_msgs/msg/PointCloud2` | global |
 
-TF is `odom|map → base_link → base_link_gravity`, plus static
-`base_link → lidar_link`. A saved map selects Super-LIO `relocation_node` and
-therefore uses `map`; normal operation uses `odom`. No `world` frame and no
-locally generated `map → odom` correction exist.
+`autonomy_light` publishes `odom|map → base_link → base_link_gravity`, plus
+static `base_link → lidar_link`. A saved map selects Super-LIO
+`relocation_node` and therefore uses `map`; normal operation uses `odom`. No
+`world` frame exists. Mapping uses Super-LIO keyframes, Scan Context candidate
+search, GICP verification and an iSAM2 pose graph; its corrected `map → odom →
+imu` TF remains continuously broadcast. Saved-map localization keeps local LIO
+in `odom` and refreshes the NDT→ICP `map → odom` correction at the configured
+low rate. `/lio/odom` and `/lio/cloud_world` remain in the selected global
+frame; this package does not duplicate the SLAM backend.
 
 `HeightMap.data` is `reference_height - terrain_height`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:

@@ -5,6 +5,7 @@
 
 #include <queue>
 #include <vector>
+#include <memory>
 #include <iostream>
 #include <cassert>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include "common/timer.h"
 #include "params.h"
 #include "ESKF.h"
+#include "pose_graph.hpp"
 #include "OctVoxMap/OctVoxMap.hpp"
 #include "OctVoxMap/VoxelGridFilter.h"
 #include "ros/ROSWrapper.h"
@@ -50,6 +52,7 @@ protected:
   virtual void Output();
   void caceData();
   void ProcessCaceMap();
+  void updatePoseGraph();
 
   using StateFn = void (SuperLIO::*)();
   using OctVoxMapType = OctVoxMap<BASIC::V3, BASIC::scalar>;
@@ -70,6 +73,7 @@ protected:
   int frame_num_ = 0;
   BASIC::SE3 sys_init_pose_;
   BASIC::SE3 last_pose_;
+  std::unique_ptr<PoseGraph> pose_graph_;
 
   std::size_t effect_knn_num_ = 0;
   BASIC::VV3 points_world_v3_, points_body_v3_;
@@ -86,5 +90,3 @@ protected:
 } // namespace END.
 
 #endif
-
-

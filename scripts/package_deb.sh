@@ -451,7 +451,7 @@ Bundled in this package:
 - receiver SDK example and documentation
 
 The package deliberately does not bundle /opt/ros/${ROS_DISTRO_NAME} or system
-libraries such as glibc/libstdc++/glog/TBB.
+libraries such as glibc/libstdc++/glog/TBB/GTSAM.
 EOF
 
 cat > "${STAGE_ROOT}/usr/bin/autonomy-light" <<EOF
@@ -568,7 +568,7 @@ Section: robotics
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: Cocelo <todo@example.com>
-Depends: bash, sudo, iproute2, python3, python3-numpy, python3-opencv
+Depends: bash, sudo, iproute2, python3, python3-numpy, python3-opencv, ros-${ROS_DISTRO_NAME}-gtsam
 Description: Cocelo autonomy-light runtime
  Runtime bundle for Livox MID360/MID360s driver, Super-LIO mapping, and
  control-facing autonomy-light height map outputs. Corresponding Super-LIO GPLv3

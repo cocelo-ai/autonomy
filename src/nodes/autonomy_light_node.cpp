@@ -252,6 +252,7 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
             "/config/super_lio_mid360.yaml"
       : super_lio_config_file_;
   const bool relocation = !saved_map_file_.empty();
+  const bool full_slam = mapping_only_ && !mapping_pcd_file_.empty();
   std::vector<std::string> command{
       "ros2", "run", "super_lio", relocation ? "relocation_node" : "super_lio_node",
       "--ros-args", "--params-file", config,
@@ -262,12 +263,17 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
       "-p", "lio.output.map:=true",
       "-p", "lio.output.dense:=true",
       "-p", "lio.output.pub_step:=1",
-      "-p", "lio.map.save_map:=false"};
+      "-p", "lio.map.save_map:=" + std::string(full_slam ? "true" : "false")};
+  if (full_slam) {
+    const auto map_path = std::filesystem::absolute(mapping_pcd_file_);
+    command.insert(command.end(), {"-p", "lio.slam.enable:=true",
+                                   "-p", "lio.map.save_map_dir:=" + map_path.parent_path().string(),
+                                   "-p", "lio.map.map_name:=" + map_path.filename().string()});
+  }
   if (relocation) {
     const auto map_path = std::filesystem::absolute(saved_map_file_);
     command.insert(command.end(), {"-p", "lio.map.save_map_dir:=" + map_path.parent_path().string(),
-                                   "-p", "lio.map.map_name:=" + map_path.filename().string(),
-                                   "-p", "lio.relocation.update_map:=false"});
+                                   "-p", "lio.map.map_name:=" + map_path.filename().string()});
   }
   if (child_use_sim_time_) {
     command.insert(command.end(), {"-p", "use_sim_time:=true"});
@@ -291,6 +297,9 @@ void AutonomyLightNode::publishStaticTransform() {
 }
 
 void AutonomyLightNode::saveMap() {
+  if (mapping_only_ && start_super_lio_) {
+    return;
+  }
   if (mapping_pcd_file_.empty()) {
     return;
   }

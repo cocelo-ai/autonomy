@@ -41,6 +41,17 @@ namespace LI2Sup{
   extern std::string g_imu_topic;
   extern std::string g_lidar_topic;
   extern std::string g_global_frame;
+  extern std::string g_odom_frame;
+
+  extern bool g_slam_enable;
+  extern float g_slam_keyframe_distance;
+  extern float g_slam_keyframe_yaw_deg;
+  extern float g_slam_keyframe_leaf_size;
+  extern float g_slam_loop_descriptor_threshold;
+  extern float g_slam_loop_fitness_threshold;
+  extern float g_slam_loop_max_correspondence;
+  extern int g_slam_loop_min_keyframes;
+  extern double g_slam_correction_update_sec;
 
   extern int   g_lidar_type;       // 1: mid360, 2: hesai16, 3: velo16, 4: velo32, 5: vel_nclt, 6: ls16 
   extern float g_blind2;
@@ -96,7 +107,10 @@ namespace LI2Sup{
 
 
   /// for relocation
-  extern bool g_update_map;
+  extern double g_reloc_global_update_sec;
+  extern float g_reloc_global_search_radius;
+  extern float g_reloc_global_fitness_threshold;
+  extern float g_reloc_correction_alpha;
   extern double g_init_px, g_init_py, g_init_pz, g_init_roll, g_init_pitch, g_init_yaw;
 
 }

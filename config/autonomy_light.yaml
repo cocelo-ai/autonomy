@@ -67,15 +67,15 @@ autonomy_light:
       max_points: 2000000
       publish_interval_sec: 1.0
 
-    # `mapping.sh` sets these. No local pose graph is run in this package.
+    # `mapping.sh` enables the third-party Super-LIO pose graph and owns PCD saving.
     mapping_only: false
     mapping_pcd_file: ""
     saved_map_file: ""
     saved_map_frame: "map"
     saved_map_topic: "/autonomy_light/saved_map"
 
-    # Super-LIO's native relocation_node owns saved-map localization.
-    # No FPFH/GICP or map->odom correction exists in autonomy_light.
+    # Super-LIO owns full SLAM and saved-map localization. It broadcasts the
+    # latest map -> odom correction at LiDAR rate, while updating it slowly.
     raw_lidar_topic: "/livox/lidar"
     raw_imu_topic: "/livox/imu"
     raw_lidar_msg_type: "livox_custom"

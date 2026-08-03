@@ -1,8 +1,8 @@
 # cocelo-autonomy-light
 
-Super-LIO의 LiDAR–IMU SLAM 출력을 받아 제어용 elevation map을 만드는 단일 ROS 2
-노드 런타임이다. 이 패키지는 SLAM·loop closure·GICP를 다시 구현하지 않는다.
-그 책임은 외부 Super-LIO에 두고, `autonomy_light`는 높이 지도와 PCD 저장만 맡는다.
+Super-LIO의 full LiDAR–IMU SLAM 출력을 받아 제어용 elevation map을 만드는 단일 ROS 2
+노드 런타임이다. loop closure·pose graph·PCD 저장은 Super-LIO가 맡고,
+`autonomy_light`는 높이 지도만 맡는다.
 
 ```text
 Livox CustomMsg + IMU → Super-LIO → /lio/odom, /lio/cloud_world
@@ -35,8 +35,10 @@ source install/setup.bash
 ```
 
 저장 지도 모드에서는 Super-LIO `relocation_node`가 PCD를 직접 읽고 재지역화한다.
-출력 global frame은 `map`이다. 이 패키지에는 별도 FPFH/GICP 초기화나 `map → odom`
-보정이 없으므로 이중 변환이 생기지 않는다.
+출력 global frame은 `map`이다. 초기 NDT→ICP 정합 뒤에는 local LIO를 `odom`에서
+유지하고, 저장 PCD와의 NDT→ICP 보정을 기본 1 Hz로만 갱신한다. 마지막 유효 보정은
+LiDAR 출력마다 `map → odom → imu`로 계속 broadcast하므로 TF 체인이 끊기지 않는다.
+`/lio/odom`과 `/lio/cloud_world`는 `map` 좌표를 사용한다.
 
 ## Height-map source
 
@@ -73,9 +75,10 @@ height_map_output:
 발행하므로 플랫폼 전환 중 검증에 사용한다. DDS-only에서는 ROS height-map,
 quality, visualization topic을 발행하지 않는다.
 
-빌드에는 Cyclone DDS가 필요하다. Ubuntu ROS 환경에서는 보통
-`sudo apt install ros-$ROS_DISTRO-cyclonedds`로 설치하며, 다른 DDS participant와
-domain/network 설정을 맞추려면 동일한 `CYCLONEDDS_URI`를 사용한다.
+빌드에는 Cyclone DDS와 GTSAM이 필요하다. Ubuntu ROS 환경에서는 보통
+`sudo apt install ros-$ROS_DISTRO-cyclonedds ros-$ROS_DISTRO-gtsam`으로 설치하며,
+다른 DDS participant와 domain/network 설정을 맞추려면 동일한 `CYCLONEDDS_URI`를
+사용한다.
 
 ## LiDAR rate
 
@@ -91,8 +94,9 @@ CPU 여유와 Super-LIO 처리율은 `ros2 topic hz /lio/cloud_world`로 확인�
 ./mapping.sh --real --output maps/site.pcd
 ```
 
-`/lio/cloud_world`를 sparse voxel PCD로 축적하고 Ctrl+C 때 저장한다. 저장 PCD는
-그대로 `--map`의 입력이 된다. local pose graph는 의도적으로 제공하지 않는다.
+`mapping.sh`는 Super-LIO의 full SLAM 모드를 켠다. 1 m/10° keyframe, Scan Context
+후보, GICP 검증, iSAM2 pose graph로 loop closure를 최적화하고 Ctrl+C에 loop-closed
+PCD를 저장한다. 저장 PCD는 그대로 `--map`의 입력이 된다.
 
 ## Interfaces
 
@@ -107,7 +111,8 @@ CPU 여유와 Super-LIO 처리율은 `ros2 topic hz /lio/cloud_world`로 확인�
 | optional output | `height_map` | `core_dds::HeightMap` | direct Cyclone DDS custom payload |
 
 모든 토픽은 `ros_domain_id` 하나를 사용한다. `world` frame은 사용하지 않으며,
-normal mode는 `odom`, relocation mode는 `map`이 global frame이다.
+normal mode는 `odom`, full-SLAM mapping·relocation은 `map`이 global frame이다.
+두 global mode는 `map → odom → imu` 체인을 계속 발행하며 보정값만 저주기로 바꾼다.
 
 ## Code layout
 

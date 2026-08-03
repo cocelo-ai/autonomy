@@ -52,10 +52,10 @@ Ubuntu 24(22).04 · C++20 · ROS Jazzy(Humble) · Eigen · PCL
 
 ### Dependencies
 
-glog · TBB
+glog · TBB · GTSAM
 
 ```bash
-sudo apt install libgoogle-glog-dev libtbb-dev
+sudo apt install libgoogle-glog-dev libtbb-dev ros-$ROS_DISTRO-gtsam
 ```
 
 ### Build & Run
