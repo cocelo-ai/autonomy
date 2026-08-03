@@ -81,6 +81,11 @@ autonomy_light:
     raw_lidar_msg_type: "livox_custom"
     super_lio_odom_topic: "/lio/odom"
     super_lio_registered_topic: "/lio/cloud_world"
+    # Used only when height_map.source is rolling. A separate node joins the
+    # registered LiDAR cloud with one D435/D435i PointCloud2 stream.
+    rolling_merge:
+      enabled: false
+      output_topic: "/autonomy_light/rolling_cloud"
     super_lio_config_file: ""
     start_lidar_driver: true
     start_super_lio: true
@@ -88,6 +93,7 @@ autonomy_light:
     # sampling rate; 50 Hz yields shorter clouds and lower algorithmic latency.
     livox_publish_freq: 50.0
     child_use_sim_time: false
+
     child_shutdown_grace_sec: 0.8
 
     # Control and visualization outputs, all in ros_domain_id.
@@ -97,3 +103,15 @@ autonomy_light:
     height_map_msg_topic: "/autonomy_light/height_map_data"
     height_map_quality_topic: "/autonomy_light/height_map_quality"
     heartbeat_topic: "/autonomy_light/heartbeat"
+
+rolling_cloud_merge:
+  ros__parameters:
+    lidar_cloud_topic: "/lio/cloud_world"
+    # realsense2_camera with pointcloud.enable:=true, one D435 or D435i.
+    d435_cloud_topic: "/camera/camera/depth/color/points"
+    output_topic: "/autonomy_light/rolling_cloud"
+    max_sync_delta_sec: 0.06
+    tf_timeout_sec: 0.02
+    d435_min_range_m: 0.15
+    d435_max_range_m: 3.0
+    d435_voxel_size_m: 0.03

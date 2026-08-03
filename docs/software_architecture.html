@@ -22,7 +22,8 @@
   <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-03</p>
 
   <div class="rule"><strong>Design decision.</strong> SLAM and relocalization are Super-LIO responsibilities.
-  This package owns one ROS node only: it converts Super-LIO output into a robust elevation map and a sparse PCD.</div>
+  This package owns the elevation node and an optional, isolated D435 rolling-cloud merge node.
+  Super-LIO remains the only SLAM backend.</div>
 
   <img src="software_node_topology.svg" alt="Node topology">
 
@@ -31,7 +32,8 @@
     <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
     <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
     <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, Scan Context + GICP + iSAM2 full SLAM, saved-map relocation, and continuous <code>map → odom → imu</code> TF.</td></tr>
-    <tr><td><code>autonomy_light</code></td><td>this package</td><td>One node: base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
+    <tr><td><code>rolling_cloud_merge</code></td><td>this package, optional</td><td>Synchronizes one D435/D435i PointCloud2 to a LiDAR cloud, transforms it into <code>odom|map</code>, and voxel filters it.</td></tr>
+    <tr><td><code>autonomy_light</code></td><td>this package</td><td>Base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
   </table>
 
   <h2>Data and TF contract</h2>
@@ -39,6 +41,8 @@
     <tr><th>Direction</th><th>Topic</th><th>Meaning</th></tr>
     <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO LiDAR pose; converted to <code>base_link</code>.</td></tr>
     <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered cloud in the current global frame.</td></tr>
+    <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>One D435/D435i cloud; used only by the merge node.</td></tr>
+    <tr><td>intermediate</td><td><code>/autonomy_light/rolling_cloud</code></td><td>Time-aligned, global-frame LiDAR+D435 cloud for rolling elevation.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Controller distance grid.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/height_map_quality</code></td><td>Per-cell validity, variance, age.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
@@ -59,6 +63,9 @@
   </table>
   <p>Both sources use the same output message. <code>valid=0</code> means the distance value is an
   unknown placeholder, not measured flat ground; Isaac Lab should consume the quality channels.</p>
+  <p>With <code>rolling_merge.enabled: true</code>, the launcher starts the optional merge node.
+  It accepts only a D435 sample within the configured synchronization window, uses TF at that camera
+  timestamp, and passes a LiDAR-only cloud through if TF or a matching camera sample is unavailable.</p>
 
   <h2>Transport selection</h2>
   <p><code>height_map_output.transport</code> selects <code>ros2</code>,

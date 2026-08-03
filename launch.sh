@@ -107,6 +107,11 @@ params["start_lidar_driver"] = mode == "real" and no_drivers != "true"
 params["start_super_lio"] = no_drivers != "true"
 params["child_use_sim_time"] = mode == "sim"
 params["use_sim_time"] = mode == "sim"
+merge_params = data.setdefault("rolling_cloud_merge", {}).setdefault("ros__parameters", {})
+merge_params["use_sim_time"] = mode == "sim"
+merge_params["lidar_cloud_topic"] = params.get("super_lio_registered_topic", "/lio/cloud_world")
+merge_params["output_topic"] = params.get(
+    "rolling_merge", {}).get("output_topic", "/autonomy_light/rolling_cloud")
 if map_file:
     params["saved_map_file"] = map_file
 if lidar:
@@ -138,19 +143,42 @@ PY
 export ROS_DOMAIN_ID
 
 COMMAND=(ros2 run autonomy_light autonomy_light --ros-args --params-file "${EFFECTIVE_CONFIG}" "${EXTRA_ROS_ARGS[@]}")
+MERGE_ENABLED="$(/usr/bin/python3 - "${EFFECTIVE_CONFIG}" <<'PY'
+import sys
+import yaml
+with open(sys.argv[1], encoding="utf-8") as stream:
+    params = (yaml.safe_load(stream) or {}).get("autonomy_light", {}).get("ros__parameters", {})
+enabled = bool(params.get("rolling_merge", {}).get("enabled", False))
+print("true" if enabled and params.get("height_map", {}).get("source") == "rolling" else "false")
+PY
+)"
+MERGE_COMMAND=(ros2 run autonomy_light rolling_cloud_merge --ros-args --params-file "${EFFECTIVE_CONFIG}")
 echo "autonomy-light: mode=${MODE} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} config=${CONFIG_FILE}"
 [[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO relocation_node map=${MAP_FILE}"
 
-if [[ "${VIS}" != "true" && "${RVIZ}" != "true" ]]; then
-  exec "${COMMAND[@]}"
-fi
-
 cleanup() {
-  for pid in "${RUNTIME_PID:-}" "${VIS_PID:-}" "${RVIZ_PID:-}"; do
+  for pid in "${RUNTIME_PID:-}" "${MERGE_PID:-}" "${VIS_PID:-}" "${RVIZ_PID:-}"; do
     [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null && kill -INT "${pid}" 2>/dev/null || true
   done
 }
-trap cleanup INT TERM
+[[ "${MERGE_ENABLED}" == "true" ]] && echo "rolling merge: D435 + LiDAR enabled"
+
+if [[ "${VIS}" != "true" && "${RVIZ}" != "true" ]]; then
+  if [[ "${MERGE_ENABLED}" != "true" ]]; then
+    exec "${COMMAND[@]}"
+  fi
+  trap cleanup EXIT INT TERM
+  "${MERGE_COMMAND[@]}" &
+  MERGE_PID="$!"
+  "${COMMAND[@]}"
+  exit $?
+fi
+
+trap cleanup EXIT INT TERM
+if [[ "${MERGE_ENABLED}" == "true" ]]; then
+  "${MERGE_COMMAND[@]}" &
+  MERGE_PID="$!"
+fi
 "${COMMAND[@]}" &
 RUNTIME_PID="$!"
 

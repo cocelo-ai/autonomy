@@ -91,6 +91,8 @@ private:
   std::string raw_lidar_msg_type_{"livox_custom"};
   std::string super_lio_odom_topic_{"/lio/odom"};
   std::string super_lio_registered_topic_{"/lio/cloud_world"};
+  bool rolling_merge_enabled_{false};
+  std::string rolling_merge_output_topic_{"/autonomy_light/rolling_cloud"};
   std::string super_lio_config_file_;
   bool start_lidar_driver_{true};
   bool start_super_lio_{true};

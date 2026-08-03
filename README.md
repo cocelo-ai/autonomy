@@ -1,14 +1,17 @@
 # cocelo-autonomy-light
 
-Super-LIO의 full LiDAR–IMU SLAM 출력을 받아 제어용 elevation map을 만드는 단일 ROS 2
-노드 런타임이다. loop closure·pose graph·PCD 저장은 Super-LIO가 맡고,
-`autonomy_light`는 높이 지도만 맡는다.
+Super-LIO의 full LiDAR–IMU SLAM 출력을 받아 제어용 elevation map을 만드는 ROS 2
+런타임이다. loop closure·pose graph·PCD 저장은 Super-LIO가 맡고,
+`autonomy_light`는 높이 지도만 맡는다. D435를 켜면 별도 merge node가 registered
+LiDAR cloud에 카메라 cloud를 합친다.
 
 ```text
-Livox CustomMsg + IMU → Super-LIO → /lio/odom, /lio/cloud_world
-                                          │
-                                          ▼
-                         autonomy_light (one ROS node)
+Livox CustomMsg + IMU → Super-LIO ────────────┐
+                                               ├─ rolling_cloud_merge (optional D435)
+D435/D435i PointCloud2 ────────────────────────┘
+                                               │
+                                               ▼
+                         autonomy_light
                          ├─ rolling | global elevation map
                          ├─ /autonomy_light/height_map_data
                          ├─ /autonomy_light/odom, path, TF
@@ -55,6 +58,20 @@ height_map:
 두 모드 모두 `/autonomy_light/height_map_quality`의 `valid`, `variance`, `age`를
 발행한다. `valid=0`인 `unknown` 값은 평지 관측이 아니므로 Isaac Lab 정책에서는
 별도 observation으로 사용해야 한다.
+
+### Optional D435/D435i merge
+
+Use the standard realsense2_camera PointCloud2 output; the D435/D435i IMU is
+not used by this node. Set height_map.source to rolling and
+rolling_merge.enabled to true. The default camera topic is
+/camera/camera/depth/color/points.
+
+The launcher starts rolling_cloud_merge automatically. For each LiDAR cloud it
+accepts the closest buffered D435 cloud inside max_sync_delta_sec, transforms it into the
+LiDAR odom|map frame at the D435 timestamp, range/voxel filters it, and
+publishes /autonomy_light/rolling_cloud. Missing TF or an unmatched D435 sample
+passes the LiDAR cloud through unchanged. A TF chain from base_link to the D435
+optical frame is required.
 
 ## Height-map transport
 
@@ -104,6 +121,8 @@ PCD를 저장한다. 저장 PCD는 그대로 `--map`의 입력이 된다.
 |---|---|---|---|
 | input | `/lio/odom` | `nav_msgs/Odometry` | Super-LIO LiDAR pose |
 | input | `/lio/cloud_world` | `sensor_msgs/PointCloud2` | global-frame registered cloud |
+| optional input | D435 depth/color/points | `sensor_msgs/PointCloud2` | camera-depth cloud |
+| intermediate | `/autonomy_light/rolling_cloud` | `sensor_msgs/PointCloud2` | time-aligned LiDAR+D435 cloud |
 | output | `/autonomy_light/height_map_data` | `autonomy_light/HeightMap` | controller grid |
 | output | `/autonomy_light/height_map_quality` | `autonomy_light/HeightMapQuality` | validity, variance, age |
 | output | `/autonomy_light/height_map` | `sensor_msgs/PointCloud2` | visualization grid |
@@ -116,7 +135,8 @@ normal mode는 `odom`, full-SLAM mapping·relocation은 `map`이 global frame이
 
 ## Code layout
 
-- `src/nodes/autonomy_light_node.cpp`, `autonomy_light_io.cpp`: 하나의 ROS node
+- `src/nodes/autonomy_light_node.cpp`, `autonomy_light_io.cpp`: elevation runtime node
+- `src/nodes/rolling_cloud_merge_node.cpp`: optional one-D435 merge node
 - `src/core/elevation_mapper.cpp`: ROS와 분리된 elevation algorithm
 - `src/core/child_processes.cpp`: Livox/Super-LIO child process lifecycle
 

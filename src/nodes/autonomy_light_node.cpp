@@ -131,6 +131,9 @@ void AutonomyLightNode::loadParameters() {
   super_lio_odom_topic_ = declare_parameter<std::string>("super_lio_odom_topic", super_lio_odom_topic_);
   super_lio_registered_topic_ = declare_parameter<std::string>(
       "super_lio_registered_topic", super_lio_registered_topic_);
+  rolling_merge_enabled_ = declare_parameter<bool>("rolling_merge.enabled", rolling_merge_enabled_);
+  rolling_merge_output_topic_ = declare_parameter<std::string>(
+      "rolling_merge.output_topic", rolling_merge_output_topic_);
   super_lio_config_file_ = declare_parameter<std::string>(
       "super_lio_config_file", super_lio_config_file_);
   start_lidar_driver_ = declare_parameter<bool>("start_lidar_driver", start_lidar_driver_);
@@ -180,9 +183,13 @@ void AutonomyLightNode::createInterfaces() {
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       super_lio_odom_topic_, output_qos,
       [this](nav_msgs::msg::Odometry::SharedPtr msg) { onOdom(std::move(msg)); });
+  const std::string elevation_cloud_topic =
+      mapper_config_.source == "rolling" && rolling_merge_enabled_
+          ? rolling_merge_output_topic_ : super_lio_registered_topic_;
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-      super_lio_registered_topic_, data_qos,
+      elevation_cloud_topic, data_qos,
       [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { onRegisteredCloud(std::move(msg)); });
+  RCLCPP_INFO(get_logger(), "Elevation cloud input: %s", elevation_cloud_topic.c_str());
   map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
       live_map_topic_, rclcpp::QoS(1).reliable().transient_local());
   saved_map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
