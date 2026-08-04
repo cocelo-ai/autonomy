@@ -10,7 +10,10 @@ autonomy_light:
     height_map_frame: "base_link_gravity"
     imu_frame: "imu"              # Super-LIO /lio/odom child frame
     lidar_frame: "lidar_link"
-    odom_frame: "odom"             # becomes map when saved_map_file is set
+    # Historical parameter name: this is the global root frame.
+    # Super-LIO always publishes map -> odom, initially identity in normal LIO.
+    odom_frame: "map"
+    local_odom_frame: "odom"
     target_to_lidar_xyz: [0.234, 0.0, 0.077]
     target_to_lidar_rpy: [0.0, 0.7854, 0.0]
     # Must be the calibrated lio.extrinsic.lidar_imu. The launcher passes this

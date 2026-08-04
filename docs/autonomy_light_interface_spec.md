@@ -7,9 +7,9 @@
 | Direction | Topic | Type | Frame |
 |---|---|---|---|
 | input | `/lio/odom` | `nav_msgs/msg/Odometry` | global → IMU, calibrated 6×6 pose covariance |
-| input | `/lio/cloud_world` | `sensor_msgs/msg/PointCloud2` | `odom` or `map` |
+| input | `/lio/cloud_world` | `sensor_msgs/msg/PointCloud2` | `map` |
 | optional input | `/camera/camera/depth/color/points` | `sensor_msgs/msg/PointCloud2` | D435 optical frame |
-| intermediate | `/autonomy_light/rolling_cloud` | `sensor_msgs/msg/PointCloud2` | `odom` or `map` |
+| intermediate | `/autonomy_light/rolling_cloud` | `sensor_msgs/msg/PointCloud2` | `map` |
 | output | `/autonomy_light/odom` | `nav_msgs/msg/Odometry` | global → `base_link` |
 | output | `/autonomy_light/path` | `nav_msgs/msg/Path` | global |
 | output | `/autonomy_light/height_map_data` | `autonomy_light/msg/HeightMap` | `base_link_gravity` |
@@ -17,12 +17,12 @@
 | output | `/autonomy_light/height_map` | `sensor_msgs/msg/PointCloud2` | `base_link_gravity` |
 | output | `/autonomy_light/live_map` | `sensor_msgs/msg/PointCloud2` | global |
 
-The resulting TF chain is `odom|map → imu → base_link → base_link_gravity`, plus
-static `base_link → lidar_link`. Super-LIO owns the dynamic `odom|map → imu`;
-`autonomy_light` publishes static `imu → base_link` and `base_link → lidar_link`.
-A saved map selects Super-LIO
-`relocation_node` and therefore uses `map`; normal operation uses `odom`. No
-`world` frame exists. Mapping uses Super-LIO keyframes, Scan Context candidate
+The resulting TF chain is `map → odom → imu → base_link → base_link_gravity`, plus
+static `base_link → lidar_link`. Super-LIO publishes identity `map → odom` before
+the first LiDAR update, then updates only that correction for full SLAM or
+relocation; it owns dynamic `odom → imu`. `autonomy_light` publishes static
+`imu → base_link` and `base_link → lidar_link`. No `world` frame exists.
+Mapping uses Super-LIO keyframes, Scan Context candidate
 search, GICP verification and an iSAM2 pose graph; its corrected `map → odom →
 imu` TF remains continuously broadcast. Saved-map localization keeps local LIO
 in `odom` and refreshes the NDT→ICP `map → odom` correction at the configured

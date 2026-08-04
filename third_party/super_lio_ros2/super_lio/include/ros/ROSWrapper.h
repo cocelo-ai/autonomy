@@ -87,6 +87,7 @@ public:
   }
 
 private:
+  void publishMapToOdom(const rclcpp::Time& stamp);
   void imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg);
   void livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
   void stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
@@ -112,6 +113,7 @@ private:
   geometry_msgs::msg::PoseStamped msg2uav_;
   sensor_msgs::msg::PointCloud2 global_map_msg_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  rclcpp::TimerBase::SharedPtr map_to_odom_timer_;
 
   BASIC::V3 last_path_point_ = BASIC::V3(0, 0, -100);
   BASIC::SE3 map_to_odom_;

@@ -66,7 +66,8 @@ private:
   std::string height_map_frame_{"base_link_gravity"};
   std::string imu_frame_{"imu"};
   std::string lidar_frame_{"lidar_link"};
-  std::string global_frame_{"odom"};
+  std::string global_frame_{"map"};
+  std::string local_odom_frame_{"odom"};
   std::vector<double> target_to_lidar_xyz_{0.0, 0.0, 0.3};
   std::vector<double> target_to_lidar_rpy_{0.0, 0.0, 0.0};
   std::vector<double> imu_from_lidar_xyz_{0.0, 0.0, 0.0};

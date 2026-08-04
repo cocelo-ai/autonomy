@@ -38,7 +38,8 @@ source install/setup.bash
 ```
 
 저장 지도 모드에서는 Super-LIO `relocation_node`가 PCD를 직접 읽고 재지역화한다.
-출력 global frame은 `map`이다. 초기 NDT→ICP 정합 뒤에는 local LIO를 `odom`에서
+출력 global frame은 항상 `map`이다. 시작 직후에는 identity `map → odom`을 먼저
+발행한다. 초기 NDT→ICP 정합 뒤에는 local LIO를 `odom`에서
 유지하고, 저장 PCD와의 NDT→ICP 보정을 기본 1 Hz로만 갱신한다. 마지막 유효 보정은
 LiDAR 출력마다 `map → odom → imu`로 계속 broadcast하므로 TF 체인이 끊기지 않는다.
 `/lio/odom`과 `/lio/cloud_world`는 `map` 좌표를 사용한다.
@@ -152,8 +153,8 @@ PCD를 저장한다. 저장 PCD는 그대로 `--map`의 입력이 된다.
 | optional output | `height_map` | `core_dds::HeightMap` | direct Cyclone DDS custom payload |
 
 모든 토픽은 `ros_domain_id` 하나를 사용한다. `world` frame은 사용하지 않으며,
-normal mode는 `odom`, full-SLAM mapping·relocation은 `map`이 global frame이다.
-두 global mode는 `map → odom → imu` 체인을 계속 발행하며 보정값만 저주기로 바꾼다.
+normal mode·full-SLAM mapping·relocation 모두 `map`이 global frame이다. Normal LIO는
+identity `map → odom`으로 시작하고, full SLAM·relocation만 보정값을 저주기로 바꾼다.
 
 ## Code layout
 

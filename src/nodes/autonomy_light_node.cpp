@@ -57,6 +57,7 @@ void AutonomyLightNode::loadParameters() {
   imu_frame_ = declare_parameter<std::string>("imu_frame", imu_frame_);
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", lidar_frame_);
   global_frame_ = declare_parameter<std::string>("odom_frame", global_frame_);
+  local_odom_frame_ = declare_parameter<std::string>("local_odom_frame", local_odom_frame_);
   target_to_lidar_xyz_ = declare_parameter<std::vector<double>>(
       "target_to_lidar_xyz", target_to_lidar_xyz_);
   target_to_lidar_rpy_ = declare_parameter<std::vector<double>>(
@@ -352,6 +353,7 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
       "-p", "lio.ros.lidar_topic:=" + raw_lidar_topic_,
       "-p", "lio.ros.imu_topic:=" + raw_imu_topic_,
       "-p", "lio.ros.global_frame:=" + global_frame_,
+      "-p", "lio.ros.odom_frame:=" + local_odom_frame_,
       "-p", "lio.extrinsic.lidar_imu:=" + rosArray(lidar_imu),
       "-p", "lio.sensor.lidar_type:=1",
       "-p", "lio.output.map:=true",

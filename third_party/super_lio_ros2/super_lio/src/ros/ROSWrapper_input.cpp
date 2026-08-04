@@ -1,5 +1,7 @@
 #include "ros/ROSWrapper.h"
 
+#include <chrono>
+
 using namespace BASIC;
 
 namespace LI2Sup{
@@ -141,6 +143,12 @@ void ROSWrapper::setupIO(){
 
   tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(this);
+  if (g_global_frame != g_odom_frame) {
+    setMapToOdom(SE3());
+    map_to_odom_timer_ = create_wall_timer(
+        std::chrono::milliseconds(100),
+        [this]() { publishMapToOdom(now()); });
+  }
 }
 
 

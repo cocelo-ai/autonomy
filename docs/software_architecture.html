@@ -48,12 +48,12 @@
     <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
     <tr><td>optional output</td><td><code>height_map</code></td><td>Direct Cyclone DDS <code>core_dds::HeightMap</code> payload for a non-ROS peer.</td></tr>
   </table>
-  <p>TF is <code>odom|map → imu → base_link → base_link_gravity</code>, with static
-  <code>imu → base_link → lidar_link</code>. Super-LIO owns the dynamic global-to-IMU link;
-  this runtime owns the two physical static links. Normal operation uses <code>odom</code>; a saved map runs
-  Super-LIO <code>relocation_node</code> and uses <code>map</code>. After its NDT→ICP registration
-  succeeds, Super-LIO continuously publishes <code>map → odom → imu</code>; the transform is only
-  recalculated at the configured low global-registration rate. Mapping runs the pose graph in
+  <p>TF is <code>map → odom → imu → base_link → base_link_gravity</code>, with static
+  <code>imu → base_link → lidar_link</code>. Super-LIO publishes identity <code>map → odom</code>
+  before its first LiDAR update, then owns the correction; this runtime owns the two physical static links.
+  Normal LIO keeps that correction at identity. A saved map runs Super-LIO <code>relocation_node</code>.
+  After its NDT→ICP registration succeeds, Super-LIO continuously publishes <code>map → odom → imu</code>;
+  the correction is only recalculated at the configured low global-registration rate. Mapping runs the pose graph in
   Super-LIO. There is no <code>world</code> frame or duplicate SLAM backend in this package.</p>
   <p><code>/lio/odom</code> is the IMU state. The runtime composes
   <code>T_base_imu = T_base_lidar · inverse(T_imu_lidar)</code> from

@@ -114,20 +114,7 @@ void ROSWrapper::pub_odom(const NavState& state){
   tf_broadcaster_->sendTransform(tf_msg);
 
   if (publish_map_to_odom) {
-    geometry_msgs::msg::TransformStamped map_to_odom;
-    map_to_odom.header.stamp = odom.header.stamp;
-    map_to_odom.header.frame_id = g_global_frame;
-    map_to_odom.child_frame_id = g_odom_frame;
-    map_to_odom.transform.translation.x = map_to_odom_.t_[0];
-    map_to_odom.transform.translation.y = map_to_odom_.t_[1];
-    map_to_odom.transform.translation.z = map_to_odom_.t_[2];
-    Quat correction(map_to_odom_.R_);
-    correction.normalize();
-    map_to_odom.transform.rotation.x = correction.x();
-    map_to_odom.transform.rotation.y = correction.y();
-    map_to_odom.transform.rotation.z = correction.z();
-    map_to_odom.transform.rotation.w = correction.w();
-    tf_broadcaster_->sendTransform(map_to_odom);
+    publishMapToOdom(rclcpp::Time(odom.header.stamp));
   }
 
   // tf_msg.child_frame_id = "god";
@@ -137,6 +124,26 @@ void ROSWrapper::pub_odom(const NavState& state){
   // tf_msg.transform.rotation.w = 1.0;
   // tf_broadcaster_->sendTransform(tf_msg);
 
+}
+
+void ROSWrapper::publishMapToOdom(const rclcpp::Time& stamp) {
+  if (!tf_broadcaster_ || !has_map_to_odom_ || g_global_frame == g_odom_frame) {
+    return;
+  }
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = stamp;
+  transform.header.frame_id = g_global_frame;
+  transform.child_frame_id = g_odom_frame;
+  transform.transform.translation.x = map_to_odom_.t_[0];
+  transform.transform.translation.y = map_to_odom_.t_[1];
+  transform.transform.translation.z = map_to_odom_.t_[2];
+  Quat correction(map_to_odom_.R_);
+  correction.normalize();
+  transform.transform.rotation.x = correction.x();
+  transform.transform.rotation.y = correction.y();
+  transform.transform.rotation.z = correction.z();
+  transform.transform.rotation.w = correction.w();
+  tf_broadcaster_->sendTransform(transform);
 }
 
 void ROSWrapper::setMapToOdom(const SE3& map_to_odom) {

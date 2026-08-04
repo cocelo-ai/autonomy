@@ -10,9 +10,9 @@
 
     lio.ros.lidar_topic: "/livox/lidar"
     lio.ros.imu_topic: "/livox/imu"
-    # Normal LIO uses odom; mapping.sh and relocation use map.
-    lio.ros.global_frame: "odom"
-    # Relocation publishes the NDT/ICP correction as map -> odom -> imu.
+    # Always retain map -> odom -> imu. Normal LIO starts map -> odom at identity;
+    # full SLAM and relocation update only that correction.
+    lio.ros.global_frame: "map"
     lio.ros.odom_frame: "odom"
 
     # Enabled by mapping.sh: keyframes + Scan Context + GICP + iSAM2.

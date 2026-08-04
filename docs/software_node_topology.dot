@@ -21,7 +21,7 @@ digraph autonomy_light {
   lio -> merge [label="/lio/cloud_world\nrolling only"];
   d435 -> merge [label="depth/color/points"];
   merge -> runtime [label="/autonomy_light/rolling_cloud\nrolling + D435 enabled"];
-  lio -> runtime [label="/lio/odom (IMU pose + covariance)\n/lio/cloud_world\notherwise\nfull SLAM / relocation: map → odom → imu TF"];
+  lio -> runtime [label="/lio/odom (IMU pose + covariance)\n/lio/cloud_world\nall modes: map → odom → imu TF\nnormal LIO: identity correction"];
   runtime -> control [label="/autonomy_light/height_map_data\n/height_map_quality\n/odom, TF"];
   runtime -> dds [label="DDS: height_map\ncore_dds::HeightMap", style=dashed];
   runtime -> rviz [label="/autonomy_light/live_map\n/height_map"];
