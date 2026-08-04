@@ -387,6 +387,37 @@ wait_for_topic() {
   return 1
 }
 
+enable_realsense_pointcloud() {
+  local node_name="/$1/$1"
+  local parameters pointcloud_parameter=""
+  local attempt
+
+  # Some Jetson-packaged realsense2_camera builds expose the point-cloud
+  # parameter with this literal ARM/NEON-mangled name.  Supplying the normal
+  # launch argument alone does not enable it on those builds.
+  for ((attempt = 0; attempt < 75; ++attempt)); do
+    parameters="$(ros2 param list "${node_name}" 2>/dev/null || true)"
+    if grep -Fxq "pointcloud.enable" <<<"${parameters}"; then
+      pointcloud_parameter="pointcloud.enable"
+    elif grep -Fxq "pointcloud__neon_.enable" <<<"${parameters}"; then
+      pointcloud_parameter="pointcloud__neon_.enable"
+    elif grep -Fxq "enable_pointcloud" <<<"${parameters}"; then
+      pointcloud_parameter="enable_pointcloud"
+    fi
+
+    if [[ -n "${pointcloud_parameter}" ]]; then
+      ros2 param set "${node_name}" "${pointcloud_parameter}" true >/dev/null && {
+        echo "RealSense point cloud enabled: ${node_name}.${pointcloud_parameter}"
+        return 0
+      }
+    fi
+    sleep 0.2
+  done
+
+  echo "error: RealSense point-cloud enable parameter was not available on ${node_name}" >&2
+  return 1
+}
+
 interface_has_cidr() {
   local interface="$1"
   local cidr="$2"
@@ -494,6 +525,7 @@ if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
   REALSENSE_ARGS=("camera_name:=${REALSENSE_CAMERA_NAME}" "${REALSENSE_POINTCLOUD_ARGUMENT}")
   [[ -n "${REALSENSE_SERIAL}" ]] && REALSENSE_ARGS+=("serial_no:=${REALSENSE_SERIAL}")
   start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${REALSENSE_ARGS[@]}"
+  enable_realsense_pointcloud "${REALSENSE_CAMERA_NAME}" || exit 1
   wait_for_topic "${REALSENSE_POINTCLOUD_TOPIC}" || {
     echo "error: RealSense started but did not publish ${REALSENSE_POINTCLOUD_TOPIC}" >&2
     exit 1
