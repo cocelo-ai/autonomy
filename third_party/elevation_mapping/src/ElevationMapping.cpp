@@ -392,12 +392,14 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
     return;
   }
 
+  // Keep the original ROS timestamp. Converting through PCL reduces the stamp
+  // precision to microseconds, which can move a cloud just before the first
+  // cached odometry sample and make the pose lookup fail at startup.
+  const rclcpp::Time pointCloudTime(pointCloudMsg->header.stamp, RCL_ROS_TIME);
+
   // Check if point cloud has corresponding robot pose at the beginning
   if (!receivedFirstMatchingPointcloudAndPose_) {
-    const double oldestPoseTime = robotPoseCache_.getOldestTime().seconds();
-    const double currentPointCloudTime = rclcpp::Time(pointCloudMsg->header.stamp,RCL_ROS_TIME).seconds();
-
-    if (currentPointCloudTime < oldestPoseTime) {
+    if (!robotPoseCache_.getElemBeforeTime(pointCloudTime)) {
       auto clock = nodeHandle_->get_clock();
       RCLCPP_WARN_THROTTLE(nodeHandle_->get_logger(), *(clock), 5, "No corresponding point cloud and pose are found. Waiting for first match. (Warning message is throttled, 5s.)");
       return;
@@ -426,7 +428,7 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
       point.confidence_ratio = 1.0F;
     }
   }
-  lastPointCloudUpdateTime_ = rclcpp::Time(1000 * pointCloud->header.stamp, RCL_ROS_TIME);
+  lastPointCloudUpdateTime_ = pointCloudTime;
 
   // RCLCPP_INFO(nodeHandle_->get_logger(), "ElevationMap received a point cloud (%i points) for elevation mapping.", static_cast<int>(pointCloud->size()));
   RCLCPP_DEBUG(nodeHandle_->get_logger(), "ElevationMap received a point cloud (%i points) for elevation mapping.", static_cast<int>(pointCloud->size()));
