@@ -79,8 +79,10 @@ AutonomyLightNode::odomAt(const rclcpp::Time &stamp) const {
     }
     return result;
   }
-  return closest && closest_delta <= odom_sync_tolerance_sec_ ? *closest
-                                                                : std::nullopt;
+  if (closest && closest_delta <= odom_sync_tolerance_sec_) {
+    return *closest;
+  }
+  return std::nullopt;
 }
 
 bool AutonomyLightNode::integrateRegisteredCloud(

@@ -148,7 +148,7 @@ PointObservations AutonomyLightNode::observationsFrom(
     PointObservation observation{point.x,
                                  point.y,
                                  point.z,
-                                 source ? **source : 0U,
+                                 static_cast<std::uint8_t>(source ? **source : 0U),
                                  static_cast<float>(lidar_origin.x()),
                                  static_cast<float>(lidar_origin.y()),
                                  static_cast<float>(lidar_origin.z())};
