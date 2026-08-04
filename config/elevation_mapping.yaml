@@ -13,11 +13,15 @@ elevation_mapping:
     track_point_y: 0.0
     track_point_z: 0.0
 
-    length_in_x: 1.80
-    length_in_y: 0.80
+    # Native fusion ROI.  This is deliberately wider than the controller
+    # height-map ROI configured in autonomy_light.yaml.
+    length_in_x: 3.00
+    length_in_y: 2.00
     position_x: 0.0
     position_y: 0.0
-    resolution: 0.10
+    # The 3 cm D435 voxel filter is the limiting input resolution, so 2 cm
+    # cells retain useful terrain detail without a 1 cm grid of duplicates.
+    resolution: 0.02
 
     # Native fused GridMap output. `elevation`, upper/lower bounds, and
     # uncertainty_range are published without a custom message conversion.

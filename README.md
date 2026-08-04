@@ -13,7 +13,8 @@ D435/D435i PointCloud2 (launched by launch.sh) ───────────
                                       └─ /autonomy_light/elevation_map @ 50 Hz
                                          grid_map_msgs/msg/GridMap
                                                    │
-                                                   └─ height_map_bridge @ 50 Hz
+                                                      └─ height_map_bridge @ 50 Hz
+                                                      ├─ /autonomy_light/height_map (PointCloud2)
                                                       ├─ /autonomy_light/height_map_data (ROS 2)
                                                       └─ height_map (Cyclone DDS)
 
@@ -63,7 +64,8 @@ mapper 설정은 `./launch.sh --elevation-config FILE`로 교체한다.
 ## Native elevation-map interface
 
 기본 output topic은 `/autonomy_light/elevation_map`, type은
-`grid_map_msgs/msg/GridMap`이다. 기본 map은 `1.8 m × 0.8 m`, resolution `0.10 m`,
+`grid_map_msgs/msg/GridMap`이다. 기본 native fusion ROI는 `3.0 m × 2.0 m`,
+resolution `0.02 m`,
 50 Hz publish다. mapper는 subscriber가 없어도 이 timer에서 fused map을 갱신·publish하며,
 기본으로 시작되는 bridge가 구독하므로 native output도 계속 활성 상태다. 주요 layer는 다음과 같다.
 
@@ -80,7 +82,10 @@ unknown cell은 `NaN`이다. 이를 평지나 임의의 `0.48` 값으로 대체�
 
 `height_map_bridge`는 native GridMap을 이전
 `autonomy_light/msg/HeightMap` (`header`, `data`, `resolution`, `x_length`,
-`y_length`)으로 50 Hz 재발행한다. `data`는 이전과 동일하게 row-major
+`y_length`)으로 50 Hz 재발행한다. `height_map_output.sampling`은 native GridMap과
+독립적인 output geometry/ROI다. 기본값은 `0.10 m`, `1.8 m × 0.8 m`이므로 `3.0 m × 2.0 m`
+native map에서 로봇 주변만
+이전 controller 계약인 `18 × 8`으로 샘플링한다. `data`는 이전과 동일하게 row-major
 `data[row * width + column]`이며, base yaw 기준으로 정렬된 `18 × 8` grid다.
 Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `reference_height - relative_height`를 기록한다. unknown cell은 `0.48`이다.
@@ -90,7 +95,9 @@ Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `cyclone_dds`, `both`를 선택한다. ROS 2 topic은
 `/autonomy_light/height_map_data`이고, Cyclone DDS는 기존 IDL contract
 `core_dds::HeightMap { sequence<float> data; }`와 `height_map` topic을 사용한다.
-두 transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
+동일한 샘플 표면은 `/autonomy_light/height_map` (`sensor_msgs/msg/PointCloud2`)에도
+발행된다. point cloud는 `base_link` frame이고 `z`는 local floor 기준 terrain height이며,
+unknown cell은 포함하지 않는다. 두 data transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
 같은 domain `1`, best-effort, `KEEP_LAST 128`을 기본으로 사용한다.
 
 ### Remote Cyclone DDS network

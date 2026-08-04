@@ -57,6 +57,15 @@ autonomy_light:
     height_map_output:
       transport: "both"  # ros2 | cyclone_dds | both
       ros2_topic: "/autonomy_light/height_map_data"
+      # Controller/output ROI, independent of the larger native fusion ROI
+      # in elevation_mapping.yaml. This keeps the established 18 x 8 / 10 cm
+      # contract around the robot.
+      sampling:
+        resolution: 0.10
+        x_length: 1.80
+        y_length: 0.80
+      # PointCloud2 of the same sampled surface. Unknown cells are omitted.
+      pointcloud_topic: "/autonomy_light/height_map"
       distance:
         reference_height: 0.48
         min: 0.0

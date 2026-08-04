@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -11,6 +13,8 @@
 
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <grid_map_msgs/msg/grid_map.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -24,6 +28,13 @@ namespace autonomy_light {
 namespace {
 
 constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
+
+struct PointXYZ {
+  float x;
+  float y;
+  float z;
+};
+static_assert(sizeof(PointXYZ) == 3U * sizeof(float));
 
 int wrap(const int value, const int size) {
   const int result = value % size;
@@ -112,6 +123,14 @@ struct HeightMapBridge::Impl {
         node.declare_parameter<double>("fallback.x_length", 1.8);
     fallback_y_length =
         node.declare_parameter<double>("fallback.y_length", 0.8);
+    output_resolution =
+        node.declare_parameter<double>("output.resolution", 0.1);
+    output_x_length =
+        node.declare_parameter<double>("output.x_length", 1.8);
+    output_y_length =
+        node.declare_parameter<double>("output.y_length", 0.8);
+    pointcloud_topic = node.declare_parameter<std::string>(
+        "pointcloud_topic", "/autonomy_light/height_map");
     floor_radius = node.declare_parameter<double>("floor.radius_m", 0.6);
     floor_percentile = std::clamp(
         node.declare_parameter<double>("floor.percentile", 0.20), 0.0, 1.0);
@@ -137,6 +156,10 @@ struct HeightMapBridge::Impl {
       throw std::invalid_argument(
           "height-map bridge rate and geometry must be positive");
     }
+    if (output_resolution <= 0.0 || output_x_length <= 0.0 ||
+        output_y_length <= 0.0) {
+      throw std::invalid_argument("height-map output geometry must be positive");
+    }
     if (clipping_min > clipping_max) {
       std::swap(clipping_min, clipping_max);
     }
@@ -151,6 +174,10 @@ struct HeightMapBridge::Impl {
       ros_publisher = node.create_publisher<autonomy_light::msg::HeightMap>(
           ros_topic, rclcpp::QoS(1).reliable());
     }
+    if (!pointcloud_topic.empty()) {
+      pointcloud_publisher = node.create_publisher<sensor_msgs::msg::PointCloud2>(
+          pointcloud_topic, rclcpp::SensorDataQoS());
+    }
     if (publishesDds()) {
       dds_publisher = std::make_unique<DdsHeightMapPublisher>(
           static_cast<std::uint32_t>(std::max(0, dds_domain)), dds_topic,
@@ -164,8 +191,11 @@ struct HeightMapBridge::Impl {
         std::chrono::duration<double>(1.0 / rate_hz));
     timer = node.create_wall_timer(period, [this]() { publish(); });
     RCLCPP_INFO(node.get_logger(),
-                "HeightMap bridge: input=%s transport=%s rate=%.1fHz",
-                input_topic.c_str(), transport.c_str(), rate_hz);
+                "HeightMap bridge: input=%s output=%.3fm (%dx%d) transport=%s rate=%.1fHz",
+                input_topic.c_str(), output_resolution,
+                static_cast<int>(std::round(output_x_length / output_resolution)),
+                static_cast<int>(std::round(output_y_length / output_resolution)),
+                transport.c_str(), rate_hz);
   }
 
   bool publishesRos() const {
@@ -223,16 +253,16 @@ struct HeightMapBridge::Impl {
       std::lock_guard<std::mutex> lock(snapshot_mutex);
       current = snapshot;
     }
-    const double resolution =
-        current ? current->resolution : fallback_resolution;
-    const double length_x = current ? current->length_x : fallback_x_length;
-    const double length_y = current ? current->length_y : fallback_y_length;
+    const double resolution = output_resolution;
+    const double length_x = output_x_length;
+    const double length_y = output_y_length;
     const int width =
         std::max(1, static_cast<int>(std::round(length_x / resolution)));
     const int height =
         std::max(1, static_cast<int>(std::round(length_y / resolution)));
     std::vector<float> data(cells(length_x, length_y, resolution),
                             static_cast<float>(unknown_value));
+    std::vector<PointXYZ> points;
 
     if (current) {
       try {
@@ -273,11 +303,14 @@ struct HeightMapBridge::Impl {
                   current->sample(base_x + cosine * x - sine * y,
                                   base_y + sine * x + cosine * y);
               if (std::isfinite(elevation)) {
+                const float relative_height = elevation - floor;
                 data[static_cast<std::size_t>(row) * width + column] =
                     static_cast<float>(
-                        std::clamp(reference_height -
-                                       static_cast<double>(elevation - floor),
+                        std::clamp(reference_height - static_cast<double>(relative_height),
                                    clipping_min, clipping_max));
+                points.push_back(PointXYZ{static_cast<float>(x),
+                                          static_cast<float>(y),
+                                          relative_height});
               }
             }
           }
@@ -304,6 +337,35 @@ struct HeightMapBridge::Impl {
       RCLCPP_ERROR_THROTTLE(node.get_logger(), *node.get_clock(), 2000, "%s",
                             dds_publisher->error().c_str());
     }
+    if (pointcloud_publisher) {
+      sensor_msgs::msg::PointCloud2 cloud;
+      cloud.header.stamp = current ? current->header.stamp : node.now();
+      cloud.header.frame_id = base_frame;
+      cloud.height = 1;
+      cloud.width = static_cast<std::uint32_t>(points.size());
+      cloud.is_bigendian = false;
+      cloud.is_dense = true;
+      cloud.point_step = sizeof(PointXYZ);
+      cloud.row_step = cloud.point_step * cloud.width;
+      cloud.fields.resize(3);
+      cloud.fields[0].name = "x";
+      cloud.fields[0].offset = 0;
+      cloud.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud.fields[0].count = 1;
+      cloud.fields[1].name = "y";
+      cloud.fields[1].offset = 4;
+      cloud.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud.fields[1].count = 1;
+      cloud.fields[2].name = "z";
+      cloud.fields[2].offset = 8;
+      cloud.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud.fields[2].count = 1;
+      cloud.data.resize(static_cast<std::size_t>(cloud.row_step));
+      if (!points.empty()) {
+        std::memcpy(cloud.data.data(), points.data(), cloud.data.size());
+      }
+      pointcloud_publisher->publish(std::move(cloud));
+    }
   }
 
   HeightMapBridge &node;
@@ -316,6 +378,10 @@ struct HeightMapBridge::Impl {
   double fallback_resolution{0.1};
   double fallback_x_length{1.8};
   double fallback_y_length{0.8};
+  double output_resolution{0.1};
+  double output_x_length{1.8};
+  double output_y_length{0.8};
+  std::string pointcloud_topic;
   double floor_radius{0.6};
   double floor_percentile{0.20};
   double reference_height{0.48};
@@ -327,6 +393,7 @@ struct HeightMapBridge::Impl {
   std::unique_ptr<DdsHeightMapPublisher> dds_publisher;
   rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr subscriber;
   rclcpp::Publisher<autonomy_light::msg::HeightMap>::SharedPtr ros_publisher;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher;
   rclcpp::TimerBase::SharedPtr timer;
   tf2_ros::Buffer tf_buffer;
   tf2_ros::TransformListener tf_listener;

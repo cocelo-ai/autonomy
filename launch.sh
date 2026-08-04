@@ -283,9 +283,23 @@ height_output = root.get("height_map_output", {})
 distance = height_output.get("distance", {})
 floor = height_output.get("floor", {})
 dds = height_output.get("cyclone_dds", {})
+sampling = height_output.get("sampling", {})
 transport = str(height_output.get("transport", "both")).strip().lower()
 if transport not in ("ros2", "cyclone_dds", "both"):
     raise SystemExit("error: height_map_output.transport must be ros2, cyclone_dds, or both")
+if not isinstance(sampling, dict):
+    raise SystemExit("error: height_map_output.sampling must be a mapping")
+native_x_length = float(mapper_params.get("length_in_x", 1.80))
+native_y_length = float(mapper_params.get("length_in_y", 0.80))
+sample_x_length = float(sampling.get("x_length", 1.80))
+sample_y_length = float(sampling.get("y_length", 0.80))
+sample_resolution = float(sampling.get("resolution", 0.10))
+if native_x_length <= 0.0 or native_y_length <= 0.0:
+    raise SystemExit("error: elevation_mapping native ROI lengths must be positive")
+if sample_resolution <= 0.0 or sample_x_length <= 0.0 or sample_y_length <= 0.0:
+    raise SystemExit("error: height_map_output.sampling geometry must be positive")
+if sample_x_length > native_x_length or sample_y_length > native_y_length:
+    raise SystemExit("error: height_map_output.sampling ROI must fit inside the native elevation-map ROI")
 bridge = {"height_map_bridge": {"ros__parameters": {
     "input_topic": map_topic,
     "base_frame": root.get("target_frame", "base_link"),
@@ -293,8 +307,12 @@ bridge = {"height_map_bridge": {"ros__parameters": {
     "fallback.resolution": float(mapper_params.get("resolution", 0.10)),
     "fallback.x_length": float(mapper_params.get("length_in_x", 1.80)),
     "fallback.y_length": float(mapper_params.get("length_in_y", 0.80)),
+    "output.resolution": sample_resolution,
+    "output.x_length": sample_x_length,
+    "output.y_length": sample_y_length,
     "transport": transport,
     "ros2_topic": height_output.get("ros2_topic", "/autonomy_light/height_map_data"),
+    "pointcloud_topic": height_output.get("pointcloud_topic", "/autonomy_light/height_map"),
     "distance.reference_height": float(distance.get("reference_height", 0.48)),
     "distance.min": float(distance.get("min", 0.0)),
     "distance.max": float(distance.get("max", 0.75)),
