@@ -22,8 +22,8 @@ tf2::Quaternion AutonomyLightNode::yawOnly(
   return result;
 }
 
-nav_msgs::msg::Odometry AutonomyLightNode::baseOdom(
-    const nav_msgs::msg::Odometry &imu_odom) const {
+nav_msgs::msg::Odometry
+AutonomyLightNode::baseOdom(const nav_msgs::msg::Odometry &imu_odom) const {
   nav_msgs::msg::Odometry base = imu_odom;
   base.header.frame_id = global_frame_;
   base.child_frame_id = target_frame_;
@@ -34,13 +34,13 @@ nav_msgs::msg::Odometry AutonomyLightNode::baseOdom(
   }
   map_imu.normalize();
   const tf2::Quaternion imu_target = target_to_imu_rotation_.inverse();
-  const tf2::Vector3 imu_to_target = tf2::quatRotate(
-      imu_target, -target_to_imu_translation_);
+  const tf2::Vector3 imu_to_target =
+      tf2::quatRotate(imu_target, -target_to_imu_translation_);
   const tf2::Vector3 imu_position(imu_odom.pose.pose.position.x,
                                   imu_odom.pose.pose.position.y,
                                   imu_odom.pose.pose.position.z);
-  const tf2::Vector3 base_position = imu_position +
-      tf2::quatRotate(map_imu, imu_to_target);
+  const tf2::Vector3 base_position =
+      imu_position + tf2::quatRotate(map_imu, imu_to_target);
   tf2::Quaternion map_base = map_imu * imu_target;
   map_base.normalize();
   base.pose.pose.position.x = base_position.x();
@@ -59,10 +59,10 @@ nav_msgs::msg::Odometry AutonomyLightNode::baseOdom(
   if (has_covariance && covariance.allFinite()) {
     const tf2::Vector3 offset = tf2::quatRotate(map_imu, imu_to_target);
     Eigen::Matrix3d skew;
-    skew << 0.0, -offset.z(), offset.y(),
-            offset.z(), 0.0, -offset.x(),
-            -offset.y(), offset.x(), 0.0;
-    Eigen::Matrix<double, 6, 6> jacobian = Eigen::Matrix<double, 6, 6>::Identity();
+    skew << 0.0, -offset.z(), offset.y(), offset.z(), 0.0, -offset.x(),
+        -offset.y(), offset.x(), 0.0;
+    Eigen::Matrix<double, 6, 6> jacobian =
+        Eigen::Matrix<double, 6, 6>::Identity();
     jacobian.block<3, 3>(0, 3) = -skew;
     covariance = jacobian * covariance * jacobian.transpose();
     covariance = 0.5 * (covariance + covariance.transpose());
@@ -87,21 +87,24 @@ Pose2_5D AutonomyLightNode::poseOf(const nav_msgs::msg::Odometry &odom) const {
   pose.has_covariance = true;
   for (std::size_t index = 0; index < pose.covariance.size(); ++index) {
     pose.covariance[index] = odom.pose.covariance[index];
-    pose.has_covariance = pose.has_covariance && std::isfinite(pose.covariance[index]);
+    pose.has_covariance =
+        pose.has_covariance && std::isfinite(pose.covariance[index]);
   }
-  pose.has_covariance = pose.has_covariance &&
+  pose.has_covariance =
+      pose.has_covariance &&
       (pose.covariance[0] > 0.0 || pose.covariance[7] > 0.0 ||
        pose.covariance[14] > 0.0 || pose.covariance[21] > 0.0 ||
        pose.covariance[28] > 0.0 || pose.covariance[35] > 0.0);
   return pose;
 }
 
-const nav_msgs::msg::Odometry *AutonomyLightNode::odomAt(
-    const rclcpp::Time &stamp) const {
+const nav_msgs::msg::Odometry *
+AutonomyLightNode::odomAt(const rclcpp::Time &stamp) const {
   const nav_msgs::msg::Odometry *closest = nullptr;
   double closest_delta = std::numeric_limits<double>::infinity();
   for (const auto &odom : odom_history_) {
-    const double delta = std::abs((rclcpp::Time(odom.header.stamp) - stamp).seconds());
+    const double delta =
+        std::abs((rclcpp::Time(odom.header.stamp) - stamp).seconds());
     if (delta < closest_delta) {
       closest = &odom;
       closest_delta = delta;
@@ -111,35 +114,86 @@ const nav_msgs::msg::Odometry *AutonomyLightNode::odomAt(
 }
 
 PointObservations AutonomyLightNode::observationsFrom(
-    const sensor_msgs::msg::PointCloud2 &message) const {
+    const sensor_msgs::msg::PointCloud2 &message,
+    const nav_msgs::msg::Odometry &odom) const {
   PclCloud cloud;
   pcl::fromROSMsg(message, cloud);
-  const auto source_field = std::find_if(message.fields.begin(), message.fields.end(),
-      [](const sensor_msgs::msg::PointField &field) {
-        return field.name == "sensor_id" && field.datatype == sensor_msgs::msg::PointField::UINT8;
-      });
+  const auto field = [&message](const std::string &name,
+                                const std::uint8_t datatype) {
+    return std::find_if(
+        message.fields.begin(), message.fields.end(),
+        [&name, datatype](const sensor_msgs::msg::PointField &value) {
+          return value.name == name && value.datatype == datatype;
+        });
+  };
+  const bool has_source =
+      field("sensor_id", sensor_msgs::msg::PointField::UINT8) !=
+      message.fields.end();
+  const bool has_origin =
+      field("origin_x", sensor_msgs::msg::PointField::FLOAT32) !=
+          message.fields.end() &&
+      field("origin_y", sensor_msgs::msg::PointField::FLOAT32) !=
+          message.fields.end() &&
+      field("origin_z", sensor_msgs::msg::PointField::FLOAT32) !=
+          message.fields.end();
+  tf2::Quaternion map_base;
+  tf2::fromMsg(odom.pose.pose.orientation, map_base);
+  map_base.normalize();
+  const tf2::Vector3 lidar_origin =
+      tf2::Vector3(odom.pose.pose.position.x, odom.pose.pose.position.y,
+                   odom.pose.pose.position.z) +
+      tf2::quatRotate(map_base, target_to_lidar_translation_);
   PointObservations observations;
   observations.reserve(cloud.size());
-  if (source_field == message.fields.end()) {
-    for (const auto &point : cloud.points) {
-      observations.push_back({point.x, point.y, point.z, 0U});
-    }
-    return observations;
-  }
-  sensor_msgs::PointCloud2ConstIterator<std::uint8_t> source(message, "sensor_id");
+  using ByteIterator = sensor_msgs::PointCloud2ConstIterator<std::uint8_t>;
+  using FloatIterator = sensor_msgs::PointCloud2ConstIterator<float>;
+  const auto source = has_source
+                          ? std::make_unique<ByteIterator>(message, "sensor_id")
+                          : nullptr;
+  const auto origin_x =
+      has_origin ? std::make_unique<FloatIterator>(message, "origin_x")
+                 : nullptr;
+  const auto origin_y =
+      has_origin ? std::make_unique<FloatIterator>(message, "origin_y")
+                 : nullptr;
+  const auto origin_z =
+      has_origin ? std::make_unique<FloatIterator>(message, "origin_z")
+                 : nullptr;
   for (const auto &point : cloud.points) {
-    observations.push_back({point.x, point.y, point.z, *source});
-    ++source;
+    PointObservation observation{point.x,
+                                 point.y,
+                                 point.z,
+                                 source ? **source : 0U,
+                                 static_cast<float>(lidar_origin.x()),
+                                 static_cast<float>(lidar_origin.y()),
+                                 static_cast<float>(lidar_origin.z())};
+    if (origin_x && std::isfinite(**origin_x) && std::isfinite(**origin_y) &&
+        std::isfinite(**origin_z)) {
+      observation.origin_x = **origin_x;
+      observation.origin_y = **origin_y;
+      observation.origin_z = **origin_z;
+    }
+    observations.push_back(observation);
+    if (source) {
+      ++(*source);
+    }
+    if (origin_x) {
+      ++(*origin_x);
+      ++(*origin_y);
+      ++(*origin_z);
+    }
   }
   return observations;
 }
 
-void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message) {
+void AutonomyLightNode::onOdom(
+    const nav_msgs::msg::Odometry::SharedPtr message) {
   if (!message || shutdown_requested_) {
     return;
   }
   latest_odom_ = baseOdom(*message);
-  if (latest_odom_.header.stamp.sec == 0 && latest_odom_.header.stamp.nanosec == 0) {
+  if (latest_odom_.header.stamp.sec == 0 &&
+      latest_odom_.header.stamp.nanosec == 0) {
     latest_odom_.header.stamp = now();
   }
   latest_odom_.header.frame_id = global_frame_;
@@ -152,8 +206,10 @@ void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message)
 
   path_.header = latest_odom_.header;
   if (path_.poses.empty() ||
-      std::hypot(path_.poses.back().pose.position.x - latest_odom_.pose.pose.position.x,
-                 path_.poses.back().pose.position.y - latest_odom_.pose.pose.position.y) > 0.02) {
+      std::hypot(path_.poses.back().pose.position.x -
+                     latest_odom_.pose.pose.position.x,
+                 path_.poses.back().pose.position.y -
+                     latest_odom_.pose.pose.position.y) > 0.02) {
     geometry_msgs::msg::PoseStamped pose;
     pose.header = latest_odom_.header;
     pose.pose = latest_odom_.pose.pose;
@@ -162,8 +218,7 @@ void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message)
       path_.poses.erase(path_.poses.begin(), path_.poses.begin() + 1'000);
     }
   }
-  publishPose(latest_odom_, latest_odom_.pose.pose.position.z -
-                              mapper_config_.rolling_initial_prior_ground_distance_m);
+  publishPose(latest_odom_);
 }
 
 void AutonomyLightNode::onRegisteredCloud(
@@ -172,18 +227,20 @@ void AutonomyLightNode::onRegisteredCloud(
     return;
   }
   try {
-    const rclcpp::Time stamp = message->header.stamp.sec == 0 &&
-                                      message->header.stamp.nanosec == 0
-                                  ? now()
-                                  : rclcpp::Time(message->header.stamp);
+    const rclcpp::Time stamp =
+        message->header.stamp.sec == 0 && message->header.stamp.nanosec == 0
+            ? now()
+            : rclcpp::Time(message->header.stamp);
     const auto *odom = odomAt(stamp);
     if (!odom) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Skipping cloud without an odometry sample within %.3fs",
-                           odom_sync_tolerance_sec_);
+      RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Skipping cloud without an odometry sample within %.3fs",
+          odom_sync_tolerance_sec_);
       return;
     }
-    mapper_.integrate(observationsFrom(*message), poseOf(*odom), stamp.seconds());
+    mapper_.integrate(observationsFrom(*message, *odom), poseOf(*odom),
+                      stamp.seconds());
   } catch (const std::exception &error) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Cannot read Super-LIO cloud: %s", error.what());
@@ -214,23 +271,23 @@ void AutonomyLightNode::onTimer() {
     return;
   }
   if (mapping_only_) {
-    publishGravityTransform(latest_odom_, latest_odom_.pose.pose.position.z -
-                            mapper_config_.rolling_initial_prior_ground_distance_m);
+    publishGravityTransform(latest_odom_);
     return;
   }
   std_msgs::msg::Header header;
   header.stamp = now();
   header.frame_id = height_map_frame_;
-  const HeightGrid grid = mapper_.build(poseOf(latest_odom_), header.stamp.sec +
-      1.0e-9 * header.stamp.nanosec, header);
-  const bool observed = std::any_of(grid.valid.begin(), grid.valid.end(),
-                                    [](std::uint8_t value) { return value != 0U; });
+  const HeightGrid grid =
+      mapper_.build(poseOf(latest_odom_),
+                    header.stamp.sec + 1.0e-9 * header.stamp.nanosec, header);
+  const bool observed =
+      std::any_of(grid.valid.begin(), grid.valid.end(),
+                  [](std::uint8_t value) { return value != 0U; });
   if (observed) {
     publishHeight(grid);
-    publishPose(latest_odom_, grid.floor_z);
+    publishPose(latest_odom_);
   } else {
-    publishGravityTransform(latest_odom_, latest_odom_.pose.pose.position.z -
-                            mapper_config_.rolling_initial_prior_ground_distance_m);
+    publishGravityTransform(latest_odom_);
   }
 }
 
@@ -265,9 +322,9 @@ void AutonomyLightNode::publishHeight(const HeightGrid &grid) {
                                  static_cast<float>(unknown_distance_));
   for (std::size_t index = 0; index < grid.spec.size(); ++index) {
     if (grid.valid[index] != 0U && std::isfinite(grid.height[index])) {
-      height_data[index] = static_cast<float>(std::clamp(
-          reference_height_ - static_cast<double>(grid.height[index]),
-          distance_min_, distance_max_));
+      height_data[index] = static_cast<float>(
+          std::clamp(-static_cast<double>(grid.height[index]), distance_min_,
+                     distance_max_));
     }
   }
   if (publishesDdsHeight() && dds_height_map_pub_ &&
@@ -299,19 +356,22 @@ void AutonomyLightNode::publishHeight(const HeightGrid &grid) {
   cloud.header = grid.header;
   sensor_msgs::PointCloud2Modifier modifier(cloud);
   modifier.setPointCloud2FieldsByString(1, "xyz");
-  modifier.resize(static_cast<std::size_t>(
-      std::count(grid.valid.begin(), grid.valid.end(), static_cast<std::uint8_t>(1U))));
+  modifier.resize(static_cast<std::size_t>(std::count(
+      grid.valid.begin(), grid.valid.end(), static_cast<std::uint8_t>(1U))));
   sensor_msgs::PointCloud2Iterator<float> x(cloud, "x");
   sensor_msgs::PointCloud2Iterator<float> y(cloud, "y");
   sensor_msgs::PointCloud2Iterator<float> z(cloud, "z");
   for (std::uint32_t row = 0; row < grid.spec.height(); ++row) {
     for (std::uint32_t col = 0; col < grid.spec.width(); ++col) {
-      const auto index = static_cast<std::size_t>(row) * grid.spec.width() + col;
+      const auto index =
+          static_cast<std::size_t>(row) * grid.spec.width() + col;
       if (grid.valid[index] == 0U) {
         continue;
       }
-      *x = static_cast<float>(grid.spec.xMin() + (col + 0.5) * grid.spec.resolution);
-      *y = static_cast<float>(grid.spec.yMin() + (row + 0.5) * grid.spec.resolution);
+      *x = static_cast<float>(grid.spec.xMin() +
+                              (col + 0.5) * grid.spec.resolution);
+      *y = static_cast<float>(grid.spec.yMin() +
+                              (row + 0.5) * grid.spec.resolution);
       *z = grid.height[index];
       ++x;
       ++y;
@@ -323,15 +383,14 @@ void AutonomyLightNode::publishHeight(const HeightGrid &grid) {
   quality_pub_->publish(quality);
 }
 
-void AutonomyLightNode::publishPose(const nav_msgs::msg::Odometry &odom,
-                                    const double floor_z) {
+void AutonomyLightNode::publishPose(const nav_msgs::msg::Odometry &odom) {
   odom_pub_->publish(odom);
   path_pub_->publish(path_);
-  publishGravityTransform(odom, floor_z);
+  publishGravityTransform(odom);
 }
 
-void AutonomyLightNode::publishGravityTransform(const nav_msgs::msg::Odometry &odom,
-                                                 const double floor_z) {
+void AutonomyLightNode::publishGravityTransform(
+    const nav_msgs::msg::Odometry &odom) {
   if (height_map_frame_ == target_frame_) {
     return;
   }
@@ -342,20 +401,10 @@ void AutonomyLightNode::publishGravityTransform(const nav_msgs::msg::Odometry &o
     return value;
   }();
   const tf2::Quaternion map_height = yawOnly(odom.pose.pose.orientation);
-  const tf2::Vector3 map_position(odom.pose.pose.position.x,
-                                  odom.pose.pose.position.y,
-                                  odom.pose.pose.position.z);
-  const tf2::Vector3 map_floor(odom.pose.pose.position.x,
-                               odom.pose.pose.position.y, floor_z);
   geometry_msgs::msg::TransformStamped height;
   height.header = odom.header;
   height.header.frame_id = target_frame_;
   height.child_frame_id = height_map_frame_;
-  const tf2::Vector3 local_floor = tf2::quatRotate(map_base.inverse(),
-                                                    map_floor - map_position);
-  height.transform.translation.x = local_floor.x();
-  height.transform.translation.y = local_floor.y();
-  height.transform.translation.z = local_floor.z();
   tf2::Quaternion base_height = map_base.inverse() * map_height;
   base_height.normalize();
   height.transform.rotation = tf2::toMsg(base_height);
@@ -370,8 +419,6 @@ void AutonomyLightNode::publishInitialGravityTransform() {
   transform.header.stamp = now();
   transform.header.frame_id = target_frame_;
   transform.child_frame_id = height_map_frame_;
-  transform.transform.translation.z = -
-      mapper_config_.rolling_initial_prior_ground_distance_m;
   transform.transform.rotation.w = 1.0;
   tf_broadcaster_->sendTransform(transform);
 }

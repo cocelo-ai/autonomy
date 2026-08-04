@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <string>
@@ -18,7 +19,7 @@ namespace autonomy_light {
 class RollingCloudMergeNode final : public rclcpp::Node {
 public:
   explicit RollingCloudMergeNode(
-      const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+      const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
 private:
   using Cloud = sensor_msgs::msg::PointCloud2;
@@ -26,10 +27,13 @@ private:
 
   void onD435(Cloud::ConstSharedPtr message);
   void onLidar(Cloud::ConstSharedPtr message);
-  void appendD435(const Cloud& camera, const std::string& target_frame,
-                  PclCloud& merged, std::vector<std::uint8_t>& sensor_ids);
-  void publish(const PclCloud& cloud, const std::vector<std::uint8_t>& sensor_ids,
-               const std_msgs::msg::Header& header);
+  void appendD435(const Cloud &camera, const std::string &target_frame,
+                  PclCloud &merged, std::vector<std::uint8_t> &sensor_ids,
+                  std::vector<std::array<float, 3>> &origins);
+  void publish(const PclCloud &cloud,
+               const std::vector<std::uint8_t> &sensor_ids,
+               const std::vector<std::array<float, 3>> &origins,
+               const std_msgs::msg::Header &header);
 
   std::string lidar_cloud_topic_{"/lio/cloud_world"};
   std::string d435_cloud_topic_{"/camera/camera/depth/color/points"};
@@ -48,4 +52,4 @@ private:
   tf2_ros::TransformListener tf_listener_;
 };
 
-}  // namespace autonomy_light
+} // namespace autonomy_light

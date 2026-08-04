@@ -22,9 +22,9 @@ static `base_link → lidar_link`. Super-LIO publishes identity `map → odom` b
 the first LiDAR update, then updates only that correction for full SLAM or
 relocation; it owns dynamic `odom → imu`. `autonomy_light` publishes static
 `imu → base_link` and `base_link → lidar_link`. No `world` frame exists.
-Before the first odometry or valid terrain cell, `autonomy_light` still publishes
-dynamic `base_link → base_link_gravity` from the configured initial ground
-distance; the measured local floor replaces that fallback as soon as it exists.
+Before the first odometry, `autonomy_light` publishes identity
+`base_link → base_link_gravity`. Once odometry exists, only the dynamic
+roll/pitch-removing rotation is updated; its translation always remains zero.
 Mapping uses Super-LIO keyframes, Scan Context candidate
 search, GICP verification and an iSAM2 pose graph; its corrected `map → odom →
 imu` TF remains continuously broadcast. Saved-map localization keeps local LIO
@@ -57,10 +57,11 @@ order. Each cloud uses its nearest odom inside
 discarded. The mapper adds sensor range and mounting uncertainty to the
 Jacobian-projected pose covariance for every height update. XY uncertainty is a
 bounded Gaussian splat across nearby cells, while a pose above the configured
-limit rejects the cloud. The merge node preserves `sensor_id`, keeping LiDAR
-and D435 models separate after fusion.
+limit rejects the cloud. The merge node preserves `sensor_id` and the D435
+world-frame origin, keeping LiDAR and D435 models separate after fusion and
+giving visibility cleanup the correct ray source.
 
-`HeightMap.data` is `reference_height - terrain_height`, clamped by
+`HeightMap.data` is the actual `base_z - terrain_z`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:
 `valid=0` means `data` contains only the configured unknown placeholder.
 
@@ -78,15 +79,22 @@ Hz, so it does not display a queued, stale terrain frame after robot motion.
 The overlay reports both received `source` Hz and rendered `display` Hz.
 Override the input with `AUTONOMY_LIGHT_VIS_TOPIC`.
 
-## Floor tracking
+## Gravity-aligned base frame
 
-For each height-map frame, ground cells inside `height_origin.floor_radius` are
-fit to `z=ax+by+c` with three Huber-weighted least-squares iterations. The
-reported floor is `c`, the plane height under `base_link`; slope and support
-limits reject bad fits. A nearby 20th-percentile ground height remains the
-deterministic fallback. This rejects isolated low D435/LiDAR returns while
-following an ordinary slope; it does not tilt `base_link_gravity`, which stays
-gravity-aligned.
+`base_link_gravity` has exactly the same origin as `base_link`. Its rotation is
+the base orientation with roll and pitch removed, so it remains yaw-only and
+gravity-aligned. The terrain PointCloud z coordinate is therefore directly
+relative to the base origin; no terrain estimate translates this TF.
+
+## Rolling visibility and overhang handling
+
+`rolling_elevation.visibility` runs per accepted cloud. A ray from the exact
+LiDAR/D435 source to every accepted endpoint invalidates an old ground/upper
+cell only when it passes sufficiently below that cell, the cell is old enough,
+and the ray aligns with the estimated surface normal. This prevents cleanup at
+grazing edges while removing stale dynamic walls. `overhang_filter` applies the
+paper's distance-ramped upper limit above the sensor before Bayesian fusion.
+Both features are intentionally disabled for the static `global` PCD source.
 
 ## Cyclone DDS transport
 

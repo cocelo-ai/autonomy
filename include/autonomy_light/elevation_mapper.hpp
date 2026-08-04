@@ -25,6 +25,18 @@ struct ElevationMapperConfig {
   double rolling_initial_prior_radius_m{0.30};
   double rolling_initial_prior_ground_distance_m{0.48};
   double rolling_initial_prior_variance{0.04};
+  bool visibility_cleanup_enabled{true};
+  double visibility_max_ray_length_m{2.0};
+  double visibility_min_ray_length_m{0.15};
+  double visibility_min_observation_age_sec{0.08};
+  double visibility_normal_alignment_min{0.15};
+  double visibility_height_margin_m{0.015};
+  double visibility_sigma_scale{1.0};
+  bool overhang_filter_enabled{true};
+  double overhang_near_max_above_sensor_m{0.20};
+  double overhang_ramp_start_m{1.0};
+  double overhang_ramp_slope{0.30};
+  double overhang_absolute_max_above_sensor_m{1.0};
   double d435_base_variance{0.0016};
   double d435_range_variance_factor{0.002};
   double lidar_extrinsic_translation_std_m{0.005};
@@ -36,10 +48,6 @@ struct ElevationMapperConfig {
   double pose_max_position_std_m{0.25};
   double pose_max_orientation_std_deg{10.0};
   int pose_splat_max_cells{2};
-  double floor_radius_m{0.60};
-  int floor_plane_min_samples{6};
-  double floor_plane_max_slope_deg{25.0};
-  double floor_plane_huber_delta_m{0.04};
 };
 
 class ElevationMapper {
@@ -72,16 +80,21 @@ private:
   };
 
   using SurfaceMap = std::unordered_map<CellKey, Surface, CellKeyHash>;
-  using SampleMap = std::unordered_map<CellKey, std::vector<Sample>, CellKeyHash>;
+  using SampleMap =
+      std::unordered_map<CellKey, std::vector<Sample>, CellKeyHash>;
   using VoxelMap = std::unordered_map<VoxelKey, VoxelMean, VoxelKeyHash>;
 
   [[nodiscard]] CellKey keyFor(double x, double y) const;
-  void updateSurfaces(SurfaceMap &target, SampleMap &samples,
-                      const Pose2_5D &robot, double stamp_sec, bool rolling);
+  void updateSurfaces(SurfaceMap &target, SampleMap &samples, double stamp_sec,
+                      bool rolling);
   void addVoxels(const PointObservations &cloud);
   void addVoxels(const PclCloud &cloud);
   void addRollingSamples(SampleMap &samples, const PointObservation &point,
                          const Pose2_5D &robot) const;
+  [[nodiscard]] bool acceptsRollingMeasurement(const PointObservation &point,
+                                               const Pose2_5D &robot) const;
+  void cleanupVisibility(const PointObservations &cloud, const Pose2_5D &robot,
+                         double stamp_sec);
   void seedInitialRollingPrior(const Pose2_5D &robot, double stamp_sec);
   [[nodiscard]] const Surface *nearestSurface(const SurfaceMap &surfaces,
                                               double x, double y) const;

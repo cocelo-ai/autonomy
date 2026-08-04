@@ -28,15 +28,7 @@ autonomy_light:
     elevation_min_z: -2.0
     elevation_max_z: 2.0
     publish_rate_hz: 50.0
-    height_origin:
-      floor_radius: 0.60
-      # Robust local ground plane; lower-percentile remains the fallback.
-      plane:
-        min_samples: 6
-        max_slope_deg: 25.0
-        huber_delta_m: 0.04
     height_map_distance:
-      reference_height: 0.48
       min: 0.0
       max: 0.75
       unknown: 0.48
@@ -74,6 +66,24 @@ autonomy_light:
         footprint_radius_m: 0.30
         ground_distance_m: 0.48
         variance: 0.04             # m^2, sigma = 0.20 m (intentionally weak)
+      # Miki et al. (IROS 2022): remove stale cells whose height is penetrated
+      # by a measured sensor ray. This is deliberately rolling-only.
+      visibility:
+        enabled: true
+        max_ray_length_m: 2.0
+        min_ray_length_m: 0.15
+        min_observation_age_sec: 0.08
+        normal_alignment_min: 0.15
+        height_margin_m: 0.015
+        sigma_scale: 1.0
+      # Exclusion ramp from the same work: reject ceiling/overhang returns
+      # above the sensor, but retain normal ascending terrain below it.
+      overhang_filter:
+        enabled: true
+        near_max_above_sensor_m: 0.20
+        ramp_start_m: 1.0
+        ramp_slope: 0.30
+        absolute_max_above_sensor_m: 1.0
       # All values are measurement/calibration standard deviations after a
       # real sensor-mount calibration; tune them from logged residuals.
       sensor:

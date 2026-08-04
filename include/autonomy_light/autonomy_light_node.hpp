@@ -44,25 +44,28 @@ private:
   void startProcesses();
   [[nodiscard]] std::vector<std::string> superLioCommand() const;
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr message);
-  void onRegisteredCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message);
+  void
+  onRegisteredCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message);
   void onTimer();
   void publishMap();
   void publishHeight(const HeightGrid &grid);
-  void publishPose(const nav_msgs::msg::Odometry &odom, double floor_z);
-  void publishGravityTransform(const nav_msgs::msg::Odometry &odom, double floor_z);
+  void publishPose(const nav_msgs::msg::Odometry &odom);
+  void publishGravityTransform(const nav_msgs::msg::Odometry &odom);
   void publishInitialGravityTransform();
   void publishStaticTransform();
   void saveMap();
   [[nodiscard]] bool publishesRosHeight() const;
   [[nodiscard]] bool publishesDdsHeight() const;
-  [[nodiscard]] nav_msgs::msg::Odometry baseOdom(
-      const nav_msgs::msg::Odometry &imu_odom) const;
-  [[nodiscard]] const nav_msgs::msg::Odometry *odomAt(const rclcpp::Time &stamp) const;
-  [[nodiscard]] PointObservations observationsFrom(
-      const sensor_msgs::msg::PointCloud2 &cloud) const;
+  [[nodiscard]] nav_msgs::msg::Odometry
+  baseOdom(const nav_msgs::msg::Odometry &imu_odom) const;
+  [[nodiscard]] const nav_msgs::msg::Odometry *
+  odomAt(const rclcpp::Time &stamp) const;
+  [[nodiscard]] PointObservations
+  observationsFrom(const sensor_msgs::msg::PointCloud2 &cloud,
+                   const nav_msgs::msg::Odometry &odom) const;
   [[nodiscard]] Pose2_5D poseOf(const nav_msgs::msg::Odometry &odom) const;
-  [[nodiscard]] tf2::Quaternion yawOnly(
-      const geometry_msgs::msg::Quaternion &orientation) const;
+  [[nodiscard]] tf2::Quaternion
+  yawOnly(const geometry_msgs::msg::Quaternion &orientation) const;
 
   std::string target_frame_{"base_link"};
   std::string height_map_frame_{"base_link_gravity"};
@@ -86,7 +89,6 @@ private:
   ElevationMapper mapper_;
   double publish_rate_hz_{50.0};
   double map_publish_interval_sec_{1.0};
-  double reference_height_{0.48};
   double distance_min_{0.0};
   double distance_max_{0.75};
   double unknown_distance_{0.48};

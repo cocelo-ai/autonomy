@@ -76,16 +76,30 @@ Rolling은 cloud timestamp와 일치하는 Super-LIO odometry만 사용한다. S
 ESKF 6×6 pose covariance, LiDAR/D435 거리 모델, 각 센서 mounting calibration
 uncertainty를 point별 height variance로 전파한다. XY pose uncertainty는 인접 cell에
 Gaussian splat으로 나누고, 설정된 한계를 넘는 pose는 cloud 전체를 버린다. D435 merge
-output은 `sensor_id`를 보존하므로 두 센서가 같은 noise model로 섞이지 않는다.
+output은 `sensor_id`와 관측 원점을 보존하므로 두 센서가 같은 noise model·ray로 섞이지
+않는다.
 
 실기 로그의 residual로 `rolling_elevation.sensor.*`와 `localization.*`를 보정해야 한다.
 기본값은 과신을 막는 보수적 시작값이며, covariance가 작아도 minimum standard
 deviation 아래로는 낮추지 않는다.
 
-`base_link` 아래 바닥 기준은 주변 셀의 단순 최저값이 아니다. 최근 ground cell에
-Huber 강건 평면을 맞춰 로봇 원점 높이를 구하고, 유효 셀이 부족하거나 기울기가
-25°를 넘으면 기존 20th percentile로 되돌아간다. 따라서 한 개의 낮은 depth outlier나
-drop-off가 height map 전체 기준을 급격히 내리지 않는다.
+`base_link_gravity`는 바닥 frame이 아니다. `base_link`와 같은 원점을 공유하고 roll/pitch만
+제거한 yaw-only, gravity-aligned frame이다. 따라서 hanging obstacle이나 지면 추정 실패가 TF
+translation을 바꾸지 않는다. Grid z는 이 frame에서의 실제 terrain z이며, `HeightMap.data`는
+`base_z - terrain_z`로 발행한다.
+
+### Visibility cleanup and overhang exclusion
+
+Rolling 모드는 [Miki et al., IROS 2022](https://arxiv.org/abs/2204.12876)의 GPU elevation
+mapping 방법을 CPU rolling posterior에 맞게 적용한다. 각 유효 측정의 sensor origin → endpoint ray가 오래된 surface보다 충분히 아래를
+통과하고 표면 normal과 정렬되면 해당 stale cell을 제거한다. 따라서 움직인 물체나 이전
+wall artifact는 다음 관측을 기다리지 않고 갱신된다. `rolling_elevation.visibility.*`가 이
+조건을 조절한다.
+
+동시에 `rolling_elevation.overhang_filter.*`는 센서보다 높은 point를 거리 의존 ramp
+상한으로 사전 거절한다. 가까운 천장·돌출물은 ground fusion에 들어가지 않지만, 센서 아래의
+일반 slope·계단은 유지된다. 이 두 처리는 관측 원점과 시간이 있는 `rolling`에만 적용한다.
+정적 global PCD는 ray로 지우지 않는다.
 
 ### Live 2D debug view
 
@@ -108,9 +122,10 @@ rolling_merge.enabled to true. The default camera topic is
 The launcher starts rolling_cloud_merge automatically. For each LiDAR cloud it
 accepts the closest buffered D435 cloud inside max_sync_delta_sec, transforms it into the
 LiDAR odom|map frame at the D435 timestamp, range/voxel filters it, and
-publishes /autonomy_light/rolling_cloud. Missing TF or an unmatched D435 sample
-passes the LiDAR cloud through unchanged. A TF chain from base_link to the D435
-optical frame is required.
+publishes /autonomy_light/rolling_cloud. It also attaches the D435 world-frame
+origin to each camera point; missing TF or an unmatched D435 sample passes the
+LiDAR cloud through unchanged. A TF chain from base_link to the D435 optical
+frame is required.
 
 ## Height-map transport
 

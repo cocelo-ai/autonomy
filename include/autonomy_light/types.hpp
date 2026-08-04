@@ -2,17 +2,17 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cerrno>
-#include <csignal>
+#include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -38,6 +38,11 @@ struct PointObservation {
   float y{0.0F};
   float z{0.0F};
   std::uint8_t sensor_id{0U}; // 0: LiDAR, 1: D435/D435i
+  // World-frame source position. NaN means the mapper uses the LiDAR/base
+  // origin.
+  float origin_x{std::numeric_limits<float>::quiet_NaN()};
+  float origin_y{std::numeric_limits<float>::quiet_NaN()};
+  float origin_z{std::numeric_limits<float>::quiet_NaN()};
 };
 
 using PointObservations = std::vector<PointObservation>;
@@ -69,7 +74,6 @@ struct HeightGrid {
   std::vector<std::uint8_t> valid;
   std::vector<float> variance;
   std::vector<float> age;
-  double floor_z{0.0};
 
   explicit HeightGrid(const GridSpec &grid = {}) : spec(grid) {
     height.assign(spec.size(), std::numeric_limits<float>::quiet_NaN());

@@ -72,19 +72,24 @@
   <p>With <code>rolling_merge.enabled: true</code>, the launcher starts the optional merge node.
   It accepts only a D435 sample within the configured synchronization window, uses TF at that camera
   timestamp, and passes a LiDAR-only cloud through if TF or a matching camera sample is unavailable.</p>
-  <p>The floor origin uses a local <code>z=ax+by+c</code> ground-plane fit with Huber residual
-  weights; <code>c</code> is the floor directly below <code>base_link</code>. It rejects fits with
-  too few cells or a slope above the configured limit, then falls back to the nearby 20th-percentile
-  ground height. This is robust to isolated low depth returns while retaining slope tracking.</p>
+  <p><code>base_link_gravity</code> shares the exact <code>base_link</code> origin and removes only
+  roll/pitch from its orientation. It is not translated to an estimated floor, so hanging geometry cannot
+  move the TF. Terrain z is directly base-relative and controller data is <code>base_z - terrain_z</code>.</p>
   <p>Each rolling cloud is matched to its timestamped odometry covariance. Sensor range and mounting
   calibration are added to the Jacobian-projected pose covariance; XY uncertainty splats the point
   across nearby cells. Over-limit uncertainty rejects the cloud. The merge node keeps a
-  <code>sensor_id</code> field so LiDAR and D435 retain independent measurement models.</p>
+  <code>sensor_id</code> and each D435 point's transformed origin, so LiDAR and D435 retain
+  independent measurement models and exact cleanup-ray sources.</p>
+  <p>In rolling mode, per-cloud visibility cleanup casts sensor-to-endpoint rays. A stale surface is
+  cleared only when a ray passes below it after the configured age and aligns with its normal. A
+  distance-ramped exclusion limit removes points above the sensor before fusion, preventing near
+  ceiling and overhang returns from becoming terrain. Static global PCD input is deliberately not
+  ray-cleaned because it has no observation origin or timestamp.</p>
   <p>At startup, only the robot footprint receives a flat, high-variance ground prior because its
   underside is occluded. Its first real observation bypasses the innovation gate and replaces it by
   the normal Kalman update; the quality variance exposes the prior's low confidence.</p>
-  <p>The same initial ground distance keeps <code>base_link → base_link_gravity</code> present before
-  a valid terrain cell exists. Once available, the measured local floor replaces this fallback.</p>
+  <p><code>base_link → base_link_gravity</code> is present from startup as identity. After odometry
+  arrives, only its roll/pitch-removing rotation changes; translation stays zero.</p>
   <p><code>./launch.sh --vis</code> starts a live OpenCV 2D view of only the numeric
   <code>HeightMap.data</code> grid. It keeps the newest sample only and targets 50 Hz, so the image
   follows robot motion instead of rendering a queued stale frame.</p>
