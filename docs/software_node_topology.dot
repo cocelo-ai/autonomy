@@ -7,7 +7,7 @@ digraph autonomy_light {
 
   livox [label="Livox driver\n(external ROS node)", fillcolor="#f5f7fa"];
   lio [label="Super-LIO\nLIO | full SLAM | relocation\nmap -> odom -> imu", fillcolor="#e9f6ee", color="#32734d"];
-  d435 [label="D435 / D435i\nrealsense2_camera PointCloud2", fillcolor="#f5f7fa"];
+  d435 [label="D435 / D435i\nPointCloud2 + camera-internal TF", fillcolor="#f5f7fa"];
   mapper [label="elevation_mapping\nvendored ETH/ANYbotics node\nrobot-centric circular GridMap\nvariance + visibility cleanup",
           fillcolor="#fff4df", color="#a65e00", penwidth="2"];
   control [label="Controller / Isaac Lab\nGridMap consumer", fillcolor="#f5f7fa"];
@@ -16,7 +16,7 @@ digraph autonomy_light {
 
   livox -> lio [label="Livox CustomMsg + IMU"];
   lio -> mapper [label="/lio/odom covariance\n/lio/cloud_world\nmap -> odom -> imu TF"];
-  d435 -> mapper [label="depth/color/points\ncalibrated TF"];
+  d435 -> mapper [label="depth/color/points\nbase_link -> camera_link TF"];
   prior -> mapper [label="underlying_map_topic", style=dashed];
   mapper -> control [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap"];
   mapper -> rviz [label="same native GridMap"];

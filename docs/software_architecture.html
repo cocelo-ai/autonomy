@@ -44,7 +44,7 @@
     <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered LiDAR cloud, transformed to the map at its timestamp.</td></tr>
     <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>D435/D435i cloud; directly fused with the structured-light model.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/elevation_map</code></td><td>Native <code>grid_map_msgs/msg/GridMap</code>, layers: elevation, upper/lower bound, uncertainty range.</td></tr>
-    <tr><td>TF</td><td><code>map → odom → imu → base_link → lidar_link</code></td><td>Super-LIO owns dynamic transforms; launcher owns only calibrated static links.</td></tr>
+    <tr><td>TF</td><td><code>map → odom → imu → base_link → lidar_link</code><br><code>base_link → camera_link → camera_depth_optical_frame</code></td><td>Super-LIO owns dynamic transforms; launcher owns the calibrated static mounts, while the D435 driver owns camera-internal TF.</td></tr>
   </table>
   <p>The local grid follows <code>base_link</code> in <code>map</code> with Grid Map's circular buffer. It preserves
   overlapping posterior cells while moving and clears only newly exposed strips. Unobserved terrain remains <code>NaN</code>;

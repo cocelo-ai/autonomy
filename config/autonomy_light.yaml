@@ -3,7 +3,7 @@ autonomy_light:
     ros_domain_id: 0
 
     # Calibrated static chain. Super-LIO publishes map -> odom -> imu.
-    # The launcher publishes imu -> base_link and base_link -> lidar_link.
+    # The launcher publishes imu -> base_link and base_link -> lidar_link/camera_link.
     target_frame: "base_link"
     imu_frame: "imu"
     lidar_frame: "lidar_link"
@@ -11,6 +11,11 @@ autonomy_light:
     odom_frame: "odom"
     target_to_lidar_xyz: [0.234, 0.0, 0.077]
     target_to_lidar_rpy: [0.0, 0.7854, 0.0]
+    # Provisional D435 mount. Replace with a measured T_base_camera before
+    # using camera observations for locomotion or navigation.
+    camera_frame: "camera_link"
+    target_to_camera_xyz: [0.18, 0.0, 0.18]
+    target_to_camera_rpy: [0.0, 0.0, 0.0]
     # T_imu_lidar: keep this identical to the calibrated Super-LIO extrinsic.
     imu_from_lidar_xyz: [-0.011, -0.02329, 0.04412]
     imu_from_lidar_rpy: [0.0, 0.0, 0.0]

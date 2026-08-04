@@ -12,6 +12,9 @@ D435/D435i PointCloud2 ───────────────────
                               elevation_mapping (vendored ETH pipeline)
                                       └─ /autonomy_light/elevation_map
                                          grid_map_msgs/msg/GridMap
+
+TF: map → odom → imu → base_link → lidar_link
+                              └→ camera_link → camera_depth_optical_frame
 ```
 
 자세한 노드·TF·topic 구조는 [software architecture PDF](docs/autonomy_light_software_architecture.pdf)에 있다.
@@ -76,7 +79,8 @@ D435를 사용하지 않으려면 같은 파일의 `inputs`를 `['lidar']`로 �
 ## TF and calibration
 
 Super-LIO가 `map → odom → imu`를 발행한다. launcher는 설정의 calibrated extrinsic으로
-`imu → base_link → lidar_link`를 `/tf_static`에 발행한다. `target_to_lidar_*`와
-`imu_from_lidar_*`는 반드시 실측 calibration 값이어야 하며, 후자는 Super-LIO에도 동일하게
-전달된다. mapper는 gravity-aligned `map` frame을 사용하므로 별도 `base_link_gravity` TF나
-자체 frame 변환 노드가 필요하지 않다.
+`imu → base_link → lidar_link`와 `base_link → camera_link`를 `/tf_static`에 발행한다.
+`target_to_lidar_*`, `target_to_camera_*`, `imu_from_lidar_*`는 반드시 실측 calibration 값이어야
+하며, 후자는 Super-LIO에도 동일하게 전달된다. D435 driver의 camera-internal TF는
+`camera_link`에 이어져야 한다. mapper는 gravity-aligned `map` frame을 사용하므로 별도
+`base_link_gravity` TF나 자체 frame 변환 노드가 필요하지 않다.

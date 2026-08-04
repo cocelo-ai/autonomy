@@ -19,7 +19,7 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --vis                   Show the native GridMap elevation layer in a 2D window.
   --rviz                  Start RViz with the GridMap display.
   --no-rviz               Do not auto-start RViz for --map.
-  --no-static-tf          Do not publish imu -> base_link -> lidar_link.
+  --no-static-tf          Do not publish imu -> base_link -> lidar_link/camera_link.
   --ros-distro NAME       ROS distribution (default: $ROS_DISTRO or humble).
 
 Extra ROS arguments after `--` are passed only to elevation_mapping.
@@ -191,6 +191,8 @@ if mode == "sim":
 
 base_to_lidar = vector(root.get("target_to_lidar_xyz"), "target_to_lidar_xyz")
 base_to_lidar_q = quaternion_from_rpy(*vector(root.get("target_to_lidar_rpy"), "target_to_lidar_rpy"))
+base_to_camera = vector(root.get("target_to_camera_xyz"), "target_to_camera_xyz")
+base_to_camera_q = quaternion_from_rpy(*vector(root.get("target_to_camera_rpy"), "target_to_camera_rpy"))
 imu_from_lidar = vector(root.get("imu_from_lidar_xyz"), "imu_from_lidar_xyz")
 imu_from_lidar_q = quaternion_from_rpy(*vector(root.get("imu_from_lidar_rpy"), "imu_from_lidar_rpy"))
 
@@ -235,11 +237,13 @@ with open(elevation_target, "w", encoding="utf-8") as stream:
 with open(tf_target, "w", encoding="utf-8") as stream:
     stream.write(" ".join(str(value) for value in (*imu_to_base_t, *imu_to_base_q)) + "\n")
     stream.write(" ".join(str(value) for value in (*base_to_lidar, *base_to_lidar_q)) + "\n")
+    stream.write(" ".join(str(value) for value in (*base_to_camera, *base_to_camera_q)) + "\n")
 with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{int(root.get('ros_domain_id', 0))}\n")
     stream.write(f"{root.get('imu_frame', 'imu')}\n")
     stream.write(f"{root.get('target_frame', 'base_link')}\n")
     stream.write(f"{root.get('lidar_frame', 'lidar_link')}\n")
+    stream.write(f"{root.get('camera_frame', 'camera_link')}\n")
 PY
 
 mapfile -t RUNTIME_VALUES < "${RUNTIME_INFO}"
@@ -247,10 +251,12 @@ ROS_DOMAIN_ID="${RUNTIME_VALUES[0]}"
 IMU_FRAME="${RUNTIME_VALUES[1]}"
 BASE_FRAME="${RUNTIME_VALUES[2]}"
 LIDAR_FRAME="${RUNTIME_VALUES[3]}"
+CAMERA_FRAME="${RUNTIME_VALUES[4]}"
 export ROS_DOMAIN_ID
 [[ -n "${VIS_TOPIC}" ]] || VIS_TOPIC="${MAP_TOPIC}"
 read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"
 read -r BASE_LIDAR_X BASE_LIDAR_Y BASE_LIDAR_Z BASE_LIDAR_QX BASE_LIDAR_QY BASE_LIDAR_QZ BASE_LIDAR_QW < <(sed -n '2p' "${STATIC_TF}")
+read -r BASE_CAMERA_X BASE_CAMERA_Y BASE_CAMERA_Z BASE_CAMERA_QX BASE_CAMERA_QY BASE_CAMERA_QZ BASE_CAMERA_QW < <(sed -n '3p' "${STATIC_TF}")
 
 declare -a PIDS=()
 start() {
@@ -302,6 +308,10 @@ if [[ "${NO_STATIC_TF}" != "true" ]]; then
     --x "${BASE_LIDAR_X}" --y "${BASE_LIDAR_Y}" --z "${BASE_LIDAR_Z}" \
     --qx "${BASE_LIDAR_QX}" --qy "${BASE_LIDAR_QY}" --qz "${BASE_LIDAR_QZ}" --qw "${BASE_LIDAR_QW}" \
     --frame-id "${BASE_FRAME}" --child-frame-id "${LIDAR_FRAME}"
+  start "static base_link -> camera_link TF" ros2 run tf2_ros static_transform_publisher \
+    --x "${BASE_CAMERA_X}" --y "${BASE_CAMERA_Y}" --z "${BASE_CAMERA_Z}" \
+    --qx "${BASE_CAMERA_QX}" --qy "${BASE_CAMERA_QY}" --qz "${BASE_CAMERA_QZ}" --qw "${BASE_CAMERA_QW}" \
+    --frame-id "${BASE_FRAME}" --child-frame-id "${CAMERA_FRAME}"
 fi
 
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
