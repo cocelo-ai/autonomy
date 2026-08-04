@@ -360,6 +360,33 @@ start() {
   PIDS+=("$!")
 }
 
+realsense_pointcloud_argument() {
+  local launch_arguments
+  launch_arguments="$(ros2 launch realsense2_camera rs_launch.py --show-args 2>&1)" || {
+    echo "error: could not inspect realsense2_camera launch arguments" >&2
+    return 1
+  }
+  if grep -Fq "pointcloud.enable" <<<"${launch_arguments}"; then
+    printf '%s\n' "pointcloud.enable:=true"
+  elif grep -Fq "enable_pointcloud" <<<"${launch_arguments}"; then
+    printf '%s\n' "enable_pointcloud:=true"
+  else
+    echo "error: this realsense2_camera version exposes no point-cloud launch argument" >&2
+    return 1
+  fi
+}
+
+wait_for_topic() {
+  local topic="$1"
+  local attempts="${2:-75}"
+  local attempt
+  for ((attempt = 0; attempt < attempts; ++attempt)); do
+    ros2 topic list 2>/dev/null | grep -Fxq "${topic}" && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 interface_has_cidr() {
   local interface="$1"
   local cidr="$2"
@@ -463,9 +490,14 @@ if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
     echo "error: realsense2_camera is required; run ./build.sh or install ros-${ROS_DISTRO_NAME}-realsense2-camera" >&2
     exit 1
   }
-  REALSENSE_ARGS=("camera_name:=${REALSENSE_CAMERA_NAME}" "pointcloud.enable:=true")
+  REALSENSE_POINTCLOUD_ARGUMENT="$(realsense_pointcloud_argument)" || exit 1
+  REALSENSE_ARGS=("camera_name:=${REALSENSE_CAMERA_NAME}" "${REALSENSE_POINTCLOUD_ARGUMENT}")
   [[ -n "${REALSENSE_SERIAL}" ]] && REALSENSE_ARGS+=("serial_no:=${REALSENSE_SERIAL}")
   start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${REALSENSE_ARGS[@]}"
+  wait_for_topic "${REALSENSE_POINTCLOUD_TOPIC}" || {
+    echo "error: RealSense started but did not publish ${REALSENSE_POINTCLOUD_TOPIC}" >&2
+    exit 1
+  }
 fi
 
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
