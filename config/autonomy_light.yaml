@@ -64,8 +64,9 @@ autonomy_light:
         resolution: 0.10
         x_length: 1.80
         y_length: 0.80
-      # PointCloud2 of the fully post-processed sampled surface. Every cell,
-      # including the configured unknown fallback, is represented.
+      # PointCloud2 of the sampled native terrain. Its xyz overlays the
+      # elevation GridMap; intensity carries clipped height_map_data. Every
+      # cell, including the configured unknown fallback, is represented.
       pointcloud_topic: "/autonomy_light/height_map"
       distance:
         reference_height: 0.48

@@ -102,10 +102,11 @@ Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `/autonomy_light/height_map_data`이고, Cyclone DDS는 기존 IDL contract
 `core_dds::HeightMap { sequence<float> data; }`와 `height_map` topic을 사용한다.
 동일한 샘플 표면은 `/autonomy_light/height_map` (`sensor_msgs/msg/PointCloud2`)에도
-발행된다. point cloud는 `base_link` frame이고 `z`는 `height_map_data`의
-후처리된 값(unknown 대체·floor 정규화·clipping)의 부호를 바꾼 값이다. 즉 data의
-양수 downward distance는 PCL의 음수 z가 된다. 따라서 unknown cell도 포함해 항상
-`18 × 8`개 점을 발행한다. 두 data transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
+발행된다. 유효 cell의 `x,y,z`는 native elevation sample을 실제 `map → base_link` TF로
+변환한 terrain geometry라서 RViz에서 native GridMap과 겹친다. PointCloud2의
+`intensity` field에는 unknown 대체·floor 정규화·clipping까지 적용한
+`height_map_data` 값을 넣는다. unknown cell도 fallback plane으로 포함해 항상 `18 × 8`개
+점을 발행한다. 두 data transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
 같은 domain `1`, best-effort, `KEEP_LAST 128`을 기본으로 사용한다.
 
 ### Remote Cyclone DDS network

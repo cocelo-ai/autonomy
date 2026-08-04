@@ -17,6 +17,7 @@
 #include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -33,8 +34,9 @@ struct PointXYZ {
   float x;
   float y;
   float z;
+  float intensity;
 };
-static_assert(sizeof(PointXYZ) == 3U * sizeof(float));
+static_assert(sizeof(PointXYZ) == 4U * sizeof(float));
 
 int wrap(const int value, const int size) {
   const int result = value % size;
@@ -262,6 +264,8 @@ struct HeightMapBridge::Impl {
         std::max(1, static_cast<int>(std::round(length_y / resolution)));
     std::vector<float> data(cells(length_x, length_y, resolution),
                             static_cast<float>(unknown_value));
+    std::vector<PointXYZ> points(data.size());
+    std::vector<bool> point_has_elevation(data.size(), false);
 
     if (current) {
       try {
@@ -274,6 +278,9 @@ struct HeightMapBridge::Impl {
         const double base_y = transform.transform.translation.y;
         const double cosine = std::cos(base_yaw);
         const double sine = std::sin(base_yaw);
+        tf2::Transform map_from_base;
+        tf2::fromMsg(transform.transform, map_from_base);
+        const tf2::Transform base_from_map = map_from_base.inverse();
         std::vector<float> floor_samples;
         for (int row = 0; row < height; ++row) {
           for (int column = 0; column < width; ++column) {
@@ -302,11 +309,25 @@ struct HeightMapBridge::Impl {
                   current->sample(base_x + cosine * x - sine * y,
                                   base_y + sine * x + cosine * y);
               if (std::isfinite(elevation)) {
+                // Stable RL contract: keep the legacy data conversion
+                // independent from the PointCloud2 visualization geometry.
                 const float relative_height = elevation - floor;
-                data[static_cast<std::size_t>(row) * width + column] =
+                const auto sample_index = static_cast<std::size_t>(row) * width + column;
+                data[sample_index] =
                     static_cast<float>(
                         std::clamp(reference_height - static_cast<double>(relative_height),
                                    clipping_min, clipping_max));
+                // xyz is geometry, so transform the actual native elevation
+                // sample into base_link. This makes the cloud coincide with
+                // the native GridMap in RViz even with base roll/pitch.
+                const tf2::Vector3 point_in_base = base_from_map * tf2::Vector3(
+                    base_x + cosine * x - sine * y,
+                    base_y + sine * x + cosine * y, elevation);
+                points[sample_index] = PointXYZ{
+                    static_cast<float>(point_in_base.x()),
+                    static_cast<float>(point_in_base.y()),
+                    static_cast<float>(point_in_base.z()), data[sample_index]};
+                point_has_elevation[sample_index] = true;
               }
             }
           }
@@ -319,20 +340,21 @@ struct HeightMapBridge::Impl {
       }
     }
 
-    // The PointCloud2 is the geometric view of the fully post-processed
-    // controller map, not a sparse view of native GridMap validity.  Emit one
-    // point per sampled cell (including unknown/fallback cells).  The data
-    // contract is a positive downward distance from base_link, while a point
-    // cloud uses an upward-positive z coordinate, hence z = -data.
-    std::vector<PointXYZ> points;
-    points.reserve(data.size());
+    // Emit every sampled cell. Valid cells retain the native terrain xyz so
+    // the cloud overlays the elevation map. Unknown cells use the configured
+    // height-map fallback plane; all cells carry clipped controller data in
+    // the intensity field.
     for (int row = 0; row < height; ++row) {
       for (int column = 0; column < width; ++column) {
+        const auto sample_index = static_cast<std::size_t>(row) * width + column;
+        if (point_has_elevation[sample_index]) {
+          continue;
+        }
         const double x = -length_x / 2.0 + (column + 0.5) * resolution;
         const double y = -length_y / 2.0 + (row + 0.5) * resolution;
-        const float value = data[static_cast<std::size_t>(row) * width + column];
-        points.push_back(PointXYZ{static_cast<float>(x), static_cast<float>(y),
-                                  -value});
+        const float value = data[sample_index];
+        points[sample_index] = PointXYZ{static_cast<float>(x), static_cast<float>(y),
+                                        -value, value};
       }
     }
 
@@ -364,7 +386,7 @@ struct HeightMapBridge::Impl {
       cloud.is_dense = true;
       cloud.point_step = sizeof(PointXYZ);
       cloud.row_step = cloud.point_step * cloud.width;
-      cloud.fields.resize(3);
+      cloud.fields.resize(4);
       cloud.fields[0].name = "x";
       cloud.fields[0].offset = 0;
       cloud.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
@@ -377,6 +399,10 @@ struct HeightMapBridge::Impl {
       cloud.fields[2].offset = 8;
       cloud.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
       cloud.fields[2].count = 1;
+      cloud.fields[3].name = "intensity";
+      cloud.fields[3].offset = 12;
+      cloud.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud.fields[3].count = 1;
       cloud.data.resize(static_cast<std::size_t>(cloud.row_step));
       if (!points.empty()) {
         std::memcpy(cloud.data.data(), points.data(), cloud.data.size());
