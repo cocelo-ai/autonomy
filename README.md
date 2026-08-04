@@ -7,7 +7,7 @@ robot-centric pipeline을 사용한다. `autonomy_light`는 bringup, calibrated 
 ```text
 Livox CustomMsg + IMU ──> Super-LIO ──> /lio/cloud_world ─┐
                        map -> odom -> imu, /lio/odom      │
-D435/D435i PointCloud2 ───────────────────────────────────┤
+D435/D435i PointCloud2 (launched by launch.sh) ───────────┤
                                                            v
                               elevation_mapping (vendored ETH pipeline)
                                       └─ /autonomy_light/elevation_map @ 50 Hz
@@ -31,7 +31,7 @@ source install/setup.bash
 ./launch.sh --real --mid360
 ```
 
-`build.sh`는 Grid Map, PCL, TF 의존성과 Livox SDK를 설치한 뒤 벤더된
+`build.sh`는 Grid Map, PCL, TF, RealSense 의존성과 Livox SDK를 설치한 뒤 벤더된
 `kindr`, `kindr_ros`, `elevation_mapping`과 `livox_ros_driver2`, `super_lio`, bringup을
 의존 순서에 맞게
 빌드한다. 설치를 건너뛰려면 `--skip-apt`, Livox SDK만 건너뛰려면 `--skip-sdk`를 쓴다.
@@ -42,6 +42,11 @@ source install/setup.bash
 ./launch.sh --map maps/site.pcd   # Super-LIO saved-map relocation
 ./mapping.sh --output maps/site.pcd
 ```
+
+실기 launch는 기본으로 `realsense2_camera`도 시작하고
+`/camera/camera/depth/color/points`를 D435 입력으로 연결한다. 카메라가 여러 대면
+`config/autonomy_light.yaml`의 `realsense.serial_no`를 지정한다. 카메라 없이 실행할
+때는 같은 파일에서 `realsense.enabled: false`로 설정한다.
 
 `mapping.sh`는 Super-LIO full SLAM(키프레임·loop closure·pose graph)을 켜고,
 종료 시 최적화된 PCD를 저장한다. `--map`의 PCD는 Super-LIO 재지역화용이다.

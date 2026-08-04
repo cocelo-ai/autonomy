@@ -23,6 +23,9 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --ros-distro NAME       ROS distribution (default: $ROS_DISTRO or humble).
 
 Extra ROS arguments after `--` are passed only to elevation_mapping.
+
+The RealSense driver is started for real-hardware launches when
+realsense.enabled is true in autonomy_light.yaml.
 EOF
 }
 
@@ -155,6 +158,23 @@ def vector(values, name):
         raise SystemExit(f"error: {name} must contain exactly three numeric values")
     return [float(value) for value in values]
 
+def boolean(value, name):
+    if isinstance(value, bool):
+        return value
+    if str(value).strip().lower() in ("true", "1", "yes", "on"):
+        return True
+    if str(value).strip().lower() in ("false", "0", "no", "off"):
+        return False
+    raise SystemExit(f"error: {name} must be a boolean")
+
+def text(value, name, default=""):
+    result = str(value if value is not None else default).strip()
+    if not result:
+        return default
+    if any(character.isspace() for character in result):
+        raise SystemExit(f"error: {name} must not contain whitespace")
+    return result
+
 def quaternion_from_rpy(roll, pitch, yaw):
     cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
     cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
@@ -200,6 +220,17 @@ base_to_camera = vector(root.get("target_to_camera_xyz"), "target_to_camera_xyz"
 base_to_camera_q = quaternion_from_rpy(*vector(root.get("target_to_camera_rpy"), "target_to_camera_rpy"))
 imu_from_lidar = vector(root.get("imu_from_lidar_xyz"), "imu_from_lidar_xyz")
 imu_from_lidar_q = quaternion_from_rpy(*vector(root.get("imu_from_lidar_rpy"), "imu_from_lidar_rpy"))
+realsense = root.get("realsense") or {}
+if not isinstance(realsense, dict):
+    raise SystemExit("error: realsense must be a mapping")
+realsense_enabled = boolean(realsense.get("enabled", True), "realsense.enabled")
+realsense_camera_name = text(realsense.get("camera_name"), "realsense.camera_name", "camera")
+realsense_serial = text(realsense.get("serial_no"), "realsense.serial_no")
+realsense_topic = text(
+    realsense.get("pointcloud_topic"), "realsense.pointcloud_topic",
+    f"/{realsense_camera_name}/{realsense_camera_name}/depth/color/points")
+if not realsense_topic.startswith("/"):
+    raise SystemExit("error: realsense.pointcloud_topic must be absolute")
 
 # T_base_imu = T_base_lidar * inverse(T_imu_lidar); publish its inverse.
 lidar_from_imu_q = inverse(imu_from_lidar_q)
@@ -234,6 +265,19 @@ mapper_params["use_sim_time"] = mode == "sim"
 mapper_params["map_frame_id"] = root.get("map_frame", "map")
 mapper_params["robot_base_frame_id"] = root.get("target_frame", "base_link")
 mapper_params["track_point_frame_id"] = root.get("target_frame", "base_link")
+mapper_inputs = mapper_params.get("inputs", [])
+if not isinstance(mapper_inputs, list) or not all(isinstance(value, str) for value in mapper_inputs):
+    raise SystemExit("error: elevation_mapping.inputs must be a list of strings")
+if realsense_enabled:
+    if "d435" not in mapper_inputs:
+        mapper_inputs.append("d435")
+    d435 = mapper_params.setdefault("d435", {})
+    if not isinstance(d435, dict):
+        raise SystemExit("error: elevation_mapping.d435 must be a mapping")
+    d435["topic"] = realsense_topic
+else:
+    mapper_inputs = [value for value in mapper_inputs if value != "d435"]
+mapper_params["inputs"] = mapper_inputs
 
 height_output = root.get("height_map_output", {})
 distance = height_output.get("distance", {})
@@ -280,6 +324,10 @@ with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{root.get('target_frame', 'base_link')}\n")
     stream.write(f"{root.get('lidar_frame', 'lidar_link')}\n")
     stream.write(f"{root.get('camera_frame', 'camera_link')}\n")
+    stream.write(f"{'true' if realsense_enabled else 'false'}\n")
+    stream.write(f"{realsense_camera_name}\n")
+    stream.write(f"{realsense_serial}\n")
+    stream.write(f"{realsense_topic}\n")
 PY
 
 /usr/bin/python3 "${SCRIPT_DIR}/scripts/dds_network.py" --config "${CONFIG_FILE}" \
@@ -294,6 +342,10 @@ IMU_FRAME="${RUNTIME_VALUES[1]}"
 BASE_FRAME="${RUNTIME_VALUES[2]}"
 LIDAR_FRAME="${RUNTIME_VALUES[3]}"
 CAMERA_FRAME="${RUNTIME_VALUES[4]}"
+REALSENSE_ENABLED="${RUNTIME_VALUES[5]}"
+REALSENSE_CAMERA_NAME="${RUNTIME_VALUES[6]}"
+REALSENSE_SERIAL="${RUNTIME_VALUES[7]}"
+REALSENSE_POINTCLOUD_TOPIC="${RUNTIME_VALUES[8]}"
 export ROS_DOMAIN_ID
 [[ -n "${VIS_TOPIC}" ]] || VIS_TOPIC="${MAP_TOPIC}"
 read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"
@@ -369,6 +421,7 @@ trap cleanup EXIT INT TERM
 echo "autonomy-light: mode=${MODE} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} config=${CONFIG_FILE}"
 echo "elevation mapping: native GridMap ${MAP_TOPIC}"
 echo "height-map data: ${MAP_TOPIC} -> ${HEIGHT_MAP_BRIDGE_CONFIG}"
+[[ "${REALSENSE_ENABLED}" == "true" ]] && echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC}"
 [[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO map=${MAP_FILE}"
 [[ -n "${MAPPING_OUTPUT}" ]] && echo "full SLAM: Super-LIO map=${MAPPING_OUTPUT}"
 configure_dds_network
@@ -402,6 +455,17 @@ if [[ "${NO_STATIC_TF}" != "true" ]]; then
     --x "${BASE_CAMERA_X}" --y "${BASE_CAMERA_Y}" --z "${BASE_CAMERA_Z}" \
     --qx "${BASE_CAMERA_QX}" --qy "${BASE_CAMERA_QY}" --qz "${BASE_CAMERA_QZ}" --qw "${BASE_CAMERA_QW}" \
     --frame-id "${BASE_FRAME}" --child-frame-id "${CAMERA_FRAME}"
+fi
+
+if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
+      "${REALSENSE_ENABLED}" == "true" ]]; then
+  ros2 pkg prefix realsense2_camera >/dev/null 2>&1 || {
+    echo "error: realsense2_camera is required; run ./build.sh or install ros-${ROS_DISTRO_NAME}-realsense2-camera" >&2
+    exit 1
+  }
+  REALSENSE_ARGS=("camera_name:=${REALSENSE_CAMERA_NAME}" "pointcloud.enable:=true")
+  [[ -n "${REALSENSE_SERIAL}" ]] && REALSENSE_ARGS+=("serial_no:=${REALSENSE_SERIAL}")
+  start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${REALSENSE_ARGS[@]}"
 fi
 
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \

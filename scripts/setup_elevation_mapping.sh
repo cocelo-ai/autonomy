@@ -5,9 +5,9 @@ usage() {
   cat <<'EOF'
 Usage: setup_elevation_mapping.sh [--skip-apt]
 
-Installs the ROS 2 Grid Map, PCL, and TF dependencies needed by the vendored
-ETH/ANYbotics robot-centric elevation_mapping package. KINDR and kindr_ros are
-vendored because they are not released on every ROS 2 Humble target.
+Installs the ROS 2 Grid Map, PCL, TF, and RealSense dependencies needed by the
+vendored ETH/ANYbotics robot-centric elevation_mapping package. KINDR and
+kindr_ros are vendored because they are not released on every ROS 2 Humble target.
 EOF
 }
 
@@ -33,6 +33,7 @@ PACKAGES=(
   python3-yaml
   "ros-${ROS_DISTRO_NAME}-grid-map"
   "ros-${ROS_DISTRO_NAME}-pcl-ros"
+  "ros-${ROS_DISTRO_NAME}-realsense2-camera"
   "ros-${ROS_DISTRO_NAME}-tf2-eigen"
   "ros-${ROS_DISTRO_NAME}-tf2-geometry-msgs"
 )
