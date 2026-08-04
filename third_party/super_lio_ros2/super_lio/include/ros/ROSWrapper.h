@@ -122,6 +122,8 @@ private:
   BASIC::SE3 latest_odom_to_imu_;
   bool has_map_to_odom_ = false;
   bool has_odom_to_imu_ = false;
+  nav_msgs::msg::Odometry latest_odom_;
+  bool has_latest_odom_ = false;
 
 /// output.
 private:

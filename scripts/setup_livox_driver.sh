@@ -102,6 +102,10 @@ install_apt_dependencies() {
     "ros-${ROS_DISTRO_NAME}-pcl-ros" \
     "ros-${ROS_DISTRO_NAME}-rclcpp-components" \
     "ros-${ROS_DISTRO_NAME}-rosidl-default-generators"
+
+  if apt-cache show cyclonedds-dev >/dev/null 2>&1; then
+    sudo apt-get install -y cyclonedds-dev
+  fi
 }
 
 install_livox_sdk2() {

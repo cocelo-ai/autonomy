@@ -66,8 +66,9 @@
     lio.output.map: true
     lio.output.dense: true
     lio.output.pub_step: 1
-    # Re-broadcast the latest map -> odom -> imu state. It does not change
-    # the estimator update rate; autonomy_light overrides this to its output rate.
+    # Re-broadcast map -> odom -> imu and the latest /lio/odom state at 50 Hz.
+    # This does not fabricate a faster estimator update; reissued odometry
+    # retains its original measurement timestamp.
     lio.output.tf_publish_rate_hz: 50.0
 
     lio.eva.timer: false

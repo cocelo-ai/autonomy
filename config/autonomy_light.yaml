@@ -15,7 +15,7 @@ autonomy_light:
     # using camera observations for locomotion or navigation.
     camera_frame: "camera_link"
     target_to_camera_xyz: [0.18, 0.0, 0.18]
-    target_to_camera_rpy: [0.0, 0.0, 0.0]
+    target_to_camera_rpy: [0.0, 0.7854, 0.0]
     # T_imu_lidar: keep this identical to the calibrated Super-LIO extrinsic.
     imu_from_lidar_xyz: [-0.011, -0.02329, 0.04412]
     imu_from_lidar_rpy: [0.0, 0.0, 0.0]
@@ -24,3 +24,24 @@ autonomy_light:
     raw_lidar_topic: "/livox/lidar"
     raw_imu_topic: "/livox/imu"
     super_lio_config_file: ""
+
+    # Compatibility output for controllers that consume the previous compact
+    # height_map_data array rather than grid_map_msgs/GridMap. The bridge rate
+    # follows elevation_mapping.fused_map_publishing_rate; it is configured
+    # only in elevation_mapping.yaml to keep one cadence authority.
+    height_map_output:
+      transport: "both"  # ros2 | cyclone_dds | both
+      ros2_topic: "/autonomy_light/height_map_data"
+      distance:
+        reference_height: 0.48
+        min: 0.0
+        max: 0.75
+        unknown: 0.48
+      floor:
+        radius_m: 0.60
+        percentile: 0.20
+      cyclone_dds:
+        domain_id: 1
+        topic: "height_map"
+        type: "core_dds::HeightMap"
+        history_depth: 1

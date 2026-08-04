@@ -10,7 +10,8 @@ digraph autonomy_light {
   d435 [label="D435 / D435i\nPointCloud2 + camera-internal TF", fillcolor="#f5f7fa"];
   mapper [label="elevation_mapping\nvendored ETH/ANYbotics node\nrobot-centric circular GridMap\nvariance + visibility cleanup",
           fillcolor="#fff4df", color="#a65e00", penwidth="2"];
-  control [label="Controller / Isaac Lab\nGridMap consumer", fillcolor="#f5f7fa"];
+  bridge [label="height_map_bridge\nautonomy_light compatibility output\nbase-yaw grid + floor-relative data\n50 Hz", fillcolor="#e9f6ee", color="#32734d"];
+  control [label="Controller / Isaac Lab\nHeightMap consumer", fillcolor="#f5f7fa"];
   rviz [label="GridMap viewer / RViz", fillcolor="#f5f7fa"];
   prior [label="Optional prebuilt terrain\nGridMap elevation layer", fillcolor="#f5f7fa"];
 
@@ -18,6 +19,7 @@ digraph autonomy_light {
   lio -> mapper [label="/lio/odom covariance\n/lio/cloud_world\nmap -> odom -> imu TF"];
   d435 -> mapper [label="depth/color/points\nbase_link -> camera_link TF"];
   prior -> mapper [label="underlying_map_topic", style=dashed];
-  mapper -> control [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap"];
+  mapper -> bridge [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap @ 50 Hz"];
+  bridge -> control [label="ROS 2 /height_map_data\nCyclone DDS height_map\n(default: both)"];
   mapper -> rviz [label="same native GridMap"];
 }

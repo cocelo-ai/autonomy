@@ -570,9 +570,6 @@ bool ElevationMap::postprocessAndPublishRawElevationMap() {
 }
 
 bool ElevationMap::publishFusedElevationMap() {
-  if (!hasFusedMapSubscribers()) {
-    return false;
-  }
   boost::recursive_mutex::scoped_lock scopedLock(fusedMapMutex_);
   grid_map::GridMap fusedMapCopy = fusedMap_;
   scopedLock.unlock();

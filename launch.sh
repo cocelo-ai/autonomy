@@ -123,20 +123,23 @@ fi
 RUNTIME_DIR="$(mktemp -d "/tmp/autonomy_light_$(id -u)_XXXXXX")"
 LIO_CONFIG="${RUNTIME_DIR}/super_lio.yaml"
 ELEVATION_CONFIG="${RUNTIME_DIR}/elevation_mapping.yaml"
+HEIGHT_MAP_BRIDGE_CONFIG="${RUNTIME_DIR}/height_map_bridge.yaml"
 STATIC_TF="${RUNTIME_DIR}/static_tf.txt"
 RUNTIME_INFO="${RUNTIME_DIR}/runtime.env"
 
 /usr/bin/python3 - "${CONFIG_FILE}" "${SCRIPT_DIR}/config/super_lio_mid360.yaml" \
   "${ELEVATION_CONFIG_FILE}" "${LIO_CONFIG}" "${ELEVATION_CONFIG}" \
   "${STATIC_TF}" "${RUNTIME_INFO}" "${MODE}" "${MAP_FILE}" "${MAPPING_OUTPUT}" \
-  "${RAW_LIDAR_TOPIC}" "${RAW_IMU_TOPIC}" "${SIM_TOPIC_PREFIX}" <<'PY'
+  "${RAW_LIDAR_TOPIC}" "${RAW_IMU_TOPIC}" "${SIM_TOPIC_PREFIX}" "${MAP_TOPIC}" \
+  "${HEIGHT_MAP_BRIDGE_CONFIG}" <<'PY'
 import math
 import os
 import sys
 import yaml
 
 (source_path, lio_default, elevation_source, lio_target, elevation_target, tf_target,
- runtime_target, mode, map_file, mapping_output, lidar_override, imu_override, sim_prefix) = sys.argv[1:14]
+ runtime_target, mode, map_file, mapping_output, lidar_override, imu_override, sim_prefix,
+ map_topic, bridge_target) = sys.argv[1:16]
 
 def read_yaml(path):
     with open(path, encoding="utf-8") as stream:
@@ -230,10 +233,38 @@ mapper_params["map_frame_id"] = root.get("map_frame", "map")
 mapper_params["robot_base_frame_id"] = root.get("target_frame", "base_link")
 mapper_params["track_point_frame_id"] = root.get("target_frame", "base_link")
 
+height_output = root.get("height_map_output", {})
+distance = height_output.get("distance", {})
+floor = height_output.get("floor", {})
+dds = height_output.get("cyclone_dds", {})
+bridge = {"height_map_bridge": {"ros__parameters": {
+    "input_topic": map_topic,
+    "base_frame": root.get("target_frame", "base_link"),
+    "publish_rate_hz": float(mapper_params.get("fused_map_publishing_rate", 50.0)),
+    "fallback.resolution": float(mapper_params.get("resolution", 0.10)),
+    "fallback.x_length": float(mapper_params.get("length_in_x", 1.80)),
+    "fallback.y_length": float(mapper_params.get("length_in_y", 0.80)),
+    "transport": height_output.get("transport", "both"),
+    "ros2_topic": height_output.get("ros2_topic", "/autonomy_light/height_map_data"),
+    "distance.reference_height": float(distance.get("reference_height", 0.48)),
+    "distance.min": float(distance.get("min", 0.0)),
+    "distance.max": float(distance.get("max", 0.75)),
+    "distance.unknown": float(distance.get("unknown", 0.48)),
+    "floor.radius_m": float(floor.get("radius_m", 0.60)),
+    "floor.percentile": float(floor.get("percentile", 0.20)),
+    "dds.domain_id": int(dds.get("domain_id", 1)),
+    "dds.topic": dds.get("topic", "height_map"),
+    "dds.type": dds.get("type", "core_dds::HeightMap"),
+    "dds.history_depth": int(dds.get("history_depth", 1)),
+    "use_sim_time": mode == "sim",
+}}}
+
 with open(lio_target, "w", encoding="utf-8") as stream:
     yaml.safe_dump(lio, stream, default_flow_style=False, sort_keys=False)
 with open(elevation_target, "w", encoding="utf-8") as stream:
     yaml.safe_dump(mapper, stream, default_flow_style=False, sort_keys=False)
+with open(bridge_target, "w", encoding="utf-8") as stream:
+    yaml.safe_dump(bridge, stream, default_flow_style=False, sort_keys=False)
 with open(tf_target, "w", encoding="utf-8") as stream:
     stream.write(" ".join(str(value) for value in (*imu_to_base_t, *imu_to_base_q)) + "\n")
     stream.write(" ".join(str(value) for value in (*base_to_lidar, *base_to_lidar_q)) + "\n")
@@ -280,6 +311,7 @@ trap cleanup EXIT INT TERM
 
 echo "autonomy-light: mode=${MODE} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} config=${CONFIG_FILE}"
 echo "elevation mapping: native GridMap ${MAP_TOPIC}"
+echo "height-map data: ${MAP_TOPIC} -> ${HEIGHT_MAP_BRIDGE_CONFIG}"
 [[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO map=${MAP_FILE}"
 [[ -n "${MAPPING_OUTPUT}" ]] && echo "full SLAM: Super-LIO map=${MAPPING_OUTPUT}"
 
@@ -317,6 +349,8 @@ fi
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
   --params-file "${ELEVATION_CONFIG}" -r "elevation_map:=${MAP_TOPIC}" "${EXTRA_ELEVATION_ARGS[@]}"
 MAPPER_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
+start "height-map output bridge" ros2 run autonomy_light height_map_bridge --ros-args \
+  --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
 
 if [[ "${VIS}" == "true" ]]; then
   start "GridMap viewer" /usr/bin/python3 "${SCRIPT_DIR}/scripts/height_map_vis.py" \

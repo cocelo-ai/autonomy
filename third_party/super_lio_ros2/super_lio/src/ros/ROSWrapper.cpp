@@ -74,6 +74,11 @@ void ROSWrapper::pub_odom(const NavState& state){
     }
   }
 
+  {
+    std::lock_guard<std::mutex> lock(tf_mutex_);
+    latest_odom_ = odom;
+    has_latest_odom_ = true;
+  }
   pub_odom_->publish(odom);    // imu frame -> lidar frequency
 
   V3 robo_position = global_to_imu.R_ * (-g_odom_robo.R_ * g_odom_robo.t_) +
@@ -141,14 +146,18 @@ void ROSWrapper::publishDynamicTransforms(const rclcpp::Time& stamp) {
   }
   SE3 map_to_odom;
   SE3 odom_to_imu;
+  nav_msgs::msg::Odometry latest_odom;
   bool has_map_to_odom = false;
   bool has_odom_to_imu = false;
+  bool has_latest_odom = false;
   {
     std::lock_guard<std::mutex> lock(tf_mutex_);
     map_to_odom = map_to_odom_;
     odom_to_imu = latest_odom_to_imu_;
     has_map_to_odom = has_map_to_odom_;
     has_odom_to_imu = has_odom_to_imu_;
+    latest_odom = latest_odom_;
+    has_latest_odom = has_latest_odom_;
   }
   std::vector<geometry_msgs::msg::TransformStamped> transforms;
   if (has_map_to_odom && g_global_frame != g_odom_frame) {
@@ -186,6 +195,12 @@ void ROSWrapper::publishDynamicTransforms(const rclcpp::Time& stamp) {
   }
   if (!transforms.empty()) {
     tf_broadcaster_->sendTransform(transforms);
+  }
+  // Keep consumers' pose cache alive between LiDAR scans. The retained
+  // measurement stamp deliberately remains unchanged: this is a reissue of
+  // the latest estimate, not a fabricated higher-rate estimator update.
+  if (has_latest_odom && pub_odom_) {
+    pub_odom_->publish(latest_odom);
   }
 }
 

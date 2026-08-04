@@ -546,9 +546,6 @@ void ElevationMapping::mapUpdateTimerCallback() {
 }
 
 void ElevationMapping::publishFusedMapCallback() {
-  if (!map_.hasFusedMapSubscribers()) {
-    return;
-  }
   RCLCPP_DEBUG(nodeHandle_->get_logger(), "Elevation map is fused and published from timer.");
   boost::recursive_mutex::scoped_lock scopedLock(map_.getFusedDataMutex());
   map_.fuseAll();
