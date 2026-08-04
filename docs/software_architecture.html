@@ -35,7 +35,7 @@
     <tr><td>D435/D435i driver</td><td>external</td><td>Publishes one PointCloud2 stream with its calibrated TF chain.</td></tr>
     <tr><td><code>elevation_mapping</code></td><td>vendored ETH/ANYbotics</td><td>Robot-centric circular grid, sensor-specific variance, pose-covariance prediction, Bayesian fusion, and visibility cleanup.</td></tr>
     <tr><td><code>height_map_bridge</code></td><td>this repository</td><td>50 Hz GridMap-to-legacy conversion, base-yaw resampling, local-floor-relative data, ROS 2/Cyclone DDS output selection.</td></tr>
-    <tr><td><code>autonomy_light</code></td><td>this repository</td><td>Configuration, process lifecycle, calibrated static TF, and output transport contract.</td></tr>
+    <tr><td><code>autonomy_light</code></td><td>this repository</td><td>Configuration, process lifecycle, calibrated static TF, output transport and direct-DDS network contract.</td></tr>
   </table>
 
   <h2>Data and TF contract</h2>
@@ -53,6 +53,15 @@
   overlapping posterior cells while moving and clears only newly exposed strips. Unobserved terrain remains <code>NaN</code>;
   no arbitrary startup floor value is inserted. The compatibility bridge alone maps unknown cells to its legacy
   configured fill value (<code>0.48</code> by default).</p>
+
+  <h2>Remote DDS network</h2>
+  <p><code>config/autonomy_light.yaml</code> owns <code>dds_network</code>: mode, NIC, fixed local IP,
+  peer and multicast. With the default direct-DDS output, the launcher verifies the address and that it does
+  not overlap <code>livox_network.subnet</code> (<code>192.168.1.0/24</code>) or its configured NIC, then adds
+  <code>192.168.20.10/24</code> only to the configured computer-link NIC when missing. It passes a generated
+  Cyclone DDS interface/peer configuration only to <code>height_map_bridge</code>; ROS 2, Livox and Super-LIO
+  retain their own middleware/network behavior. The remote computer uses <code>192.168.20.1/24</code> and
+  peer <code>192.168.20.10</code>. Explicit peers preserve discovery when Wi-Fi multicast is filtered.</p>
 
   <h2>Uncertainty and cleanup</h2>
   <p>Each input uses its own laser or D435 noise model. At each cloud timestamp the elevation node obtains the

@@ -124,6 +124,8 @@ RUNTIME_DIR="$(mktemp -d "/tmp/autonomy_light_$(id -u)_XXXXXX")"
 LIO_CONFIG="${RUNTIME_DIR}/super_lio.yaml"
 ELEVATION_CONFIG="${RUNTIME_DIR}/elevation_mapping.yaml"
 HEIGHT_MAP_BRIDGE_CONFIG="${RUNTIME_DIR}/height_map_bridge.yaml"
+CYCLONEDDS_CONFIG="${RUNTIME_DIR}/cyclonedds_height_map.xml"
+DDS_RUNTIME_ENV="${RUNTIME_DIR}/dds_network.env"
 STATIC_TF="${RUNTIME_DIR}/static_tf.txt"
 RUNTIME_INFO="${RUNTIME_DIR}/runtime.env"
 
@@ -237,6 +239,9 @@ height_output = root.get("height_map_output", {})
 distance = height_output.get("distance", {})
 floor = height_output.get("floor", {})
 dds = height_output.get("cyclone_dds", {})
+transport = str(height_output.get("transport", "both")).strip().lower()
+if transport not in ("ros2", "cyclone_dds", "both"):
+    raise SystemExit("error: height_map_output.transport must be ros2, cyclone_dds, or both")
 bridge = {"height_map_bridge": {"ros__parameters": {
     "input_topic": map_topic,
     "base_frame": root.get("target_frame", "base_link"),
@@ -244,7 +249,7 @@ bridge = {"height_map_bridge": {"ros__parameters": {
     "fallback.resolution": float(mapper_params.get("resolution", 0.10)),
     "fallback.x_length": float(mapper_params.get("length_in_x", 1.80)),
     "fallback.y_length": float(mapper_params.get("length_in_y", 0.80)),
-    "transport": height_output.get("transport", "both"),
+    "transport": transport,
     "ros2_topic": height_output.get("ros2_topic", "/autonomy_light/height_map_data"),
     "distance.reference_height": float(distance.get("reference_height", 0.48)),
     "distance.min": float(distance.get("min", 0.0)),
@@ -277,6 +282,12 @@ with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{root.get('camera_frame', 'camera_link')}\n")
 PY
 
+/usr/bin/python3 "${SCRIPT_DIR}/scripts/dds_network.py" --config "${CONFIG_FILE}" \
+  --cyclonedds-config "${CYCLONEDDS_CONFIG}" --runtime-env "${DDS_RUNTIME_ENV}"
+# This file is generated from validated values and contains shell-quoted assignments only.
+# shellcheck source=/dev/null
+source "${DDS_RUNTIME_ENV}"
+
 mapfile -t RUNTIME_VALUES < "${RUNTIME_INFO}"
 ROS_DOMAIN_ID="${RUNTIME_VALUES[0]}"
 IMU_FRAME="${RUNTIME_VALUES[1]}"
@@ -297,6 +308,52 @@ start() {
   PIDS+=("$!")
 }
 
+interface_has_cidr() {
+  local interface="$1"
+  local cidr="$2"
+  ip -o -4 addr show dev "${interface}" | awk '{print $4}' | grep -Fxq "${cidr}"
+}
+
+interface_has_ip() {
+  local interface="$1"
+  local address="$2"
+  ip -o -4 addr show dev "${interface}" | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "${address}"
+}
+
+ip_exists_on_another_interface() {
+  local interface="$1"
+  local address="$2"
+  ip -o -4 addr show | awk -v interface="${interface}" -v address="${address}" \
+    '$2 != interface && $4 ~ ("^" address "/") { found = 1 } END { exit !found }'
+}
+
+configure_dds_network() {
+  [[ "${DDS_OUTPUT_ENABLED}" == "true" ]] || return
+  command -v ip >/dev/null || { echo "error: iproute2 is required for DDS networking" >&2; exit 1; }
+  [[ -d "/sys/class/net/${DDS_INTERFACE}" ]] || {
+    echo "error: dds_network.interface does not exist: ${DDS_INTERFACE}" >&2
+    exit 1
+  }
+  if ! interface_has_cidr "${DDS_INTERFACE}" "${DDS_LOCAL_CIDR}"; then
+    if interface_has_ip "${DDS_INTERFACE}" "${DDS_LOCAL_IP}"; then
+      echo "error: ${DDS_INTERFACE} already has ${DDS_LOCAL_IP} with a different subnet mask" >&2
+      exit 1
+    fi
+    if ip_exists_on_another_interface "${DDS_INTERFACE}" "${DDS_LOCAL_IP}"; then
+      echo "error: DDS local IP ${DDS_LOCAL_IP} already belongs to another interface" >&2
+      exit 1
+    fi
+    command -v sudo >/dev/null || { echo "error: sudo is required to configure DDS fixed IP" >&2; exit 1; }
+    echo "Configuring DDS ${DDS_MODE} network: ${DDS_INTERFACE} ${DDS_LOCAL_CIDR} peer=${DDS_PEER_IP} multicast=${DDS_ALLOW_MULTICAST}"
+    sudo ip link set "${DDS_INTERFACE}" up
+    sudo ip addr add "${DDS_LOCAL_CIDR}" dev "${DDS_INTERFACE}"
+  else
+    echo "DDS ${DDS_MODE} network already configured: ${DDS_INTERFACE} ${DDS_LOCAL_CIDR} peer=${DDS_PEER_IP} multicast=${DDS_ALLOW_MULTICAST}"
+  fi
+  CYCLONEDDS_HEIGHT_MAP_URI="file://${CYCLONEDDS_CONFIG}"
+  echo "Cyclone DDS height-map writer: ${CYCLONEDDS_HEIGHT_MAP_URI}"
+}
+
 cleanup() {
   trap - EXIT INT TERM
   for pid in "${PIDS[@]:-}"; do
@@ -314,6 +371,7 @@ echo "elevation mapping: native GridMap ${MAP_TOPIC}"
 echo "height-map data: ${MAP_TOPIC} -> ${HEIGHT_MAP_BRIDGE_CONFIG}"
 [[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO map=${MAP_FILE}"
 [[ -n "${MAPPING_OUTPUT}" ]] && echo "full SLAM: Super-LIO map=${MAPPING_OUTPUT}"
+configure_dds_network
 
 if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" ]]; then
   LIVOX_FREQ="$(/usr/bin/python3 - "${CONFIG_FILE}" <<'PY'
@@ -349,8 +407,13 @@ fi
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
   --params-file "${ELEVATION_CONFIG}" -r "elevation_map:=${MAP_TOPIC}" "${EXTRA_ELEVATION_ARGS[@]}"
 MAPPER_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
-start "height-map output bridge" ros2 run autonomy_light height_map_bridge --ros-args \
-  --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
+if [[ "${DDS_OUTPUT_ENABLED}" == "true" ]]; then
+  start "height-map output bridge" env "CYCLONEDDS_URI=${CYCLONEDDS_HEIGHT_MAP_URI}" \
+    ros2 run autonomy_light height_map_bridge --ros-args --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
+else
+  start "height-map output bridge" ros2 run autonomy_light height_map_bridge --ros-args \
+    --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
+fi
 
 if [[ "${VIS}" == "true" ]]; then
   start "GridMap viewer" /usr/bin/python3 "${SCRIPT_DIR}/scripts/height_map_vis.py" \

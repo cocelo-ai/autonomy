@@ -11,6 +11,7 @@ digraph autonomy_light {
   mapper [label="elevation_mapping\nvendored ETH/ANYbotics node\nrobot-centric circular GridMap\nvariance + visibility cleanup",
           fillcolor="#fff4df", color="#a65e00", penwidth="2"];
   bridge [label="height_map_bridge\nautonomy_light compatibility output\nbase-yaw grid + floor-relative data\n50 Hz", fillcolor="#e9f6ee", color="#32734d"];
+  dds_network [label="dds_network (autonomy_light config)\nseparate fixed-IP subnet + peer\nCyclone DDS bridge process only", fillcolor="#e9f6ee", color="#32734d"];
   control [label="Controller / Isaac Lab\nHeightMap consumer", fillcolor="#f5f7fa"];
   rviz [label="GridMap viewer / RViz", fillcolor="#f5f7fa"];
   prior [label="Optional prebuilt terrain\nGridMap elevation layer", fillcolor="#f5f7fa"];
@@ -20,6 +21,8 @@ digraph autonomy_light {
   d435 -> mapper [label="depth/color/points\nbase_link -> camera_link TF"];
   prior -> mapper [label="underlying_map_topic", style=dashed];
   mapper -> bridge [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap @ 50 Hz"];
-  bridge -> control [label="ROS 2 /height_map_data\nCyclone DDS height_map\n(default: both)"];
+  bridge -> dds_network [label="height_map / core_dds::HeightMap"];
+  dds_network -> control [label="configured DDS peer\n(default: both)"];
+  bridge -> control [label="ROS 2 /height_map_data"];
   mapper -> rviz [label="same native GridMap"];
 }

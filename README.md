@@ -47,7 +47,7 @@ source install/setup.bash
 종료 시 최적화된 PCD를 저장한다. `--map`의 PCD는 Super-LIO 재지역화용이다.
 
 설정 책임은 분리되어 있다. `config/autonomy_light.yaml`은 bringup의 frame,
-calibration, Livox·Super-LIO 입력과 height-map output transport를 가진다.
+calibration, Livox·Super-LIO 입력, height-map output transport와 DDS network를 가진다.
 `map`/`base_link` frame은 이 공통 설정에서 elevation mapper로 한 번만 전달한다.
 `config/elevation_mapping.yaml`은 LiDAR/D435 입력, local-grid 크기·해상도·주기,
 융합과 cleanup을 전부 가진다. 다른
@@ -86,6 +86,21 @@ Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `/autonomy_light/height_map_data`이고, Cyclone DDS는 기존 IDL contract
 `core_dds::HeightMap { sequence<float> data; }`와 `height_map` topic을 사용한다.
 두 transport는 같은 배열을 같은 주기로 보낸다.
+
+### Remote Cyclone DDS network
+
+`dds_network`는 direct Cyclone DDS writer가 사용할 NIC, fixed IP, peer와 multicast를
+정한다. 기본값은 computer link용 `192.168.20.10/24 → 192.168.20.1`이고, bundled
+Livox `192.168.1.0/24`와 겹치지 않는다. `./launch.sh`는 direct DDS output이 켜진
+경우에만 지정 NIC에 이 IP가 없으면 추가하고, bridge process에만 generated
+`CYCLONEDDS_URI`를 전달한다. 따라서 ROS 2/LiDAR 프로세스의 DDS 설정은 바꾸지 않는다.
+
+`dds_network.interface`에는 computer link의 NIC를 지정해야 하며 Livox sensor NIC를
+지정하면 안 된다. `livox_network.interface`를 채우면 launcher가 동일 NIC도 거부한다.
+또한 DDS와 `livox_network.subnet`이 겹치면 시작을 거부한다.
+수신 컴퓨터는 같은 subnet에서 `192.168.20.1/24`를 쓰고 peer를 `192.168.20.10`으로
+설정해야 한다. Wi-Fi AP가 multicast를 차단해도 configured unicast peer로 discovery가
+유지된다.
 
 mapper는 Super-LIO `/lio/odom`의 6×6 pose covariance를 motion prediction과 point
 variance에 반영한다. LiDAR와 D435는 서로 다른 sensor model로 바로 구독되므로, 기존의

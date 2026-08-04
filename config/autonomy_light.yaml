@@ -25,6 +25,24 @@ autonomy_light:
     raw_imu_topic: "/livox/imu"
     super_lio_config_file: ""
 
+    # Direct Cyclone DDS transport for a remote height-map consumer. This is
+    # deliberately a different subnet from the bundled Livox network
+    # (192.168.1.0/24). Set interface to the computer-link NIC, never the
+    # Livox sensor NIC. launch.sh adds local_ip only when it is absent.
+    dds_network:
+      mode: "wireless"  # wired | wireless
+      interface: "enP8p1s0"
+      local_ip: "192.168.20.10/24"
+      peer_ip: "192.168.20.1"
+      allow_multicast: true
+
+    # Guardrail for the direct DDS network. Keep this equal to the subnet
+    # used by the active Livox driver profile. Fill interface once the Livox
+    # NIC name is known; launcher then rejects accidental NIC reuse.
+    livox_network:
+      interface: ""
+      subnet: "192.168.1.0/24"
+
     # Compatibility output for controllers that consume the previous compact
     # height_map_data array rather than grid_map_msgs/GridMap. The bridge rate
     # follows elevation_mapping.fused_map_publishing_rate; it is configured

@@ -75,6 +75,7 @@ install(PROGRAMS
   build.sh
   launch.sh
   mapping.sh
+  scripts/dds_network.py
   scripts/height_map_vis.py
   scripts/setup_elevation_mapping.sh
   scripts/setup_livox_driver.sh
