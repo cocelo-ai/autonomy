@@ -428,8 +428,6 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
       point.confidence_ratio = 1.0F;
     }
   }
-  lastPointCloudUpdateTime_ = pointCloudTime;
-
   // RCLCPP_INFO(nodeHandle_->get_logger(), "ElevationMap received a point cloud (%i points) for elevation mapping.", static_cast<int>(pointCloud->size()));
   RCLCPP_DEBUG(nodeHandle_->get_logger(), "ElevationMap received a point cloud (%i points) for elevation mapping.", static_cast<int>(pointCloud->size()));
 
@@ -437,15 +435,11 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
   Eigen::Matrix<double, 6, 6> robotPoseCovariance;
   robotPoseCovariance.setZero();
   if (!ignoreRobotMotionUpdates_) {
-    std::shared_ptr<const nav_msgs::msg::Odometry> poseMessage = robotPoseCache_.getElemBeforeTime(lastPointCloudUpdateTime_);
+    std::shared_ptr<const nav_msgs::msg::Odometry> poseMessage = robotPoseCache_.getElemBeforeTime(pointCloudTime);
     if (!poseMessage) {
-      // Tell the user that either for the timestamp no pose is available or that the buffer is possibly empty
-      if (robotPoseCache_.getOldestTime().seconds() > lastPointCloudUpdateTime_.seconds()) {
-        RCLCPP_ERROR(nodeHandle_->get_logger(), "The oldest pose available is at %f, requested pose at %f", robotPoseCache_.getOldestTime().seconds(),
-                  lastPointCloudUpdateTime_.seconds());
-      } else {
-        RCLCPP_ERROR(nodeHandle_->get_logger(), "Could not get pose information from robot for time %f. Buffer empty?", lastPointCloudUpdateTime_.seconds());
-      }
+      auto clock = nodeHandle_->get_clock();
+      RCLCPP_WARN_THROTTLE(nodeHandle_->get_logger(), *clock, 5,
+                           "Skipping point cloud at %f: no matching robot pose is available yet.", pointCloudTime.seconds());
       return;
     }
     //std::cout<<poseMessage->pose.covariance.data()<<std::endl;
@@ -473,11 +467,21 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
 
   boost::recursive_mutex::scoped_lock scopedLock(map_.getRawDataMutex());
 
+  const rclcpp::Time timeOfLastMapUpdate = map_.getTimeOfLastUpdate();
+  if (timeOfLastMapUpdate.nanoseconds() != 0 && pointCloudTime + timeTolerance_ < timeOfLastMapUpdate) {
+    auto clock = nodeHandle_->get_clock();
+    RCLCPP_WARN_THROTTLE(nodeHandle_->get_logger(), *clock, 5,
+                         "Skipping stale point cloud at %f; map is already at %f.",
+                         pointCloudTime.seconds(), timeOfLastMapUpdate.seconds());
+    return;
+  }
+  const bool isOutOfOrderCloud = pointCloudTime < timeOfLastMapUpdate;
+
   // Update map location.
   updateMapLocation();
 
   // Update map from motion prediction.
-  if (!updatePrediction(lastPointCloudUpdateTime_)) {
+  if (!updatePrediction(pointCloudTime)) {
     RCLCPP_ERROR(nodeHandle_->get_logger(), "Updating process noise failed.");
     // resetMapUpdateTimer();
     return;
@@ -490,11 +494,21 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
   }
 
   // Add point cloud to elevation map.
-  if (!map_.add(pointCloudProcessed, measurementVariances, lastPointCloudUpdateTime_,
+  if (!map_.add(pointCloudProcessed, measurementVariances, pointCloudTime,
                 Eigen::Affine3d(sensorProcessor_->transformationSensorToMap_))) {
     RCLCPP_ERROR(nodeHandle_->get_logger(), "Adding point cloud to elevation map failed.");
     // resetMapUpdateTimer();
     return;
+  }
+
+  // Accept delayed camera frames within time_tolerance, but never move the
+  // map clock backwards: a later LiDAR callback must still see the newest
+  // motion prediction time.
+  if (isOutOfOrderCloud) {
+    map_.setTimestamp(timeOfLastMapUpdate);
+  }
+  if (pointCloudTime > lastPointCloudUpdateTime_) {
+    lastPointCloudUpdateTime_ = pointCloudTime;
   }
 
   if (publishPointCloud) {

@@ -23,7 +23,10 @@ elevation_mapping:
     # uncertainty_range are published without a custom message conversion.
     fused_map_publishing_rate: 50.0
     min_update_rate: 50.0
-    time_tolerance: 0.05
+    # D435 frames can reach the callback roughly 0.1–0.3 s after the
+    # lower-latency LiDAR cloud.  The mapper accepts that bounded delay but
+    # preserves the newest map timestamp in code.
+    time_tolerance: 0.50
     min_variance: 0.0001
     max_variance: 0.04
     min_horizontal_variance: 0.0025
