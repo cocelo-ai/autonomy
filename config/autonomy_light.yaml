@@ -31,16 +31,16 @@ autonomy_light:
     # Livox sensor NIC. launch.sh adds local_ip only when it is absent.
     dds_network:
       mode: "wireless"  # wired | wireless
-      interface: "enP8p1s0"
-      local_ip: "192.168.20.10/24"
-      peer_ip: "192.168.20.1"
+      interface: "wlP1p1s0"
+      local_ip: "192.168.8.123/24"
+      peer_ip: "192.168.8.120"
       allow_multicast: true
 
     # Guardrail for the direct DDS network. Keep this equal to the subnet
     # used by the active Livox driver profile. Fill interface once the Livox
     # NIC name is known; launcher then rejects accidental NIC reuse.
     livox_network:
-      interface: ""
+      interface: "enP8p1s0"
       subnet: "192.168.1.0/24"
 
     # Compatibility output for controllers that consume the previous compact
