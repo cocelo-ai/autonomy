@@ -262,7 +262,6 @@ struct HeightMapBridge::Impl {
         std::max(1, static_cast<int>(std::round(length_y / resolution)));
     std::vector<float> data(cells(length_x, length_y, resolution),
                             static_cast<float>(unknown_value));
-    std::vector<PointXYZ> points;
 
     if (current) {
       try {
@@ -308,9 +307,6 @@ struct HeightMapBridge::Impl {
                     static_cast<float>(
                         std::clamp(reference_height - static_cast<double>(relative_height),
                                    clipping_min, clipping_max));
-                points.push_back(PointXYZ{static_cast<float>(x),
-                                          static_cast<float>(y),
-                                          relative_height});
               }
             }
           }
@@ -320,6 +316,22 @@ struct HeightMapBridge::Impl {
                              "Waiting for %s -> %s TF for legacy height map",
                              current->header.frame_id.c_str(),
                              base_frame.c_str());
+      }
+    }
+
+    // The PointCloud2 is the geometric view of the fully post-processed
+    // controller map, not a sparse view of native GridMap validity.  Emit one
+    // point per sampled cell (including unknown/fallback cells) and derive z
+    // from the clipped height-map value so both outputs agree exactly.
+    std::vector<PointXYZ> points;
+    points.reserve(data.size());
+    for (int row = 0; row < height; ++row) {
+      for (int column = 0; column < width; ++column) {
+        const double x = -length_x / 2.0 + (column + 0.5) * resolution;
+        const double y = -length_y / 2.0 + (row + 0.5) * resolution;
+        const float value = data[static_cast<std::size_t>(row) * width + column];
+        points.push_back(PointXYZ{static_cast<float>(x), static_cast<float>(y),
+                                  static_cast<float>(reference_height - value)});
       }
     }
 
