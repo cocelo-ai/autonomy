@@ -66,14 +66,14 @@ giving visibility cleanup the correct ray source.
 
 ## Pose-following rolling map
 
-`rolling` is a bounded sparse local map, not a short-lived global PCD cache.
-For each accepted cloud, points already registered in the selected global frame
-are fused into ground/upper posteriors only if they project into the current
-`grid.x_length × grid.y_length` window at the robot yaw. After each pose update,
-posteriors outside that window are discarded. The map-coordinate cell key only
-avoids resampling during this shift; it is not a persistent terrain map. A valid
-cell remains valid while it stays in the window, unless visibility cleanup
-invalidates it. `age` is published for diagnostics, not as a validity timeout.
+`rolling` is a bounded fixed-size local grid, not a short-lived global PCD
+cache. It keeps ground/upper posteriors in a grid with `max_radius_m` half-width
+around the robot.
+When the robot position crosses a resolution cell, the grid shifts and copies
+all overlapping cells; only newly exposed strips become invalid. The output
+samples that retained memory at the current robot yaw, so turning in place does
+not discard terrain. A valid cell remains valid until it leaves the memory grid
+or visibility cleanup invalidates it. `age` is diagnostic, not a timeout.
 
 `HeightMap.data` is the actual `base_z - terrain_z`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:

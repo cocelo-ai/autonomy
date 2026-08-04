@@ -50,6 +50,7 @@ autonomy_light:
     height_map:
       source: "rolling"             # rolling | global
     rolling_elevation:
+      # Half-width of the retained local grid and maximum input range.
       max_radius_m: 2.0
       base_variance: 0.0004
       range_variance_factor: 0.0005

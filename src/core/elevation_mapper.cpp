@@ -67,7 +67,7 @@ void ElevationMapper::configure(ElevationMapperConfig config) {
                config.overhang_absolute_max_above_sensor_m);
   config_ = std::move(config);
   global_surfaces_.clear();
-  rolling_surfaces_.clear();
+  rolling_grid_ = {};
   global_voxels_.clear();
   rolling_prior_seeded_ = false;
 }
@@ -158,24 +158,22 @@ void ElevationMapper::seedInitialRollingPrior(const Pose2_5D &robot,
       if (dx * dx + dy * dy > radius2) {
         continue;
       }
-      auto &surface = rolling_surfaces_[keyFor(
-          robot.x + cos_yaw * dx - sin_yaw * dy,
-          robot.y + sin_yaw * dx + cos_yaw * dy)];
-      if (!std::isfinite(surface.ground)) {
-        surface.ground = ground;
-        surface.ground_variance =
+      Surface *surface =
+          rollingSurface(keyFor(robot.x + cos_yaw * dx - sin_yaw * dy,
+                                robot.y + sin_yaw * dx + cos_yaw * dy));
+      if (surface && !std::isfinite(surface->ground)) {
+        surface->ground = ground;
+        surface->ground_variance =
             static_cast<float>(config_.rolling_initial_prior_variance);
-        surface.ground_time = stamp_sec;
-        surface.support = 0U;
+        surface->ground_time = stamp_sec;
+        surface->support = 0U;
       }
     }
   }
   rolling_prior_seeded_ = true;
 }
 
-void ElevationMapper::updateSurfaces(SurfaceMap &target, SampleMap &samples,
-                                     const double stamp_sec,
-                                     const bool rolling) {
+void ElevationMapper::updateSurfaces(SurfaceMap &target, SampleMap &samples) {
   for (auto &[key, values] : samples) {
     if (static_cast<int>(values.size()) < config_.min_samples_per_cell) {
       continue;
@@ -192,23 +190,42 @@ void ElevationMapper::updateSurfaces(SurfaceMap &target, SampleMap &samples,
       continue;
     }
     auto &surface = target[key];
-    if (!rolling) {
-      surface.ground = std::isfinite(surface.ground)
-                           ? std::min(surface.ground, ground)
-                           : ground;
-      surface.upper =
-          std::isfinite(surface.upper) ? std::max(surface.upper, upper) : upper;
-      surface.support += static_cast<std::uint32_t>(values.size());
+    surface.ground = std::isfinite(surface.ground)
+                         ? std::min(surface.ground, ground)
+                         : ground;
+    surface.upper =
+        std::isfinite(surface.upper) ? std::max(surface.upper, upper) : upper;
+    surface.support += static_cast<std::uint32_t>(values.size());
+  }
+}
+
+void ElevationMapper::updateRollingSurfaces(SampleMap &samples,
+                                            const double stamp_sec) {
+  for (auto &[key, values] : samples) {
+    if (static_cast<int>(values.size()) < config_.min_samples_per_cell) {
       continue;
     }
-    const double variance =
-        std::clamp(static_cast<double>(ground_sample.variance), 1.0e-6,
-                   config_.rolling_max_variance);
-    fuse(surface.ground, surface.ground_variance, surface.ground_time,
-         surface.support, ground, variance, stamp_sec, config_);
-    if (upper - ground >= config_.obstacle_min_height) {
-      fuse(surface.upper, surface.upper_variance, surface.upper_time,
-           surface.support, upper,
+    Surface *surface = rollingSurface(key);
+    if (surface == nullptr) {
+      continue;
+    }
+    const Sample ground_sample = percentile(values, config_.ground_percentile);
+    const Sample upper_sample =
+        *std::max_element(values.begin(), values.end(),
+                          [](const Sample &left, const Sample &right) {
+                            return left.z < right.z;
+                          });
+    if (!std::isfinite(ground_sample.z) || !std::isfinite(upper_sample.z)) {
+      continue;
+    }
+    fuse(surface->ground, surface->ground_variance, surface->ground_time,
+         surface->support, ground_sample.z,
+         std::clamp(static_cast<double>(ground_sample.variance), 1.0e-6,
+                    config_.rolling_max_variance),
+         stamp_sec, config_);
+    if (upper_sample.z - ground_sample.z >= config_.obstacle_min_height) {
+      fuse(surface->upper, surface->upper_variance, surface->upper_time,
+           surface->support, upper_sample.z,
            std::clamp(static_cast<double>(upper_sample.variance), 1.0e-6,
                       config_.rolling_max_variance),
            stamp_sec, config_);
@@ -258,6 +275,10 @@ void ElevationMapper::integrate(const PointObservations &cloud,
   addVoxels(cloud);
   SampleMap global_samples;
   SampleMap rolling_samples;
+  const bool rolling = config_.source == "rolling";
+  if (rolling) {
+    moveRollingGrid(robot);
+  }
   const double radius2 =
       config_.rolling_max_radius_m * config_.rolling_max_radius_m;
   for (const auto &point : cloud) {
@@ -270,18 +291,15 @@ void ElevationMapper::integrate(const PointObservations &cloud,
         {point.z, static_cast<float>(config_.rolling_base_variance)});
     const double dx = point.x - robot.x;
     const double dy = point.y - robot.y;
-    if (dx * dx + dy * dy <= radius2 &&
-        insideRollingWindow(point.x, point.y, robot) &&
+    if (rolling && dx * dx + dy * dy <= radius2 &&
         acceptsRollingMeasurement(point, robot)) {
       addRollingSamples(rolling_samples, point, robot);
     }
   }
-  updateSurfaces(global_surfaces_, global_samples, stamp_sec, false);
-  if (config_.source == "rolling") {
-    retainRollingWindow(robot);
+  updateSurfaces(global_surfaces_, global_samples);
+  if (rolling) {
     cleanupVisibility(cloud, robot, stamp_sec);
-    updateSurfaces(rolling_surfaces_, rolling_samples, stamp_sec, true);
-    retainRollingWindow(robot);
+    updateRollingSurfaces(rolling_samples, stamp_sec);
   }
 }
 
@@ -295,7 +313,7 @@ void ElevationMapper::loadGlobalMap(const PclCloud &cloud) {
     }
   }
   addVoxels(cloud);
-  updateSurfaces(global_surfaces_, samples, 0.0, false);
+  updateSurfaces(global_surfaces_, samples);
 }
 
 bool ElevationMapper::empty() const { return global_surfaces_.empty(); }
@@ -337,11 +355,11 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
                                   const std_msgs::msg::Header &header) {
   HeightGrid grid(config_.grid);
   grid.header = header;
+  if (config_.source == "rolling") {
+    moveRollingGrid(robot);
+  }
   seedInitialRollingPrior(robot, stamp_sec);
-  retainRollingWindow(robot);
-  const SurfaceMap &source =
-      config_.source == "global" ? global_surfaces_ : rolling_surfaces_;
-  if (source.empty()) {
+  if (config_.source == "global" && global_surfaces_.empty()) {
     return grid;
   }
   const double cos_yaw = std::cos(robot.yaw);
@@ -351,12 +369,13 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
     for (std::uint32_t col = 0; col < grid.spec.width(); ++col) {
       const double lx = grid.spec.xMin() + (col + 0.5) * grid.spec.resolution;
       const double ly = grid.spec.yMin() + (row + 0.5) * grid.spec.resolution;
-      const Surface *surface =
-          nearestSurface(source, robot.x + cos_yaw * lx - sin_yaw * ly,
-                         robot.y + sin_yaw * lx + cos_yaw * ly);
+      const double x = robot.x + cos_yaw * lx - sin_yaw * ly;
+      const double y = robot.y + sin_yaw * lx + cos_yaw * ly;
+      const Surface *surface = config_.source == "global"
+                                   ? nearestSurface(global_surfaces_, x, y)
+                                   : nearestRollingSurface(x, y);
       if (!surface || !std::isfinite(surface->ground) ||
-          (config_.source == "rolling" &&
-           !validRolling(*surface, false))) {
+          (config_.source == "rolling" && !validRolling(*surface, false))) {
         continue;
       }
       const auto index =

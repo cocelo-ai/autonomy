@@ -56,10 +56,10 @@ height_map:
   source: "rolling" # rolling | global
 ```
 
-- `rolling`은 현재 pose와 yaw를 따르는 출력 크기의 local surface window에
-  ground/upper surface를 확률적으로 융합한다. 관측은 window 안에 있는 동안
-  유지되고, 로봇 이동으로 window 밖으로 나간 셀만 제거된다. 따라서 제어와
-  sim-to-real 정책에는 이 모드를 권장한다.
+- `rolling`은 로봇을 따라 이동하는 고정 크기 local grid에 ground/upper surface를
+  확률적으로 융합한다. grid가 한 cell 이동하면 겹치는 posterior는 복사해 유지하고
+  새로 열린 strip만 unknown으로 초기화한다. 따라서 제어와 sim-to-real 정책에는 이
+  모드를 권장한다.
 - `global`은 누적·voxelized PCD에서 만든 영속 surface index를 조회한다. 미리 만든
   지도에서 재현 가능한 지형 기준이 필요할 때 사용한다.
 
@@ -83,10 +83,11 @@ Gaussian splat으로 나누고, 설정된 한계를 넘는 pose는 cloud 전체�
 output은 `sensor_id`와 관측 원점을 보존하므로 두 센서가 같은 noise model·ray로 섞이지
 않는다.
 
-Rolling surface의 내부 key는 map 좌표를 사용하지만, 이는 좌표 재표본화를 피하기
-위한 인덱스일 뿐이다. 매 pose에서 output grid와 같은 위치·yaw window만 남기므로,
-전역 PCD를 누적해 조회하거나 wall-clock age로 정상 지형을 지우지 않는다. `age`는
-품질 진단 값이며 valid 판정의 시간 제한이 아니다.
+Rolling은 `max_radius_m` half-width의 고정 local memory grid를 robot position에 맞춰
+cell 단위로 shift한다. 출력 grid는 그 memory에서 현재 yaw 방향으로 읽는다. 따라서
+제자리 회전에도 기존 terrain posterior가 사라지지 않으며, 이동 시 겹치는 셀도
+유지된다. 새로 노출된 strip만 unknown이다. 전역 PCD를 elevation에 누적 조회하거나
+wall-clock age로 정상 지형을 지우지 않는다. `age`는 품질 진단 값이다.
 
 실기 로그의 residual로 `rolling_elevation.sensor.*`와 `localization.*`를 보정해야 한다.
 기본값은 과신을 막는 보수적 시작값이며, covariance가 작아도 minimum standard

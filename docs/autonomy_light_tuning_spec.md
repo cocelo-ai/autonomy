@@ -2,8 +2,9 @@
 
 Start with `height_map.source: rolling` for control. It keeps a bounded,
 pose-following probabilistic local surface and exposes `valid`, `variance`, and
-`age` to the policy. Its window is exactly `grid.x_length × grid.y_length` at
-the current robot yaw; tune only these groups first:
+`age` to the policy. A fixed local-memory grid shifts with robot position while
+the published `grid.x_length × grid.y_length` output is sampled at robot yaw;
+tune only these groups first:
 
 ```yaml
 rolling_elevation:
@@ -34,9 +35,10 @@ algorithm:
 
 - Raise `min_points_per_cell` to reject isolated returns; lower it only when
   valid coverage is persistently too small.
-- `max_radius_m` is only an input range guard. The actual retained local-map
-  extent is `grid.x_length × grid.y_length`; cells leave it when robot pose or
-  yaw moves, not when a wall-clock timer expires.
+- `max_radius_m` is both the input range guard and retained local-memory
+  half-width. When position crosses one resolution cell, the grid shifts and
+  copies its overlap; only newly exposed strips are invalidated. Rotation does
+  not erase the memory grid.
 - Raise `range_variance_factor` when distant terrain should contribute less.
 - Keep `obstacle_min_height` below the smallest step the policy must detect.
 - Set `initial_prior.ground_distance_m` to the calibrated vertical distance from

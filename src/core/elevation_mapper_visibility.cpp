@@ -61,47 +61,12 @@ bool ElevationMapper::acceptsRollingMeasurement(const PointObservation &point,
   return above_sensor <= allowed;
 }
 
-bool ElevationMapper::insideRollingWindow(const double x, const double y,
-                                          const Pose2_5D &robot,
-                                          const double margin) const {
-  const double dx = x - robot.x;
-  const double dy = y - robot.y;
-  const double cos_yaw = std::cos(robot.yaw);
-  const double sin_yaw = std::sin(robot.yaw);
-  const double local_x = cos_yaw * dx + sin_yaw * dy;
-  const double local_y = -sin_yaw * dx + cos_yaw * dy;
-  return local_x >= config_.grid.xMin() - margin &&
-         local_x <= -config_.grid.xMin() + margin &&
-         local_y >= config_.grid.yMin() - margin &&
-         local_y <= -config_.grid.yMin() + margin;
-}
-
-void ElevationMapper::retainRollingWindow(const Pose2_5D &robot) {
-  if (config_.source != "rolling") {
-    return;
-  }
-  const double margin = config_.grid.resolution;
-  for (auto found = rolling_surfaces_.begin(); found != rolling_surfaces_.end();) {
-    const double x = (static_cast<double>(found->first.x) + 0.5) *
-                     config_.grid.resolution;
-    const double y = (static_cast<double>(found->first.y) + 0.5) *
-                     config_.grid.resolution;
-    const Surface &surface = found->second;
-    const bool observed = std::isfinite(surface.ground) ||
-                          std::isfinite(surface.upper);
-    if (!observed || !insideRollingWindow(x, y, robot, margin)) {
-      found = rolling_surfaces_.erase(found);
-    } else {
-      ++found;
-    }
-  }
-}
-
 void ElevationMapper::cleanupVisibility(const PointObservations &cloud,
                                         const Pose2_5D &robot,
                                         const double stamp_sec) {
   if (!config_.visibility_cleanup_enabled ||
-      config_.visibility_max_ray_length_m <= 0.0 || rolling_surfaces_.empty()) {
+      config_.visibility_max_ray_length_m <= 0.0 ||
+      !rolling_grid_.initialized) {
     return;
   }
   std::unordered_set<CellKey, CellKeyHash> observed;
@@ -138,24 +103,21 @@ void ElevationMapper::cleanupVisibility(const PointObservations &cloud,
     if (observed.count(key) != 0U) {
       continue;
     }
-    auto found = rolling_surfaces_.find(key);
-    if (found == rolling_surfaces_.end()) {
+    Surface *surface = rollingSurface(key);
+    if (surface == nullptr) {
       continue;
     }
-    Surface &surface = found->second;
-    if (stamp_sec - surface.ground_time <
+    if (stamp_sec - surface->ground_time <
             config_.visibility_min_observation_age_sec ||
-        surface.support == 0U || !std::isfinite(surface.ground) ||
-        !std::isfinite(surface.ground_variance)) {
+        surface->support == 0U || !std::isfinite(surface->ground) ||
+        !std::isfinite(surface->ground_variance)) {
       continue;
     }
     const auto neighbor = [&](const std::int64_t dx,
                               const std::int64_t dy) -> const Surface * {
-      const auto candidate = rolling_surfaces_.find({key.x + dx, key.y + dy});
-      return candidate != rolling_surfaces_.end() &&
-                     std::isfinite(candidate->second.ground)
-                 ? &candidate->second
-                 : nullptr;
+      const Surface *candidate = rollingSurface({key.x + dx, key.y + dy});
+      return candidate && std::isfinite(candidate->ground) ? candidate
+                                                           : nullptr;
     };
     const Surface *left = neighbor(-1, 0);
     const Surface *right = neighbor(1, 0);
@@ -173,8 +135,8 @@ void ElevationMapper::cleanupVisibility(const PointObservations &cloud,
       return positive ? (positive->ground - center) / config_.grid.resolution
                       : (center - negative->ground) / config_.grid.resolution;
     };
-    const Eigen::Vector3d normal(-gradient(left, right, surface.ground),
-                                 -gradient(down, up, surface.ground), 1.0);
+    const Eigen::Vector3d normal(-gradient(left, right, surface->ground),
+                                 -gradient(down, up, surface->ground), 1.0);
     if (!normal.allFinite() || !ray_height.direction.allFinite() ||
         std::abs(normal.normalized().dot(ray_height.direction)) <
             config_.visibility_normal_alignment_min) {
@@ -183,17 +145,11 @@ void ElevationMapper::cleanupVisibility(const PointObservations &cloud,
     const double tolerance =
         config_.visibility_height_margin_m +
         config_.visibility_sigma_scale *
-            std::sqrt(std::max(0.0F, surface.ground_variance));
-    if (ray_height.z >= surface.ground - tolerance) {
+            std::sqrt(std::max(0.0F, surface->ground_variance));
+    if (ray_height.z >= surface->ground - tolerance) {
       continue;
     }
-    surface.ground = std::numeric_limits<float>::quiet_NaN();
-    surface.ground_variance = std::numeric_limits<float>::infinity();
-    surface.ground_time = -std::numeric_limits<double>::infinity();
-    surface.upper = std::numeric_limits<float>::quiet_NaN();
-    surface.upper_variance = std::numeric_limits<float>::infinity();
-    surface.upper_time = -std::numeric_limits<double>::infinity();
-    surface.support = 0U;
+    *surface = {};
   }
 }
 

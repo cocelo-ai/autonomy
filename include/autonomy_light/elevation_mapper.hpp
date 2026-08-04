@@ -77,24 +77,32 @@ private:
     std::uint32_t support{0U};
   };
 
+  struct RollingGrid {
+    CellKey origin;
+    int width{0};
+    int height{0};
+    bool initialized{false};
+    std::vector<Surface> cells;
+  };
+
   using SurfaceMap = std::unordered_map<CellKey, Surface, CellKeyHash>;
   using SampleMap =
       std::unordered_map<CellKey, std::vector<Sample>, CellKeyHash>;
   using VoxelMap = std::unordered_map<VoxelKey, VoxelMean, VoxelKeyHash>;
 
   [[nodiscard]] CellKey keyFor(double x, double y) const;
-  void updateSurfaces(SurfaceMap &target, SampleMap &samples, double stamp_sec,
-                      bool rolling);
+  void updateSurfaces(SurfaceMap &target, SampleMap &samples);
+  void updateRollingSurfaces(SampleMap &samples, double stamp_sec);
   void addVoxels(const PointObservations &cloud);
   void addVoxels(const PclCloud &cloud);
   void addRollingSamples(SampleMap &samples, const PointObservation &point,
                          const Pose2_5D &robot) const;
   [[nodiscard]] bool acceptsRollingMeasurement(const PointObservation &point,
                                                const Pose2_5D &robot) const;
-  [[nodiscard]] bool insideRollingWindow(double x, double y,
-                                         const Pose2_5D &robot,
-                                         double margin = 0.0) const;
-  void retainRollingWindow(const Pose2_5D &robot);
+  void moveRollingGrid(const Pose2_5D &robot);
+  [[nodiscard]] Surface *rollingSurface(const CellKey &key);
+  [[nodiscard]] const Surface *rollingSurface(const CellKey &key) const;
+  [[nodiscard]] const Surface *nearestRollingSurface(double x, double y) const;
   void cleanupVisibility(const PointObservations &cloud, const Pose2_5D &robot,
                          double stamp_sec);
   void seedInitialRollingPrior(const Pose2_5D &robot, double stamp_sec);
@@ -112,7 +120,7 @@ private:
 
   ElevationMapperConfig config_;
   SurfaceMap global_surfaces_;
-  SurfaceMap rolling_surfaces_;
+  RollingGrid rolling_grid_;
   VoxelMap global_voxels_;
   bool rolling_prior_seeded_{false};
 };
