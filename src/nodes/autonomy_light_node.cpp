@@ -11,7 +11,11 @@ std::string rosArray(const std::vector<double> &values) {
   for (std::size_t index = 0; index < values.size(); ++index) {
     char value[32];
     std::snprintf(value, sizeof(value), "%.17g", values[index]);
-    result += (index == 0U ? "" : ",") + std::string(value);
+    std::string formatted(value);
+    if (formatted.find_first_of(".eE") == std::string::npos) {
+      formatted += ".0";
+    }
+    result += (index == 0U ? "" : ",") + formatted;
   }
   return result + "]";
 }
