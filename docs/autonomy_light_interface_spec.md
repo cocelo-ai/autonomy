@@ -64,6 +64,17 @@ limit rejects the cloud. The merge node preserves `sensor_id` and the D435
 world-frame origin, keeping LiDAR and D435 models separate after fusion and
 giving visibility cleanup the correct ray source.
 
+## Pose-following rolling map
+
+`rolling` is a bounded sparse local map, not a short-lived global PCD cache.
+For each accepted cloud, points already registered in the selected global frame
+are fused into ground/upper posteriors only if they project into the current
+`grid.x_length × grid.y_length` window at the robot yaw. After each pose update,
+posteriors outside that window are discarded. The map-coordinate cell key only
+avoids resampling during this shift; it is not a persistent terrain map. A valid
+cell remains valid while it stays in the window, unless visibility cleanup
+invalidates it. `age` is published for diagnostics, not as a validity timeout.
+
 `HeightMap.data` is the actual `base_z - terrain_z`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:
 `valid=0` means `data` contains only the configured unknown placeholder.

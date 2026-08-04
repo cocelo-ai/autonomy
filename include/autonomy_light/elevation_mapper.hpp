@@ -12,8 +12,6 @@ struct ElevationMapperConfig {
   int min_samples_per_cell{2};
   double ground_percentile{0.15};
   double obstacle_min_height{0.035};
-  double rolling_max_age_sec{0.45};
-  double rolling_upper_max_age_sec{0.25};
   double rolling_max_radius_m{2.0};
   double rolling_base_variance{0.0004};
   double rolling_range_variance_factor{0.0005};
@@ -93,13 +91,16 @@ private:
                          const Pose2_5D &robot) const;
   [[nodiscard]] bool acceptsRollingMeasurement(const PointObservation &point,
                                                const Pose2_5D &robot) const;
+  [[nodiscard]] bool insideRollingWindow(double x, double y,
+                                         const Pose2_5D &robot,
+                                         double margin = 0.0) const;
+  void retainRollingWindow(const Pose2_5D &robot);
   void cleanupVisibility(const PointObservations &cloud, const Pose2_5D &robot,
                          double stamp_sec);
   void seedInitialRollingPrior(const Pose2_5D &robot, double stamp_sec);
   [[nodiscard]] const Surface *nearestSurface(const SurfaceMap &surfaces,
                                               double x, double y) const;
-  [[nodiscard]] bool validRolling(const Surface &surface, double stamp_sec,
-                                  bool upper) const;
+  [[nodiscard]] bool validRolling(const Surface &surface, bool upper) const;
   [[nodiscard]] static float percentile(std::vector<float> &values,
                                         double fraction);
   [[nodiscard]] static Sample percentile(std::vector<Sample> &values,

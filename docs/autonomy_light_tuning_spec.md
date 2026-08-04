@@ -1,12 +1,12 @@
 # Elevation-map tuning
 
 Start with `height_map.source: rolling` for control. It keeps a bounded,
-probabilistic local surface and exposes `valid`, `variance`, and `age` to the
-policy. Tune only these groups first:
+pose-following probabilistic local surface and exposes `valid`, `variance`, and
+`age` to the policy. Its window is exactly `grid.x_length × grid.y_length` at
+the current robot yaw; tune only these groups first:
 
 ```yaml
 rolling_elevation:
-  max_age_sec: 0.45
   max_radius_m: 2.0
   base_variance: 0.0004
   range_variance_factor: 0.0005
@@ -34,8 +34,9 @@ algorithm:
 
 - Raise `min_points_per_cell` to reject isolated returns; lower it only when
   valid coverage is persistently too small.
-- Reduce `max_age_sec` for fast motion or dynamic obstacles; increase it only
-  for sparse static terrain.
+- `max_radius_m` is only an input range guard. The actual retained local-map
+  extent is `grid.x_length × grid.y_length`; cells leave it when robot pose or
+  yaw moves, not when a wall-clock timer expires.
 - Raise `range_variance_factor` when distant terrain should contribute less.
 - Keep `obstacle_min_height` below the smallest step the policy must detect.
 - Set `initial_prior.ground_distance_m` to the calibrated vertical distance from

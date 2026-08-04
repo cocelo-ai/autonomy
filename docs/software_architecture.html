@@ -64,7 +64,7 @@
   <h2>Elevation source selection</h2>
   <table>
     <tr><th>Configuration</th><th>Algorithm</th><th>Use</th></tr>
-    <tr><td><code>height_map.source: rolling</code></td><td>Bounded Bayesian ground/upper posterior with measurement variance, aging and outlier gate.</td><td>Default for control and sim-to-real.</td></tr>
+    <tr><td><code>height_map.source: rolling</code></td><td>Pose-following local Bayesian ground/upper window with measurement variance and outlier gate.</td><td>Default for control and sim-to-real.</td></tr>
     <tr><td><code>height_map.source: global</code></td><td>Persistent, PCD-derived sparse surface index.</td><td>Repeatable terrain reference from a saved or accumulated map.</td></tr>
   </table>
   <p>Both sources use the same output message. <code>valid=0</code> means the distance value is an
@@ -80,6 +80,10 @@
   across nearby cells. Over-limit uncertainty rejects the cloud. The merge node keeps a
   <code>sensor_id</code> and each D435 point's transformed origin, so LiDAR and D435 retain
   independent measurement models and exact cleanup-ray sources.</p>
+  <p>The rolling map's sparse keys are in the global frame only to avoid coordinate resampling.
+  At every pose the runtime retains exactly the output-sized, yaw-aligned local window and removes
+  cells outside it. Valid terrain therefore persists inside the local window; <code>age</code> is a
+  quality diagnostic, not a wall-clock validity timeout.</p>
   <p>In rolling mode, per-cloud visibility cleanup casts sensor-to-endpoint rays. A stale surface is
   cleared only when a ray passes below it after the configured age and aligns with its normal. A
   distance-ramped exclusion limit removes points above the sensor before fusion, preventing near

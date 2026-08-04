@@ -45,13 +45,11 @@ autonomy_light:
         history_depth: 1
 
     # Choose the source explicitly.
-    # rolling: short-lived Bayesian surface posterior (recommended for control).
+    # rolling: pose-following local Bayesian surface map (recommended for control).
     # global: persistent PCD-derived surface index (repeatable map reference).
     height_map:
       source: "rolling"             # rolling | global
     rolling_elevation:
-      max_age_sec: 0.45
-      upper_max_age_sec: 0.25
       max_radius_m: 2.0
       base_variance: 0.0004
       range_variance_factor: 0.0005

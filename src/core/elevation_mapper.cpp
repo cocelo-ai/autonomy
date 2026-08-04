@@ -106,8 +106,7 @@ void ElevationMapper::fuse(float &mean, float &variance, double &last_time,
                            const double measurement_variance,
                            const double stamp_sec,
                            const ElevationMapperConfig &config) {
-  if (!std::isfinite(mean) || !std::isfinite(variance) ||
-      stamp_sec - last_time > config.rolling_max_age_sec) {
+  if (!std::isfinite(mean) || !std::isfinite(variance)) {
     mean = measurement;
     variance = static_cast<float>(measurement_variance);
     last_time = stamp_sec;
@@ -148,6 +147,8 @@ void ElevationMapper::seedInitialRollingPrior(const Pose2_5D &robot,
   const int radius = static_cast<int>(std::ceil(
       config_.rolling_initial_prior_radius_m / config_.grid.resolution));
   const double radius2 = std::pow(config_.rolling_initial_prior_radius_m, 2);
+  const double cos_yaw = std::cos(robot.yaw);
+  const double sin_yaw = std::sin(robot.yaw);
   const float ground = static_cast<float>(
       robot.z - config_.rolling_initial_prior_ground_distance_m);
   for (int y = -radius; y <= radius; ++y) {
@@ -157,7 +158,9 @@ void ElevationMapper::seedInitialRollingPrior(const Pose2_5D &robot,
       if (dx * dx + dy * dy > radius2) {
         continue;
       }
-      auto &surface = rolling_surfaces_[keyFor(robot.x + dx, robot.y + dy)];
+      auto &surface = rolling_surfaces_[keyFor(
+          robot.x + cos_yaw * dx - sin_yaw * dy,
+          robot.y + sin_yaw * dx + cos_yaw * dy)];
       if (!std::isfinite(surface.ground)) {
         surface.ground = ground;
         surface.ground_variance =
@@ -268,14 +271,17 @@ void ElevationMapper::integrate(const PointObservations &cloud,
     const double dx = point.x - robot.x;
     const double dy = point.y - robot.y;
     if (dx * dx + dy * dy <= radius2 &&
+        insideRollingWindow(point.x, point.y, robot) &&
         acceptsRollingMeasurement(point, robot)) {
       addRollingSamples(rolling_samples, point, robot);
     }
   }
   updateSurfaces(global_surfaces_, global_samples, stamp_sec, false);
   if (config_.source == "rolling") {
+    retainRollingWindow(robot);
     cleanupVisibility(cloud, robot, stamp_sec);
     updateSurfaces(rolling_surfaces_, rolling_samples, stamp_sec, true);
+    retainRollingWindow(robot);
   }
 }
 
@@ -321,16 +327,10 @@ ElevationMapper::nearestSurface(const SurfaceMap &surfaces, const double x,
 }
 
 bool ElevationMapper::validRolling(const Surface &surface,
-                                   const double stamp_sec,
                                    const bool upper) const {
-  const double age =
-      stamp_sec - (upper ? surface.upper_time : surface.ground_time);
   const float variance =
       upper ? surface.upper_variance : surface.ground_variance;
-  const double age_limit =
-      upper ? config_.rolling_upper_max_age_sec : config_.rolling_max_age_sec;
-  return age >= 0.0 && age <= age_limit && std::isfinite(variance) &&
-         variance <= config_.rolling_max_variance;
+  return std::isfinite(variance) && variance <= config_.rolling_max_variance;
 }
 
 HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
@@ -338,6 +338,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
   HeightGrid grid(config_.grid);
   grid.header = header;
   seedInitialRollingPrior(robot, stamp_sec);
+  retainRollingWindow(robot);
   const SurfaceMap &source =
       config_.source == "global" ? global_surfaces_ : rolling_surfaces_;
   if (source.empty()) {
@@ -355,7 +356,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
                          robot.y + sin_yaw * lx + cos_yaw * ly);
       if (!surface || !std::isfinite(surface->ground) ||
           (config_.source == "rolling" &&
-           !validRolling(*surface, stamp_sec, false))) {
+           !validRolling(*surface, false))) {
         continue;
       }
       const auto index =
@@ -371,7 +372,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
     const bool upper_valid =
         std::isfinite(surface->upper) &&
         surface->upper - surface->ground >= config_.obstacle_min_height &&
-        (config_.source == "global" || validRolling(*surface, stamp_sec, true));
+        (config_.source == "global" || validRolling(*surface, true));
     const float z = (upper_valid ? surface->upper : surface->ground) -
                     static_cast<float>(robot.z);
     if (z < grid.spec.min_z || z > grid.spec.max_z) {

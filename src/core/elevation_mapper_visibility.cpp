@@ -61,6 +61,42 @@ bool ElevationMapper::acceptsRollingMeasurement(const PointObservation &point,
   return above_sensor <= allowed;
 }
 
+bool ElevationMapper::insideRollingWindow(const double x, const double y,
+                                          const Pose2_5D &robot,
+                                          const double margin) const {
+  const double dx = x - robot.x;
+  const double dy = y - robot.y;
+  const double cos_yaw = std::cos(robot.yaw);
+  const double sin_yaw = std::sin(robot.yaw);
+  const double local_x = cos_yaw * dx + sin_yaw * dy;
+  const double local_y = -sin_yaw * dx + cos_yaw * dy;
+  return local_x >= config_.grid.xMin() - margin &&
+         local_x <= -config_.grid.xMin() + margin &&
+         local_y >= config_.grid.yMin() - margin &&
+         local_y <= -config_.grid.yMin() + margin;
+}
+
+void ElevationMapper::retainRollingWindow(const Pose2_5D &robot) {
+  if (config_.source != "rolling") {
+    return;
+  }
+  const double margin = config_.grid.resolution;
+  for (auto found = rolling_surfaces_.begin(); found != rolling_surfaces_.end();) {
+    const double x = (static_cast<double>(found->first.x) + 0.5) *
+                     config_.grid.resolution;
+    const double y = (static_cast<double>(found->first.y) + 0.5) *
+                     config_.grid.resolution;
+    const Surface &surface = found->second;
+    const bool observed = std::isfinite(surface.ground) ||
+                          std::isfinite(surface.upper);
+    if (!observed || !insideRollingWindow(x, y, robot, margin)) {
+      found = rolling_surfaces_.erase(found);
+    } else {
+      ++found;
+    }
+  }
+}
+
 void ElevationMapper::cleanupVisibility(const PointObservations &cloud,
                                         const Pose2_5D &robot,
                                         const double stamp_sec) {

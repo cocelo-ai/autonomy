@@ -109,13 +109,6 @@ void AutonomyLightNode::loadParameters() {
   mapper_config_.obstacle_min_height = std::max(
       0.0, declare_parameter<double>("algorithm.min_z.obstacle_min_height",
                                      mapper_config_.obstacle_min_height));
-  mapper_config_.rolling_max_age_sec = std::max(
-      0.01, declare_parameter<double>("rolling_elevation.max_age_sec",
-                                      mapper_config_.rolling_max_age_sec));
-  mapper_config_.rolling_upper_max_age_sec = std::max(
-      0.01,
-      declare_parameter<double>("rolling_elevation.upper_max_age_sec",
-                                mapper_config_.rolling_upper_max_age_sec));
   mapper_config_.rolling_max_radius_m = std::max(
       0.1, declare_parameter<double>("rolling_elevation.max_radius_m",
                                      mapper_config_.rolling_max_radius_m));
