@@ -90,6 +90,17 @@ source "${ROS_SETUP}"
 [[ -f "${SCRIPT_DIR}/install/setup.bash" ]] && source "${SCRIPT_DIR}/install/setup.bash"
 set -u
 command -v ros2 >/dev/null || { echo "error: ros2 is unavailable" >&2; exit 1; }
+if [[ "${VIS}" == "true" ]]; then
+  VIS_SCRIPT="${SCRIPT_DIR}/scripts/height_map_vis.py"
+  [[ -f "${VIS_SCRIPT}" ]] || {
+    echo "error: HeightMap viewer not found: ${VIS_SCRIPT}" >&2
+    exit 1
+  }
+  /usr/bin/python3 -c 'import cv2, rclpy; from autonomy_light.msg import HeightMap' || {
+    echo "error: --vis requires system python3-opencv, ROS rclpy, and a built autonomy_light overlay" >&2
+    exit 1
+  }
+fi
 
 EFFECTIVE_CONFIG="$(mktemp "/tmp/autonomy_light_$(id -u)_XXXXXX.yaml")"
 trap 'rm -f -- "${EFFECTIVE_CONFIG}"' EXIT
@@ -183,9 +194,7 @@ fi
 RUNTIME_PID="$!"
 
 if [[ "${VIS}" == "true" ]]; then
-  VIS_SCRIPT="${SCRIPT_DIR}/scripts/height_map_vis.py"
-  [[ -x "${VIS_SCRIPT}" ]] || VIS_SCRIPT="${SCRIPT_DIR}/height_map_vis.py"
-  "${VIS_SCRIPT}" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}" &
+  /usr/bin/python3 "${VIS_SCRIPT}" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}" &
   VIS_PID="$!"
 fi
 if [[ "${RVIZ}" == "true" ]]; then
