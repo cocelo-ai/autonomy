@@ -6,23 +6,18 @@ digraph autonomy_light {
   edge [fontname="Arial", color="#4d6b82", arrowsize="0.7"];
 
   livox [label="Livox driver\n(external ROS node)", fillcolor="#f5f7fa"];
-  lio [label="Super-LIO\nexternal: super_lio_node\nrelocation: relocation_node",
-       fillcolor="#e9f6ee", color="#32734d"];
+  lio [label="Super-LIO\nLIO | full SLAM | relocation\nmap -> odom -> imu", fillcolor="#e9f6ee", color="#32734d"];
   d435 [label="D435 / D435i\nrealsense2_camera PointCloud2", fillcolor="#f5f7fa"];
-  merge [label="rolling_cloud_merge\nowned optional ROS node\nTF + sync + voxel filter",
-         fillcolor="#fff4df", color="#a65e00", penwidth="2"];
-  runtime [label="autonomy_light\nowned elevation ROS node\n\nElevationMapper (in-process)\nrolling posterior | global surface index\nvoxel PCD export",
-           fillcolor="#fff4df", color="#a65e00", penwidth="2"];
-  control [label="Controller / Isaac Lab\nROS height map + quality", fillcolor="#f5f7fa"];
-  dds [label="Non-ROS platform\nCyclone DDS consumer", fillcolor="#f5f7fa"];
-  rviz [label="RViz / PCD consumer", fillcolor="#f5f7fa"];
+  mapper [label="elevation_mapping\nvendored ETH/ANYbotics node\nrobot-centric circular GridMap\nvariance + visibility cleanup",
+          fillcolor="#fff4df", color="#a65e00", penwidth="2"];
+  control [label="Controller / Isaac Lab\nGridMap consumer", fillcolor="#f5f7fa"];
+  rviz [label="GridMap viewer / RViz", fillcolor="#f5f7fa"];
+  prior [label="Optional prebuilt terrain\nGridMap elevation layer", fillcolor="#f5f7fa"];
 
   livox -> lio [label="Livox CustomMsg + IMU"];
-  lio -> merge [label="/lio/cloud_world\nrolling only"];
-  d435 -> merge [label="depth/color/points"];
-  merge -> runtime [label="/autonomy_light/rolling_cloud\nrolling + D435 enabled"];
-  lio -> runtime [label="/lio/odom (IMU pose + covariance)\n/lio/cloud_world\nall modes: map → odom → imu TF\nnormal LIO: identity correction"];
-  runtime -> control [label="/autonomy_light/height_map_data\n/height_map_quality\n/odom, TF"];
-  runtime -> dds [label="DDS: height_map\ncore_dds::HeightMap", style=dashed];
-  runtime -> rviz [label="/autonomy_light/live_map\n/height_map"];
+  lio -> mapper [label="/lio/odom covariance\n/lio/cloud_world\nmap -> odom -> imu TF"];
+  d435 -> mapper [label="depth/color/points\ncalibrated TF"];
+  prior -> mapper [label="underlying_map_topic", style=dashed];
+  mapper -> control [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap"];
+  mapper -> rviz [label="same native GridMap"];
 }

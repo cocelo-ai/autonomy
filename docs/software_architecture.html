@@ -19,11 +19,11 @@
 </head>
 <body>
   <h1>autonomy_light software architecture</h1>
-  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-04</p>
+  <p class="subtitle">Super-LIO + ETH/ANYbotics robot-centric elevation mapping · 2026-08-04</p>
 
-  <div class="rule"><strong>Design decision.</strong> SLAM and relocalization are Super-LIO responsibilities.
-  This package owns the elevation node and an optional, isolated D435 rolling-cloud merge node.
-  Super-LIO remains the only SLAM backend.</div>
+  <div class="rule"><strong>Design decision.</strong> This repository no longer contains an elevation-map algorithm,
+  custom message, DDS bridge, or D435 merge node. It brings up one vendored ETH/ANYbotics elevation mapping node;
+  Super-LIO remains the single owner of LIO, full SLAM, relocation, and <code>map → odom</code>.</div>
 
   <img src="software_node_topology.svg" alt="Node topology">
 
@@ -31,93 +31,41 @@
   <table>
     <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
     <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
-    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry with ESKF pose covariance, Scan Context + GICP + iSAM2 full SLAM, saved-map relocation, and continuous <code>map → odom → imu</code> TF.</td></tr>
-    <tr><td><code>rolling_cloud_merge</code></td><td>this package, optional</td><td>Synchronizes one D435/D435i PointCloud2 to a LiDAR cloud, transforms it into <code>odom|map</code>, and voxel filters it.</td></tr>
-    <tr><td><code>autonomy_light</code></td><td>this package</td><td>Base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
+    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, ESKF covariance, full SLAM, saved-map relocation, and <code>map → odom → imu</code>.</td></tr>
+    <tr><td>D435/D435i driver</td><td>external</td><td>Publishes one PointCloud2 stream with its calibrated TF chain.</td></tr>
+    <tr><td><code>elevation_mapping</code></td><td>vendored ETH/ANYbotics</td><td>Robot-centric circular grid, sensor-specific variance, pose-covariance prediction, Bayesian fusion, and visibility cleanup.</td></tr>
+    <tr><td><code>autonomy_light</code></td><td>this repository</td><td>Configuration, process lifecycle, and calibrated static TF only.</td></tr>
   </table>
 
   <h2>Data and TF contract</h2>
   <table>
-    <tr><th>Direction</th><th>Topic</th><th>Meaning</th></tr>
-    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO IMU pose and 6×6 ESKF covariance; exactly converted to <code>base_link</code>.</td></tr>
-    <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered cloud in the current global frame.</td></tr>
-    <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>One D435/D435i cloud; used only by the merge node.</td></tr>
-    <tr><td>intermediate</td><td><code>/autonomy_light/rolling_cloud</code></td><td>Time-aligned, global-frame LiDAR+D435 cloud for rolling elevation.</td></tr>
-    <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Controller distance grid.</td></tr>
-    <tr><td>output</td><td><code>/autonomy_light/height_map_quality</code></td><td>Per-cell validity, variance, age.</td></tr>
-    <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
-    <tr><td>optional output</td><td><code>height_map</code></td><td>Direct Cyclone DDS <code>core_dds::HeightMap</code> payload for a non-ROS peer.</td></tr>
+    <tr><th>Direction</th><th>Topic / frame</th><th>Meaning</th></tr>
+    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO pose and 6×6 covariance for motion uncertainty propagation.</td></tr>
+    <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered LiDAR cloud, transformed to the map at its timestamp.</td></tr>
+    <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>D435/D435i cloud; directly fused with the structured-light model.</td></tr>
+    <tr><td>output</td><td><code>/autonomy_light/elevation_map</code></td><td>Native <code>grid_map_msgs/msg/GridMap</code>, layers: elevation, upper/lower bound, uncertainty range.</td></tr>
+    <tr><td>TF</td><td><code>map → odom → imu → base_link → lidar_link</code></td><td>Super-LIO owns dynamic transforms; launcher owns only calibrated static links.</td></tr>
   </table>
-  <p>TF is <code>map → odom → imu → base_link → base_link_gravity</code>, with static
-  <code>imu → base_link → lidar_link</code>. Super-LIO publishes identity <code>map → odom</code>
-  before its first LiDAR update, then owns the correction; this runtime owns the two physical static links.
-  Normal LIO keeps that correction at identity. A saved map runs Super-LIO <code>relocation_node</code>.
-  After its NDT→ICP registration succeeds, Super-LIO re-broadcasts <code>map → odom → imu</code> at <code>publish_rate_hz</code>;
-  the correction is only recalculated at the configured low global-registration rate. Mapping runs the pose graph in
-  Super-LIO. There is no <code>world</code> frame or duplicate SLAM backend in this package.</p>
-  <p><code>/lio/odom</code> is the IMU state. The runtime composes
-  <code>T_base_imu = T_base_lidar · inverse(T_imu_lidar)</code> from
-  <code>target_to_lidar_*</code> and <code>imu_from_lidar_*</code>, then applies
-  <code>T_global_base = T_global_imu · inverse(T_base_imu)</code>. Its managed Super-LIO
-  process receives the same <code>T_imu_lidar</code> calibration.</p>
+  <p>The local grid follows <code>base_link</code> in <code>map</code> with Grid Map's circular buffer. It preserves
+  overlapping posterior cells while moving and clears only newly exposed strips. Unobserved terrain remains <code>NaN</code>;
+  no arbitrary startup floor value is inserted.</p>
 
-  <h2>Elevation source selection</h2>
-  <table>
-    <tr><th>Configuration</th><th>Algorithm</th><th>Use</th></tr>
-    <tr><td><code>height_map.source: rolling</code></td><td>Cell-shifted local Bayesian ground/upper grid with measurement variance and outlier gate.</td><td>Default for control and sim-to-real.</td></tr>
-    <tr><td><code>height_map.source: global</code></td><td>Persistent, PCD-derived sparse surface index.</td><td>Repeatable terrain reference from a saved or accumulated map.</td></tr>
-  </table>
-  <p>Both sources use the same output message. <code>valid=0</code> means the distance value is an
-  unknown placeholder, not measured flat ground; Isaac Lab should consume the quality channels.</p>
-  <p>With <code>rolling_merge.enabled: true</code>, the launcher starts the optional merge node.
-  It accepts only a D435 sample within the configured synchronization window, uses TF at that camera
-  timestamp, and passes a LiDAR-only cloud through if TF or a matching camera sample is unavailable.</p>
-  <p><code>base_link_gravity</code> shares the exact <code>base_link</code> origin and removes only
-  roll/pitch from its orientation. It is not translated to an estimated floor, so hanging geometry cannot
-  move the TF. Terrain z is directly base-relative and controller data is <code>base_z - terrain_z</code>.</p>
-  <p>Each rolling cloud is matched to its timestamped odometry covariance. Sensor range and mounting
-  calibration are added to the Jacobian-projected pose covariance; XY uncertainty splats the point
-  across nearby cells. Over-limit uncertainty rejects the cloud. The merge node keeps a
-  <code>sensor_id</code> and each D435 point's transformed origin, so LiDAR and D435 retain
-  independent measurement models and exact cleanup-ray sources.</p>
-  <p>The rolling map is a fixed local-memory grid. When robot position crosses one cell, the runtime
-  shifts its layers and copies the overlap; only newly exposed strips become invalid. The output is
-  sampled at robot yaw from this retained memory, so rotation does not erase terrain. <code>age</code>
-  is a quality diagnostic, not a wall-clock validity timeout.</p>
-  <p>In rolling mode, per-cloud visibility cleanup casts sensor-to-endpoint rays. A stale surface is
-  cleared only when a ray passes below it after the configured age and aligns with its normal. A
-  distance-ramped exclusion limit removes points above the sensor before fusion, preventing near
-  ceiling and overhang returns from becoming terrain. Static global PCD input is deliberately not
-  ray-cleaned because it has no observation origin or timestamp.</p>
-  <p>At startup, only the robot footprint receives a flat, high-variance ground prior because its
-  underside is occluded. Its first real observation bypasses the innovation gate and replaces it by
-  the normal Kalman update; the quality variance exposes the prior's low confidence.</p>
-  <p><code>base_link → base_link_gravity</code> is present from startup as identity. After odometry
-  arrives, only its roll/pitch-removing rotation changes; translation stays zero.</p>
-  <p>The runtime separately schedules heavy cloud fusion and global-PCL publication, so its output timer
-  refreshes odometry, height-map ROS/DDS messages, and <code>base_link → base_link_gravity</code> at
-  <code>publish_rate_hz</code>. Static calibration links remain on <code>/tf_static</code>. RViz
-  <code>/autonomy_light/height_map</code> always contains the entire grid: <code>intensity=1</code>
-  means valid, while <code>intensity=0</code> is the unknown placeholder.</p>
-  <p><code>./launch.sh --vis</code> starts a live OpenCV 2D view of only the numeric
-  <code>HeightMap.data</code> grid. It keeps the newest sample only and targets 50 Hz, so the image
-  follows robot motion instead of rendering a queued stale frame.</p>
+  <h2>Uncertainty and cleanup</h2>
+  <p>Each input uses its own laser or D435 noise model. At each cloud timestamp the elevation node obtains the
+  Super-LIO covariance, predicts map uncertainty due to robot motion, and applies the measurement update in the
+  map frame. Its visibility cleanup ray-traces newer observations to remove penetrated stale cells, addressing
+  lingering wall and overhanging-obstacle artifacts without an additional local implementation.</p>
 
-  <h2>Transport selection</h2>
-  <p><code>height_map_output.transport</code> selects <code>ros2</code>,
-  <code>cyclone_dds</code>, or <code>both</code>. The direct DDS option uses the installed IDL
-  <code>core_dds::HeightMap { sequence&lt;float&gt; data; }</code>, configurable domain and topic,
-  and best-effort keep-last delivery. Its flat, row-major data sequence has exactly the same
-  values and unknown convention as ROS <code>HeightMap.data</code>; geometry and quality remain
-  ROS-message metadata. <code>both</code> is the migration/validation mode.</p>
+  <h2>Prebuilt terrain input</h2>
+  <p><code>elevation_mapping.underlying_map_topic</code> accepts a prebuilt <code>GridMap</code> carrying an
+  <code>elevation</code> layer. A Super-LIO PCD remains the map used by <code>--map</code> relocation and is not
+  silently reinterpreted as terrain. This keeps localization and terrain-map contracts explicit.</p>
 
-  <h2>Removed ownership</h2>
+  <h2>Operational commands</h2>
   <ul>
-    <li>Duplicate local pose graph, Scan Context loop closure, and map reconstruction</li>
-    <li>FPFH/GICP initial localization and runtime map correction outside Super-LIO</li>
-    <li>Secondary LiDAR merger and custom ROS-domain bridge executors</li>
-    <li>Separate raw/refined/ROI map pipelines and duplicated path subscription</li>
+    <li><code>./build.sh</code> installs/builds Livox, Super-LIO, Grid Map, vendored KINDR/KINDR ROS, the mapper, and bringup.</li>
+    <li><code>./launch.sh --vis</code> opens a latest-frame GridMap elevation viewer; <code>--rviz</code> opens the GridMap RViz display.</li>
+    <li><code>./mapping.sh --output maps/site.pcd</code> runs Super-LIO full SLAM and writes the optimized PCD at shutdown.</li>
   </ul>
-  <p>These removals make the state path linear: Super-LIO localizes; one node maps elevation.</p>
 </body>
 </html>

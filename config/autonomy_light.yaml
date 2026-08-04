@@ -1,171 +1,38 @@
 autonomy_light:
   ros__parameters:
-    # One ROS domain and one runtime node. Set ROS_DOMAIN_ID before launch, or
-    # let launch.sh export this value.
     ros_domain_id: 0
 
-    # Super-LIO publishes the IMU pose. Both transforms below use T_parent_child:
-    # p_parent = R_parent_child * p_child + t_parent_child.
+    # Calibrated static chain. Super-LIO publishes map -> odom -> imu.
+    # The launcher publishes imu -> base_link and base_link -> lidar_link.
     target_frame: "base_link"
-    height_map_frame: "base_link_gravity"
-    imu_frame: "imu"              # Super-LIO /lio/odom child frame
+    imu_frame: "imu"
     lidar_frame: "lidar_link"
-    # Historical parameter name: this is the global root frame.
-    # Super-LIO always publishes map -> odom, initially identity in normal LIO.
-    odom_frame: "map"
-    local_odom_frame: "odom"
+    map_frame: "map"
+    odom_frame: "odom"
     target_to_lidar_xyz: [0.234, 0.0, 0.077]
     target_to_lidar_rpy: [0.0, 0.7854, 0.0]
-    # Must be the calibrated lio.extrinsic.lidar_imu. The launcher passes this
-    # same value to Super-LIO, so base_link conversion cannot drift from LIO.
+    # T_imu_lidar: keep this identical to the calibrated Super-LIO extrinsic.
     imu_from_lidar_xyz: [-0.011, -0.02329, 0.04412]
     imu_from_lidar_rpy: [0.0, 0.0, 0.0]
 
-    # Robot-centric, gravity-aligned output grid.
-    elevation_resolution: 0.10
-    elevation_x_length: 1.80
-    elevation_y_length: 0.80
-    elevation_min_z: -2.0
-    elevation_max_z: 2.0
-    publish_rate_hz: 50.0
-    height_map_distance:
-      min: 0.0
-      max: 0.75
-      unknown: 0.48
-    # Select the controller height-map transport.
-    # ros2 publishes autonomy_light/msg/HeightMap plus ROS quality/visual topics.
-    # cyclone_dds publishes only core_dds::HeightMap { sequence<float> data; }.
-    # both is useful during migration and validation.
-    height_map_output:
-      transport: "both"             # ros2 | cyclone_dds | both
-      cyclone_dds:
-        domain_id: 1
-        topic: "height_map"
-        type: "core_dds::HeightMap"
-        history_depth: 1
-
-    # Choose the source explicitly.
-    # rolling: pose-following local Bayesian surface map (recommended for control).
-    # global: persistent PCD-derived surface index (repeatable map reference).
-    height_map:
-      source: "rolling"             # rolling | global
-    rolling_elevation:
-      # Half-width of the retained local grid and maximum input range.
-      max_radius_m: 2.0
-      base_variance: 0.0004
-      range_variance_factor: 0.0005
-      process_variance_per_sec: 0.0025
-      max_variance: 0.04
-      outlier_variance: 0.0025
-      mahalanobis_threshold: 3.0
-      # At the initial pose, the LiDAR cannot observe below the robot. Seed only
-      # this footprint with a weak ground posterior; its first observation wins.
-      initial_prior:
-        enabled: true
-        footprint_radius_m: 0.30
-        ground_distance_m: 0.48
-        variance: 0.04             # m^2, sigma = 0.20 m (intentionally weak)
-      # Miki et al. (IROS 2022): remove stale cells whose height is penetrated
-      # by a measured sensor ray. This is deliberately rolling-only.
-      visibility:
-        enabled: true
-        max_ray_length_m: 2.0
-        min_ray_length_m: 0.15
-        min_observation_age_sec: 0.08
-        normal_alignment_min: 0.15
-        height_margin_m: 0.015
-        sigma_scale: 1.0
-      # Exclusion ramp from the same work: reject ceiling/overhang returns
-      # above the sensor, but retain normal ascending terrain below it.
-      overhang_filter:
-        enabled: true
-        near_max_above_sensor_m: 0.20
-        ramp_start_m: 1.0
-        ramp_slope: 0.30
-        absolute_max_above_sensor_m: 1.0
-      # All values are measurement/calibration standard deviations after a
-      # real sensor-mount calibration; tune them from logged residuals.
-      sensor:
-        lidar:
-          extrinsic_translation_std_m: 0.005
-          extrinsic_rotation_std_deg: 0.5
-        d435:
-          base_variance: 0.0016
-          range_variance_factor: 0.002
-          extrinsic_translation_std_m: 0.015
-          extrinsic_rotation_std_deg: 1.0
-      # Super-LIO's 6x6 ESKF covariance is used at the cloud timestamp.
-      # Floors prevent a numerically overconfident estimator; limits reject a
-      # cloud whose uncertain pose would smear terrain across the control grid.
-      localization:
-        # Cloud and odometry are matched at their measurement stamps; a short
-        # queue absorbs ROS callback-order jitter instead of dropping a cloud.
-        odom_sync_tolerance_sec: 0.12
-        pending_cloud_queue_size: 32
-        min_position_std_m: 0.015
-        min_orientation_std_deg: 0.5
-        max_position_std_m: 0.25
-        max_orientation_std_deg: 10.0
-        splat_max_cells: 2
-    algorithm:
-      min_z:
-        min_points_per_cell: 2
-        obstacle_min_height: 0.035
-      frame_aggregation:
-        cell_height_percentile: 0.15
-
-    # Persistent sparse voxel PCD: RViz, saved-map input, and global source.
-    live_global_map:
-      topic: "/autonomy_light/live_map"
-      voxel_leaf_size: 0.03
-      max_points: 2000000
-      publish_interval_sec: 1.0
-
-    # `mapping.sh` enables the third-party Super-LIO pose graph and owns PCD saving.
-    mapping_only: false
-    mapping_pcd_file: ""
-    saved_map_file: ""
-    saved_map_frame: "map"
-    saved_map_topic: "/autonomy_light/saved_map"
-
-    # Super-LIO owns full SLAM and saved-map localization. It broadcasts the
-    # latest map -> odom correction at LiDAR rate, while updating it slowly.
+    livox_publish_freq: 50.0
     raw_lidar_topic: "/livox/lidar"
     raw_imu_topic: "/livox/imu"
-    raw_lidar_msg_type: "livox_custom"
+    super_lio_cloud_topic: "/lio/cloud_world"
     super_lio_odom_topic: "/lio/odom"
-    super_lio_registered_topic: "/lio/cloud_world"
-    # Used only when height_map.source is rolling. A separate node joins the
-    # registered LiDAR cloud with one D435/D435i PointCloud2 stream.
-    rolling_merge:
-      enabled: false
-      output_topic: "/autonomy_light/rolling_cloud"
     super_lio_config_file: ""
-    start_lidar_driver: true
-    start_super_lio: true
-    # ROS message aggregation rate. It does not change the LiDAR's physical
-    # sampling rate; 50 Hz yields shorter clouds and lower algorithmic latency.
-    livox_publish_freq: 50.0
-    child_use_sim_time: false
 
-    child_shutdown_grace_sec: 0.8
-
-    # Control and visualization outputs, all in ros_domain_id.
-    odom_output_topic: "/autonomy_light/odom"
-    path_output_topic: "/autonomy_light/path"
-    height_map_topic: "/autonomy_light/height_map"
-    height_map_msg_topic: "/autonomy_light/height_map_data"
-    height_map_quality_topic: "/autonomy_light/height_map_quality"
-    heartbeat_topic: "/autonomy_light/heartbeat"
-
-rolling_cloud_merge:
-  ros__parameters:
-    lidar_cloud_topic: "/lio/cloud_world"
-    # realsense2_camera with pointcloud.enable:=true, one D435 or D435i.
-    d435_cloud_topic: "/camera/camera/depth/color/points"
-    output_topic: "/autonomy_light/rolling_cloud"
-    max_sync_delta_sec: 0.06
-    tf_timeout_sec: 0.02
-    d435_min_range_m: 0.15
-    d435_max_range_m: 3.0
-    d435_voxel_size_m: 0.03
+    # The mapper uses native grid_map_msgs/GridMap.  A non-empty underlying
+    # map topic may provide a prebuilt GridMap with an `elevation` layer.
+    elevation_mapping:
+      map_topic: "/autonomy_light/elevation_map"
+      lidar_topic: "/lio/cloud_world"
+      d435_topic: "/camera/camera/depth/color/points"
+      underlying_map_topic: ""
+      resolution: 0.10
+      length_in_x: 1.80
+      length_in_y: 0.80
+      publish_rate_hz: 50.0
+      visibility_cleanup_rate_hz: 10.0
+      d435_enabled: true
+      d435_max_depth_m: 3.25

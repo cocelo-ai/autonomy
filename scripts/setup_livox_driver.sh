@@ -12,7 +12,7 @@ What it does:
   1. Installs common Ubuntu/ROS build dependencies unless --skip-apt is used.
   2. Installs Livox-SDK2 to /usr/local unless it is already installed or --skip-sdk is used.
   3. Links this repo's third_party/livox_ros_driver2 into <workspace>/src/livox_ros_driver2.
-  4. Optionally builds livox_ros_driver2, Super-LIO, and autonomy_light with --build.
+  4. Optionally builds Livox, Super-LIO, and bringup with --build.
 
 Examples:
   scripts/setup_livox_driver.sh

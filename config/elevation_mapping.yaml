@@ -1,0 +1,82 @@
+elevation_mapping:
+  ros__parameters:
+    # A robot-centric circular grid: overlapping cells are retained when the
+    # base moves; only the newly exposed strips become unknown.
+    num_callback_threads: 4
+    postprocessor_num_threads: 0
+    map_frame_id: "map"
+    robot_base_frame_id: "base_link"
+    robot_pose_with_covariance_topic: "/lio/odom"
+    robot_pose_cache_size: 500
+    track_point_frame_id: "base_link"
+    track_point_x: 0.0
+    track_point_y: 0.0
+    track_point_z: 0.0
+
+    length_in_x: 1.80
+    length_in_y: 0.80
+    position_x: 0.0
+    position_y: 0.0
+    resolution: 0.10
+
+    # Native fused GridMap output. `elevation`, upper/lower bounds, and
+    # uncertainty_range are published without a custom message conversion.
+    fused_map_publishing_rate: 50.0
+    min_update_rate: 50.0
+    time_tolerance: 0.05
+    min_variance: 0.0001
+    max_variance: 0.04
+    min_horizontal_variance: 0.0025
+    max_horizontal_variance: 0.0625
+    mahalanobis_distance_threshold: 2.5
+    multi_height_noise: 0.0025
+    underlying_map_topic: ""
+
+    # ETH/ANYbotics visibility cleanup removes surfaces that a newer ray
+    # penetrates, preventing stale walls and overhanging artifacts from
+    # remaining in the local terrain map.
+    enable_visibility_cleanup: true
+    enable_continuous_cleanup: false
+    visibility_cleanup_rate: 10.0
+    scanning_duration: 0.02
+    robot_motion_map_update/covariance_scale: 1.0
+
+    inputs: ["lidar", "d435"]
+    lidar:
+      type: "pointcloud"
+      topic: "/lio/cloud_world"
+      queue_size: 5
+      publish_on_update: false
+      sensor_processor:
+        type: "laser"
+        min_radius: 0.018
+        beam_angle: 0.0006
+        beam_constant: 0.0015
+        apply_voxelgrid_filter: true
+        voxelgrid_filter_size: 0.05
+        # Keep terrain below the roof / upper-body envelope. This is relative
+        # to base_link in the gravity-aligned map frame.
+        ignore_points_above: 0.60
+        ignore_points_below: -2.0
+
+    # The D435 source is intentionally independent of LiDAR timing.  When a
+    # camera is absent the subscription is idle; no merge node is required.
+    d435:
+      type: "pointcloud"
+      topic: "/camera/camera/depth/color/points"
+      queue_size: 2
+      publish_on_update: false
+      sensor_processor:
+        type: "structured_light"
+        cutoff_min_depth: 0.20
+        cutoff_max_depth: 3.25
+        normal_factor_a: 0.000611
+        normal_factor_b: 0.003587
+        normal_factor_c: 0.3515
+        normal_factor_d: 0.0
+        normal_factor_e: 1.0
+        lateral_factor: 0.01576
+        apply_voxelgrid_filter: true
+        voxelgrid_filter_size: 0.03
+        ignore_points_above: 0.60
+        ignore_points_below: -2.0

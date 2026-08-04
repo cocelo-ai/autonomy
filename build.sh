@@ -6,14 +6,14 @@ usage() {
 Usage:
   build.sh [options]
 
-Build autonomy-light, Super-LIO, its ROS interfaces, and its vendored Livox ROS Driver2.
+Build the Livox driver, Super-LIO, vendored ETH elevation mapping, and bringup.
 
 Options:
   --skip-apt          Do not install Ubuntu/ROS dependencies.
   --skip-sdk          Do not build/install Livox-SDK2.
   --clean             Remove this workspace's build/install/log for these packages first.
-  --setup-only        Prepare Livox driver symlink/SDK only; do not run colcon build.
-  --packages PKGS     Packages to build. Default: livox_ros_driver2 super_lio autonomy_light.
+  --setup-only        Install runtime/build dependencies only; do not run colcon build.
+  --packages PKGS     Packages to build. Default: livox_ros_driver2 super_lio kindr kindr_ros elevation_mapping autonomy_light.
   --ros-distro NAME   ROS distro. Default: ROS_DISTRO or humble.
   -h, --help          Show this help.
 
@@ -32,7 +32,7 @@ SKIP_APT="false"
 SKIP_SDK="false"
 CLEAN="false"
 SETUP_ONLY="false"
-PACKAGES=(livox_ros_driver2 super_lio autonomy_light)
+PACKAGES=(livox_ros_driver2 super_lio kindr kindr_ros elevation_mapping autonomy_light)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +87,8 @@ done
 SETUP_ARGS=()
 [[ "${SKIP_APT}" == "true" ]] && SETUP_ARGS+=(--skip-apt)
 [[ "${SKIP_SDK}" == "true" ]] && SETUP_ARGS+=(--skip-sdk)
+ELEVATION_SETUP_ARGS=()
+[[ "${SKIP_APT}" == "true" ]] && ELEVATION_SETUP_ARGS+=(--skip-apt)
 
 detect_build_python() {
   if [[ -x /usr/bin/python3 ]]; then
@@ -109,6 +111,8 @@ fi
 
 echo "Preparing vendored Livox driver"
 ROS_DISTRO="${ROS_DISTRO_NAME}" "${SCRIPT_DIR}/scripts/setup_livox_driver.sh" "${SETUP_ARGS[@]}"
+echo "Preparing vendored ETH elevation mapping"
+ROS_DISTRO="${ROS_DISTRO_NAME}" "${SCRIPT_DIR}/scripts/setup_elevation_mapping.sh" "${ELEVATION_SETUP_ARGS[@]}"
 
 if [[ "${SETUP_ONLY}" == "true" ]]; then
   echo "Setup complete."
@@ -132,6 +136,9 @@ colcon build --packages-up-to "${PACKAGES[@]}" \
     "${WORKSPACE_DIR}" \
     "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
     "${WORKSPACE_DIR}/third_party/super_lio_ros2" \
+    "${WORKSPACE_DIR}/third_party/kindr" \
+    "${WORKSPACE_DIR}/third_party/kindr_ros" \
+    "${WORKSPACE_DIR}/third_party/elevation_mapping" \
   --cmake-args \
     -DROS_EDITION=ROS2 \
     -DDISTRO_ROS="${ROS_DISTRO_NAME}" \
@@ -146,7 +153,4 @@ Next:
   source /opt/ros/${ROS_DISTRO_NAME}/setup.bash
   source ${WORKSPACE_DIR}/install/setup.bash
   ${SCRIPT_DIR}/launch.sh --real --mid360
-
-Build a runtime .deb:
-  ${SCRIPT_DIR}/scripts/package_deb.sh
 EOF
