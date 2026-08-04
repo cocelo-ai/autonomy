@@ -507,7 +507,7 @@ void ElevationMapping::pointCloudCallback(sensor_msgs::msg::PointCloud2::ConstSh
   if (isOutOfOrderCloud) {
     map_.setTimestamp(timeOfLastMapUpdate);
   }
-  if (pointCloudTime > lastPointCloudUpdateTime_) {
+  if (lastPointCloudUpdateTime_.nanoseconds() == 0 || pointCloudTime > lastPointCloudUpdateTime_) {
     lastPointCloudUpdateTime_ = pointCloudTime;
   }
 

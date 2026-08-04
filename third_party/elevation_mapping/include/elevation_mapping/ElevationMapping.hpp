@@ -326,7 +326,7 @@ class ElevationMapping {
   bool updatesEnabled_;
 
   //! Time of the last point cloud update.
-  rclcpp::Time lastPointCloudUpdateTime_;
+  rclcpp::Time lastPointCloudUpdateTime_{0, 0, RCL_ROS_TIME};
 
   //! Timer for the robot motion update.
   rclcpp::TimerBase::SharedPtr mapUpdateTimer_;
