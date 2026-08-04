@@ -22,6 +22,9 @@ static `base_link → lidar_link`. Super-LIO publishes identity `map → odom` b
 the first LiDAR update, then updates only that correction for full SLAM or
 relocation; it owns dynamic `odom → imu`. `autonomy_light` publishes static
 `imu → base_link` and `base_link → lidar_link`. No `world` frame exists.
+Before the first odometry or valid terrain cell, `autonomy_light` still publishes
+dynamic `base_link → base_link_gravity` from the configured initial ground
+distance; the measured local floor replaces that fallback as soon as it exists.
 Mapping uses Super-LIO keyframes, Scan Context candidate
 search, GICP verification and an iSAM2 pose graph; its corrected `map → odom →
 imu` TF remains continuously broadcast. Saved-map localization keeps local LIO
@@ -66,6 +69,14 @@ a high-variance ground posterior. It publishes as `valid=1` so the controller
 receives a finite initial value, while its quality variance explicitly marks it
 as low confidence. The first real observation bypasses the innovation gate and
 replaces that prior through the usual Kalman update.
+
+## Live 2D debug view
+
+`./launch.sh --vis` starts a live OpenCV view of the numeric `HeightMap.data`
+grid only. The monitor keeps just the newest best-effort sample and targets 50
+Hz, so it does not display a queued, stale terrain frame after robot motion.
+The overlay reports both received `source` Hz and rendered `display` Hz.
+Override the input with `AUTONOMY_LIGHT_VIS_TOPIC`.
 
 ## Floor tracking
 

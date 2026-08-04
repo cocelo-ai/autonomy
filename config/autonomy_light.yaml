@@ -45,7 +45,7 @@ autonomy_light:
     # cyclone_dds publishes only core_dds::HeightMap { sequence<float> data; }.
     # both is useful during migration and validation.
     height_map_output:
-      transport: "ros2"             # ros2 | cyclone_dds | both
+      transport: "both"             # ros2 | cyclone_dds | both
       cyclone_dds:
         domain_id: 1
         topic: "height_map"
@@ -133,7 +133,7 @@ autonomy_light:
     start_super_lio: true
     # ROS message aggregation rate. It does not change the LiDAR's physical
     # sampling rate; 50 Hz yields shorter clouds and lower algorithmic latency.
-    livox_publish_freq: 50.0
+    livox_publish_freq: 10.0
     child_use_sim_time: false
 
     child_shutdown_grace_sec: 0.8

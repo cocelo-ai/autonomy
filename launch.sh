@@ -183,7 +183,9 @@ fi
 RUNTIME_PID="$!"
 
 if [[ "${VIS}" == "true" ]]; then
-  "${SCRIPT_DIR}/scripts/height_map_vis.py" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}" &
+  VIS_SCRIPT="${SCRIPT_DIR}/scripts/height_map_vis.py"
+  [[ -x "${VIS_SCRIPT}" ]] || VIS_SCRIPT="${SCRIPT_DIR}/height_map_vis.py"
+  "${VIS_SCRIPT}" --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}" &
   VIS_PID="$!"
 fi
 if [[ "${RVIZ}" == "true" ]]; then

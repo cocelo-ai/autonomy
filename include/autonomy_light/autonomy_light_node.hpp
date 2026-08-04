@@ -49,6 +49,8 @@ private:
   void publishMap();
   void publishHeight(const HeightGrid &grid);
   void publishPose(const nav_msgs::msg::Odometry &odom, double floor_z);
+  void publishGravityTransform(const nav_msgs::msg::Odometry &odom, double floor_z);
+  void publishInitialGravityTransform();
   void publishStaticTransform();
   void saveMap();
   [[nodiscard]] bool publishesRosHeight() const;

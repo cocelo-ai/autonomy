@@ -83,6 +83,11 @@
   <p>At startup, only the robot footprint receives a flat, high-variance ground prior because its
   underside is occluded. Its first real observation bypasses the innovation gate and replaces it by
   the normal Kalman update; the quality variance exposes the prior's low confidence.</p>
+  <p>The same initial ground distance keeps <code>base_link → base_link_gravity</code> present before
+  a valid terrain cell exists. Once available, the measured local floor replaces this fallback.</p>
+  <p><code>./launch.sh --vis</code> starts a live OpenCV 2D view of only the numeric
+  <code>HeightMap.data</code> grid. It keeps the newest sample only and targets 50 Hz, so the image
+  follows robot motion instead of rendering a queued stale frame.</p>
 
   <h2>Transport selection</h2>
   <p><code>height_map_output.transport</code> selects <code>ros2</code>,

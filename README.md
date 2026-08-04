@@ -87,6 +87,17 @@ Huber 강건 평면을 맞춰 로봇 원점 높이를 구하고, 유효 셀이 �
 25°를 넘으면 기존 20th percentile로 되돌아간다. 따라서 한 개의 낮은 depth outlier나
 drop-off가 height map 전체 기준을 급격히 내리지 않는다.
 
+### Live 2D debug view
+
+```bash
+./launch.sh --vis
+```
+
+`--vis`는 실제 `/autonomy_light/height_map_data`의 숫자 grid 한 장만 50 Hz로 표시한다.
+GUI가 잠시 느려도 keep-last 1로 최신 frame만 그려 stale terrain을 표시하지 않는다. 창의
+`source`와 `display` Hz가 모두 50에 가까운지 확인한다. `q` 또는 `Esc`로 viewer만
+종료할 수 있으며, 사용자 topic은 `AUTONOMY_LIGHT_VIS_TOPIC`으로 지정한다.
+
 ### Optional D435/D435i merge
 
 Use the standard realsense2_camera PointCloud2 output; the D435/D435i IMU is

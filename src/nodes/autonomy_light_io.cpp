@@ -162,7 +162,8 @@ void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message)
       path_.poses.erase(path_.poses.begin(), path_.poses.begin() + 1'000);
     }
   }
-  publishPose(latest_odom_, latest_odom_.pose.pose.position.z);
+  publishPose(latest_odom_, latest_odom_.pose.pose.position.z -
+                              mapper_config_.rolling_initial_prior_ground_distance_m);
 }
 
 void AutonomyLightNode::onRegisteredCloud(
@@ -208,7 +209,13 @@ void AutonomyLightNode::onTimer() {
                      ":cloud=" + std::to_string(cloud_count_);
   }
   heartbeat_pub_->publish(heartbeat);
-  if (mapping_only_ || !has_odom_) {
+  if (!has_odom_) {
+    publishInitialGravityTransform();
+    return;
+  }
+  if (mapping_only_) {
+    publishGravityTransform(latest_odom_, latest_odom_.pose.pose.position.z -
+                            mapper_config_.rolling_initial_prior_ground_distance_m);
     return;
   }
   std_msgs::msg::Header header;
@@ -221,6 +228,9 @@ void AutonomyLightNode::onTimer() {
   if (observed) {
     publishHeight(grid);
     publishPose(latest_odom_, grid.floor_z);
+  } else {
+    publishGravityTransform(latest_odom_, latest_odom_.pose.pose.position.z -
+                            mapper_config_.rolling_initial_prior_ground_distance_m);
   }
 }
 
@@ -317,6 +327,11 @@ void AutonomyLightNode::publishPose(const nav_msgs::msg::Odometry &odom,
                                     const double floor_z) {
   odom_pub_->publish(odom);
   path_pub_->publish(path_);
+  publishGravityTransform(odom, floor_z);
+}
+
+void AutonomyLightNode::publishGravityTransform(const nav_msgs::msg::Odometry &odom,
+                                                 const double floor_z) {
   if (height_map_frame_ == target_frame_) {
     return;
   }
@@ -345,6 +360,20 @@ void AutonomyLightNode::publishPose(const nav_msgs::msg::Odometry &odom,
   base_height.normalize();
   height.transform.rotation = tf2::toMsg(base_height);
   tf_broadcaster_->sendTransform(height);
+}
+
+void AutonomyLightNode::publishInitialGravityTransform() {
+  if (height_map_frame_ == target_frame_) {
+    return;
+  }
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = now();
+  transform.header.frame_id = target_frame_;
+  transform.child_frame_id = height_map_frame_;
+  transform.transform.translation.z = -
+      mapper_config_.rolling_initial_prior_ground_distance_m;
+  transform.transform.rotation.w = 1.0;
+  tf_broadcaster_->sendTransform(transform);
 }
 
 } // namespace autonomy_light
