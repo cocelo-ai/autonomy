@@ -4,13 +4,19 @@ autonomy_light:
     # let launch.sh export this value.
     ros_domain_id: 0
 
-    # Super-LIO publishes LiDAR poses; autonomy_light publishes base_link.
+    # Super-LIO publishes the IMU pose. Both transforms below use T_parent_child:
+    # p_parent = R_parent_child * p_child + t_parent_child.
     target_frame: "base_link"
     height_map_frame: "base_link_gravity"
+    imu_frame: "imu"              # Super-LIO /lio/odom child frame
     lidar_frame: "lidar_link"
     odom_frame: "odom"             # becomes map when saved_map_file is set
     target_to_lidar_xyz: [0.234, 0.0, 0.077]
     target_to_lidar_rpy: [0.0, 0.7854, 0.0]
+    # Must be the calibrated lio.extrinsic.lidar_imu. The launcher passes this
+    # same value to Super-LIO, so base_link conversion cannot drift from LIO.
+    imu_from_lidar_xyz: [-0.011, -0.02329, 0.04412]
+    imu_from_lidar_rpy: [0.0, 0.0, 0.0]
 
     # Robot-centric, gravity-aligned output grid.
     elevation_resolution: 0.10
@@ -21,6 +27,11 @@ autonomy_light:
     publish_rate_hz: 50.0
     height_origin:
       floor_radius: 0.60
+      # Robust local ground plane; lower-percentile remains the fallback.
+      plane:
+        min_samples: 6
+        max_slope_deg: 25.0
+        huber_delta_m: 0.04
     height_map_distance:
       reference_height: 0.48
       min: 0.0
@@ -53,6 +64,27 @@ autonomy_light:
       max_variance: 0.04
       outlier_variance: 0.0025
       mahalanobis_threshold: 3.0
+      # All values are measurement/calibration standard deviations after a
+      # real sensor-mount calibration; tune them from logged residuals.
+      sensor:
+        lidar:
+          extrinsic_translation_std_m: 0.005
+          extrinsic_rotation_std_deg: 0.5
+        d435:
+          base_variance: 0.0016
+          range_variance_factor: 0.002
+          extrinsic_translation_std_m: 0.015
+          extrinsic_rotation_std_deg: 1.0
+      # Super-LIO's 6x6 ESKF covariance is used at the cloud timestamp.
+      # Floors prevent a numerically overconfident estimator; limits reject a
+      # cloud whose uncertain pose would smear terrain across the control grid.
+      localization:
+        odom_sync_tolerance_sec: 0.03
+        min_position_std_m: 0.015
+        min_orientation_std_deg: 0.5
+        max_position_std_m: 0.25
+        max_orientation_std_deg: 10.0
+        splat_max_cells: 2
     algorithm:
       min_z:
         min_points_per_cell: 2

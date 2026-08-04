@@ -3,6 +3,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -26,8 +27,9 @@ private:
   void onD435(Cloud::ConstSharedPtr message);
   void onLidar(Cloud::ConstSharedPtr message);
   void appendD435(const Cloud& camera, const std::string& target_frame,
-                  PclCloud& merged);
-  void publish(const PclCloud& cloud, const std_msgs::msg::Header& header);
+                  PclCloud& merged, std::vector<std::uint8_t>& sensor_ids);
+  void publish(const PclCloud& cloud, const std::vector<std::uint8_t>& sensor_ids,
+               const std_msgs::msg::Header& header);
 
   std::string lidar_cloud_topic_{"/lio/cloud_world"};
   std::string d435_cloud_topic_{"/camera/camera/depth/color/points"};

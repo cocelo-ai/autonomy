@@ -4,6 +4,20 @@
 
 namespace autonomy_light {
 
+namespace {
+
+std::string rosArray(const std::vector<double> &values) {
+  std::string result{"["};
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    char value[32];
+    std::snprintf(value, sizeof(value), "%.17g", values[index]);
+    result += (index == 0U ? "" : ",") + std::string(value);
+  }
+  return result + "]";
+}
+
+} // namespace
+
 AutonomyLightNode::AutonomyLightNode() : Node("autonomy_light") {
   loadParameters();
   loadSavedMap();
@@ -36,14 +50,20 @@ void AutonomyLightNode::requestFastShutdown() {
 void AutonomyLightNode::loadParameters() {
   target_frame_ = declare_parameter<std::string>("target_frame", target_frame_);
   height_map_frame_ = declare_parameter<std::string>("height_map_frame", height_map_frame_);
+  imu_frame_ = declare_parameter<std::string>("imu_frame", imu_frame_);
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", lidar_frame_);
   global_frame_ = declare_parameter<std::string>("odom_frame", global_frame_);
   target_to_lidar_xyz_ = declare_parameter<std::vector<double>>(
       "target_to_lidar_xyz", target_to_lidar_xyz_);
   target_to_lidar_rpy_ = declare_parameter<std::vector<double>>(
       "target_to_lidar_rpy", target_to_lidar_rpy_);
-  if (target_to_lidar_xyz_.size() != 3U || target_to_lidar_rpy_.size() != 3U) {
-    throw std::invalid_argument("target_to_lidar_xyz/rpy must each contain 3 values");
+  imu_from_lidar_xyz_ = declare_parameter<std::vector<double>>(
+      "imu_from_lidar_xyz", imu_from_lidar_xyz_);
+  imu_from_lidar_rpy_ = declare_parameter<std::vector<double>>(
+      "imu_from_lidar_rpy", imu_from_lidar_rpy_);
+  if (target_to_lidar_xyz_.size() != 3U || target_to_lidar_rpy_.size() != 3U ||
+      imu_from_lidar_xyz_.size() != 3U || imu_from_lidar_rpy_.size() != 3U) {
+    throw std::invalid_argument("all *_xyz and *_rpy extrinsics must contain 3 values");
   }
   target_to_lidar_translation_ = tf2::Vector3(target_to_lidar_xyz_[0],
                                                 target_to_lidar_xyz_[1],
@@ -51,6 +71,18 @@ void AutonomyLightNode::loadParameters() {
   target_to_lidar_rotation_.setRPY(target_to_lidar_rpy_[0], target_to_lidar_rpy_[1],
                                    target_to_lidar_rpy_[2]);
   target_to_lidar_rotation_.normalize();
+  imu_from_lidar_translation_ = tf2::Vector3(imu_from_lidar_xyz_[0],
+                                               imu_from_lidar_xyz_[1],
+                                               imu_from_lidar_xyz_[2]);
+  imu_from_lidar_rotation_.setRPY(imu_from_lidar_rpy_[0], imu_from_lidar_rpy_[1],
+                                  imu_from_lidar_rpy_[2]);
+  imu_from_lidar_rotation_.normalize();
+  const tf2::Quaternion lidar_from_imu = imu_from_lidar_rotation_.inverse();
+  target_to_imu_rotation_ = target_to_lidar_rotation_ * lidar_from_imu;
+  target_to_imu_rotation_.normalize();
+  target_to_imu_translation_ = target_to_lidar_translation_ + tf2::quatRotate(
+      target_to_lidar_rotation_, tf2::quatRotate(lidar_from_imu,
+                                                   -imu_from_lidar_translation_));
 
   grid_spec_.resolution = std::max(0.01, declare_parameter<double>(
       "elevation_resolution", grid_spec_.resolution));
@@ -93,8 +125,49 @@ void AutonomyLightNode::loadParameters() {
       "rolling_elevation.outlier_variance", mapper_config_.rolling_outlier_variance));
   mapper_config_.rolling_mahalanobis_threshold = std::max(0.1, declare_parameter<double>(
       "rolling_elevation.mahalanobis_threshold", mapper_config_.rolling_mahalanobis_threshold));
+  mapper_config_.d435_base_variance = std::max(1.0e-6, declare_parameter<double>(
+      "rolling_elevation.sensor.d435.base_variance", mapper_config_.d435_base_variance));
+  mapper_config_.d435_range_variance_factor = std::max(0.0, declare_parameter<double>(
+      "rolling_elevation.sensor.d435.range_variance_factor",
+      mapper_config_.d435_range_variance_factor));
+  mapper_config_.lidar_extrinsic_translation_std_m = std::max(0.0,
+      declare_parameter<double>("rolling_elevation.sensor.lidar.extrinsic_translation_std_m",
+                                mapper_config_.lidar_extrinsic_translation_std_m));
+  mapper_config_.lidar_extrinsic_rotation_std_deg = std::max(0.0,
+      declare_parameter<double>("rolling_elevation.sensor.lidar.extrinsic_rotation_std_deg",
+                                mapper_config_.lidar_extrinsic_rotation_std_deg));
+  mapper_config_.d435_extrinsic_translation_std_m = std::max(0.0,
+      declare_parameter<double>("rolling_elevation.sensor.d435.extrinsic_translation_std_m",
+                                mapper_config_.d435_extrinsic_translation_std_m));
+  mapper_config_.d435_extrinsic_rotation_std_deg = std::max(0.0,
+      declare_parameter<double>("rolling_elevation.sensor.d435.extrinsic_rotation_std_deg",
+                                mapper_config_.d435_extrinsic_rotation_std_deg));
+  mapper_config_.pose_min_position_std_m = std::max(0.001, declare_parameter<double>(
+      "rolling_elevation.localization.min_position_std_m",
+      mapper_config_.pose_min_position_std_m));
+  mapper_config_.pose_min_orientation_std_deg = std::max(0.01, declare_parameter<double>(
+      "rolling_elevation.localization.min_orientation_std_deg",
+      mapper_config_.pose_min_orientation_std_deg));
+  mapper_config_.pose_max_position_std_m = std::max(0.001, declare_parameter<double>(
+      "rolling_elevation.localization.max_position_std_m",
+      mapper_config_.pose_max_position_std_m));
+  mapper_config_.pose_max_orientation_std_deg = std::max(0.01, declare_parameter<double>(
+      "rolling_elevation.localization.max_orientation_std_deg",
+      mapper_config_.pose_max_orientation_std_deg));
+  mapper_config_.pose_splat_max_cells = static_cast<int>(std::clamp<std::int64_t>(
+      declare_parameter<std::int64_t>("rolling_elevation.localization.splat_max_cells",
+                                      mapper_config_.pose_splat_max_cells),
+      0, 4));
   mapper_config_.floor_radius_m = std::max(0.1, declare_parameter<double>(
       "height_origin.floor_radius", mapper_config_.floor_radius_m));
+  mapper_config_.floor_plane_min_samples = static_cast<int>(std::max<std::int64_t>(
+      3, declare_parameter<std::int64_t>("height_origin.plane.min_samples",
+                                          mapper_config_.floor_plane_min_samples)));
+  mapper_config_.floor_plane_max_slope_deg = std::clamp(declare_parameter<double>(
+      "height_origin.plane.max_slope_deg", mapper_config_.floor_plane_max_slope_deg),
+      0.0, 85.0);
+  mapper_config_.floor_plane_huber_delta_m = std::max(0.001, declare_parameter<double>(
+      "height_origin.plane.huber_delta_m", mapper_config_.floor_plane_huber_delta_m));
   mapper_.configure(mapper_config_);
 
   reference_height_ = declare_parameter<double>("height_map_distance.reference_height", reference_height_);
@@ -131,6 +204,8 @@ void AutonomyLightNode::loadParameters() {
   super_lio_odom_topic_ = declare_parameter<std::string>("super_lio_odom_topic", super_lio_odom_topic_);
   super_lio_registered_topic_ = declare_parameter<std::string>(
       "super_lio_registered_topic", super_lio_registered_topic_);
+  odom_sync_tolerance_sec_ = std::max(0.0, declare_parameter<double>(
+      "rolling_elevation.localization.odom_sync_tolerance_sec", odom_sync_tolerance_sec_));
   rolling_merge_enabled_ = declare_parameter<bool>("rolling_merge.enabled", rolling_merge_enabled_);
   rolling_merge_output_topic_ = declare_parameter<std::string>(
       "rolling_merge.output_topic", rolling_merge_output_topic_);
@@ -260,12 +335,20 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
       : super_lio_config_file_;
   const bool relocation = !saved_map_file_.empty();
   const bool full_slam = mapping_only_ && !mapping_pcd_file_.empty();
+  const tf2::Matrix3x3 lidar_in_imu(imu_from_lidar_rotation_);
+  const std::vector<double> lidar_imu{
+      imu_from_lidar_translation_.x(), imu_from_lidar_translation_.y(),
+      imu_from_lidar_translation_.z(),
+      lidar_in_imu[0][0], lidar_in_imu[0][1], lidar_in_imu[0][2],
+      lidar_in_imu[1][0], lidar_in_imu[1][1], lidar_in_imu[1][2],
+      lidar_in_imu[2][0], lidar_in_imu[2][1], lidar_in_imu[2][2]};
   std::vector<std::string> command{
       "ros2", "run", "super_lio", relocation ? "relocation_node" : "super_lio_node",
       "--ros-args", "--params-file", config,
       "-p", "lio.ros.lidar_topic:=" + raw_lidar_topic_,
       "-p", "lio.ros.imu_topic:=" + raw_imu_topic_,
       "-p", "lio.ros.global_frame:=" + global_frame_,
+      "-p", "lio.extrinsic.lidar_imu:=" + rosArray(lidar_imu),
       "-p", "lio.sensor.lidar_type:=1",
       "-p", "lio.output.map:=true",
       "-p", "lio.output.dense:=true",
@@ -289,18 +372,35 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
 }
 
 void AutonomyLightNode::publishStaticTransform() {
-  if (target_frame_ == lidar_frame_) {
-    return;
+  std::vector<geometry_msgs::msg::TransformStamped> transforms;
+  if (imu_frame_ != target_frame_) {
+    geometry_msgs::msg::TransformStamped imu_to_target;
+    imu_to_target.header.stamp = now();
+    imu_to_target.header.frame_id = imu_frame_;
+    imu_to_target.child_frame_id = target_frame_;
+    const tf2::Quaternion rotation = target_to_imu_rotation_.inverse();
+    const tf2::Vector3 translation = tf2::quatRotate(
+        rotation, -target_to_imu_translation_);
+    imu_to_target.transform.translation.x = translation.x();
+    imu_to_target.transform.translation.y = translation.y();
+    imu_to_target.transform.translation.z = translation.z();
+    imu_to_target.transform.rotation = tf2::toMsg(rotation);
+    transforms.push_back(std::move(imu_to_target));
   }
-  geometry_msgs::msg::TransformStamped transform;
-  transform.header.stamp = now();
-  transform.header.frame_id = target_frame_;
-  transform.child_frame_id = lidar_frame_;
-  transform.transform.translation.x = target_to_lidar_translation_.x();
-  transform.transform.translation.y = target_to_lidar_translation_.y();
-  transform.transform.translation.z = target_to_lidar_translation_.z();
-  transform.transform.rotation = tf2::toMsg(target_to_lidar_rotation_);
-  static_tf_broadcaster_->sendTransform(transform);
+  if (target_frame_ != lidar_frame_) {
+    geometry_msgs::msg::TransformStamped target_to_lidar;
+    target_to_lidar.header.stamp = now();
+    target_to_lidar.header.frame_id = target_frame_;
+    target_to_lidar.child_frame_id = lidar_frame_;
+    target_to_lidar.transform.translation.x = target_to_lidar_translation_.x();
+    target_to_lidar.transform.translation.y = target_to_lidar_translation_.y();
+    target_to_lidar.transform.translation.z = target_to_lidar_translation_.z();
+    target_to_lidar.transform.rotation = tf2::toMsg(target_to_lidar_rotation_);
+    transforms.push_back(std::move(target_to_lidar));
+  }
+  if (!transforms.empty()) {
+    static_tf_broadcaster_->sendTransform(transforms);
+  }
 }
 
 void AutonomyLightNode::saveMap() {

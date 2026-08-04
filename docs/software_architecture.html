@@ -31,7 +31,7 @@
   <table>
     <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
     <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
-    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, Scan Context + GICP + iSAM2 full SLAM, saved-map relocation, and continuous <code>map → odom → imu</code> TF.</td></tr>
+    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry with ESKF pose covariance, Scan Context + GICP + iSAM2 full SLAM, saved-map relocation, and continuous <code>map → odom → imu</code> TF.</td></tr>
     <tr><td><code>rolling_cloud_merge</code></td><td>this package, optional</td><td>Synchronizes one D435/D435i PointCloud2 to a LiDAR cloud, transforms it into <code>odom|map</code>, and voxel filters it.</td></tr>
     <tr><td><code>autonomy_light</code></td><td>this package</td><td>Base pose/TF, rolling or global elevation map, quality output, live PCD and PCD save.</td></tr>
   </table>
@@ -39,7 +39,7 @@
   <h2>Data and TF contract</h2>
   <table>
     <tr><th>Direction</th><th>Topic</th><th>Meaning</th></tr>
-    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO LiDAR pose; converted to <code>base_link</code>.</td></tr>
+    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO IMU pose and 6×6 ESKF covariance; exactly converted to <code>base_link</code>.</td></tr>
     <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered cloud in the current global frame.</td></tr>
     <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>One D435/D435i cloud; used only by the merge node.</td></tr>
     <tr><td>intermediate</td><td><code>/autonomy_light/rolling_cloud</code></td><td>Time-aligned, global-frame LiDAR+D435 cloud for rolling elevation.</td></tr>
@@ -48,12 +48,18 @@
     <tr><td>output</td><td><code>/autonomy_light/live_map</code></td><td>Sparse voxel PCD for RViz and map saving.</td></tr>
     <tr><td>optional output</td><td><code>height_map</code></td><td>Direct Cyclone DDS <code>core_dds::HeightMap</code> payload for a non-ROS peer.</td></tr>
   </table>
-  <p>TF is <code>odom|map → base_link → base_link_gravity</code> and static
-  <code>base_link → lidar_link</code>. Normal operation uses <code>odom</code>; a saved map runs
+  <p>TF is <code>odom|map → imu → base_link → base_link_gravity</code>, with static
+  <code>imu → base_link → lidar_link</code>. Super-LIO owns the dynamic global-to-IMU link;
+  this runtime owns the two physical static links. Normal operation uses <code>odom</code>; a saved map runs
   Super-LIO <code>relocation_node</code> and uses <code>map</code>. After its NDT→ICP registration
   succeeds, Super-LIO continuously publishes <code>map → odom → imu</code>; the transform is only
   recalculated at the configured low global-registration rate. Mapping runs the pose graph in
   Super-LIO. There is no <code>world</code> frame or duplicate SLAM backend in this package.</p>
+  <p><code>/lio/odom</code> is the IMU state. The runtime composes
+  <code>T_base_imu = T_base_lidar · inverse(T_imu_lidar)</code> from
+  <code>target_to_lidar_*</code> and <code>imu_from_lidar_*</code>, then applies
+  <code>T_global_base = T_global_imu · inverse(T_base_imu)</code>. Its managed Super-LIO
+  process receives the same <code>T_imu_lidar</code> calibration.</p>
 
   <h2>Elevation source selection</h2>
   <table>
@@ -66,6 +72,14 @@
   <p>With <code>rolling_merge.enabled: true</code>, the launcher starts the optional merge node.
   It accepts only a D435 sample within the configured synchronization window, uses TF at that camera
   timestamp, and passes a LiDAR-only cloud through if TF or a matching camera sample is unavailable.</p>
+  <p>The floor origin uses a local <code>z=ax+by+c</code> ground-plane fit with Huber residual
+  weights; <code>c</code> is the floor directly below <code>base_link</code>. It rejects fits with
+  too few cells or a slope above the configured limit, then falls back to the nearby 20th-percentile
+  ground height. This is robust to isolated low depth returns while retaining slope tracking.</p>
+  <p>Each rolling cloud is matched to its timestamped odometry covariance. Sensor range and mounting
+  calibration are added to the Jacobian-projected pose covariance; XY uncertainty splats the point
+  across nearby cells. Over-limit uncertainty rejects the cloud. The merge node keeps a
+  <code>sensor_id</code> field so LiDAR and D435 retain independent measurement models.</p>
 
   <h2>Transport selection</h2>
   <p><code>height_map_output.transport</code> selects <code>ros2</code>,

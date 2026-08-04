@@ -62,7 +62,7 @@
 <title>lio&#45;&gt;runtime</title>
 <path fill="none" stroke="#4d6b82" d="M540.19,-104.79C679.04,-108.15 949.19,-111.45 1178,-95 1181.44,-94.75 1184.92,-94.48 1188.43,-94.17"/>
 <polygon fill="#4d6b82" stroke="#4d6b82" points="1188.92,-96.59 1195.67,-93.52 1188.48,-91.71 1188.92,-96.59"/>
-<text text-anchor="middle" x="842" y="-155.8" font-family="Arial" font-size="14.00">/lio/odom</text>
+<text text-anchor="middle" x="842" y="-155.8" font-family="Arial" font-size="14.00">/lio/odom (IMU pose + covariance)</text>
 <text text-anchor="middle" x="842" y="-140.8" font-family="Arial" font-size="14.00">/lio/cloud_world</text>
 <text text-anchor="middle" x="842" y="-125.8" font-family="Arial" font-size="14.00">otherwise</text>
 <text text-anchor="middle" x="842" y="-110.8" font-family="Arial" font-size="14.00">full SLAM / relocation: map → odom → imu TF</text>

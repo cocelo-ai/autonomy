@@ -1,5 +1,7 @@
 #include "autonomy_light/autonomy_light_node.hpp"
 
+#include <Eigen/Dense>
+
 namespace autonomy_light {
 
 tf2::Quaternion AutonomyLightNode::yawOnly(
@@ -21,33 +23,55 @@ tf2::Quaternion AutonomyLightNode::yawOnly(
 }
 
 nav_msgs::msg::Odometry AutonomyLightNode::baseOdom(
-    const nav_msgs::msg::Odometry &lidar_odom) const {
-  nav_msgs::msg::Odometry base = lidar_odom;
+    const nav_msgs::msg::Odometry &imu_odom) const {
+  nav_msgs::msg::Odometry base = imu_odom;
   base.header.frame_id = global_frame_;
   base.child_frame_id = target_frame_;
-  if (target_frame_ == lidar_frame_) {
-    return base;
+  tf2::Quaternion map_imu;
+  tf2::fromMsg(imu_odom.pose.pose.orientation, map_imu);
+  if (map_imu.length2() < 1.0e-12) {
+    map_imu = tf2::Quaternion::getIdentity();
   }
-  tf2::Quaternion map_lidar;
-  tf2::fromMsg(lidar_odom.pose.pose.orientation, map_lidar);
-  if (map_lidar.length2() < 1.0e-12) {
-    map_lidar = tf2::Quaternion::getIdentity();
-  }
-  map_lidar.normalize();
-  const tf2::Quaternion lidar_base = target_to_lidar_rotation_.inverse();
-  const tf2::Vector3 lidar_to_base = tf2::quatRotate(
-      lidar_base, -target_to_lidar_translation_);
-  const tf2::Vector3 lidar_position(lidar_odom.pose.pose.position.x,
-                                    lidar_odom.pose.pose.position.y,
-                                    lidar_odom.pose.pose.position.z);
-  const tf2::Vector3 base_position = lidar_position +
-      tf2::quatRotate(map_lidar, lidar_to_base);
-  tf2::Quaternion map_base = map_lidar * lidar_base;
+  map_imu.normalize();
+  const tf2::Quaternion imu_target = target_to_imu_rotation_.inverse();
+  const tf2::Vector3 imu_to_target = tf2::quatRotate(
+      imu_target, -target_to_imu_translation_);
+  const tf2::Vector3 imu_position(imu_odom.pose.pose.position.x,
+                                  imu_odom.pose.pose.position.y,
+                                  imu_odom.pose.pose.position.z);
+  const tf2::Vector3 base_position = imu_position +
+      tf2::quatRotate(map_imu, imu_to_target);
+  tf2::Quaternion map_base = map_imu * imu_target;
   map_base.normalize();
   base.pose.pose.position.x = base_position.x();
   base.pose.pose.position.y = base_position.y();
   base.pose.pose.position.z = base_position.z();
   base.pose.pose.orientation = tf2::toMsg(map_base);
+  Eigen::Matrix<double, 6, 6> covariance = Eigen::Matrix<double, 6, 6>::Zero();
+  bool has_covariance = false;
+  for (int row = 0; row < 6; ++row) {
+    for (int col = 0; col < 6; ++col) {
+      const double value = imu_odom.pose.covariance[6 * row + col];
+      covariance(row, col) = value;
+      has_covariance = has_covariance || (row == col && value > 0.0);
+    }
+  }
+  if (has_covariance && covariance.allFinite()) {
+    const tf2::Vector3 offset = tf2::quatRotate(map_imu, imu_to_target);
+    Eigen::Matrix3d skew;
+    skew << 0.0, -offset.z(), offset.y(),
+            offset.z(), 0.0, -offset.x(),
+            -offset.y(), offset.x(), 0.0;
+    Eigen::Matrix<double, 6, 6> jacobian = Eigen::Matrix<double, 6, 6>::Identity();
+    jacobian.block<3, 3>(0, 3) = -skew;
+    covariance = jacobian * covariance * jacobian.transpose();
+    covariance = 0.5 * (covariance + covariance.transpose());
+    for (int row = 0; row < 6; ++row) {
+      for (int col = 0; col < 6; ++col) {
+        base.pose.covariance[6 * row + col] = covariance(row, col);
+      }
+    }
+  }
   return base;
 }
 
@@ -60,7 +84,54 @@ Pose2_5D AutonomyLightNode::poseOf(const nav_msgs::msg::Odometry &odom) const {
   pose.y = odom.pose.pose.position.y;
   pose.z = odom.pose.pose.position.z;
   tf2::Matrix3x3(yaw).getRPY(roll, pitch, pose.yaw);
+  pose.has_covariance = true;
+  for (std::size_t index = 0; index < pose.covariance.size(); ++index) {
+    pose.covariance[index] = odom.pose.covariance[index];
+    pose.has_covariance = pose.has_covariance && std::isfinite(pose.covariance[index]);
+  }
+  pose.has_covariance = pose.has_covariance &&
+      (pose.covariance[0] > 0.0 || pose.covariance[7] > 0.0 ||
+       pose.covariance[14] > 0.0 || pose.covariance[21] > 0.0 ||
+       pose.covariance[28] > 0.0 || pose.covariance[35] > 0.0);
   return pose;
+}
+
+const nav_msgs::msg::Odometry *AutonomyLightNode::odomAt(
+    const rclcpp::Time &stamp) const {
+  const nav_msgs::msg::Odometry *closest = nullptr;
+  double closest_delta = std::numeric_limits<double>::infinity();
+  for (const auto &odom : odom_history_) {
+    const double delta = std::abs((rclcpp::Time(odom.header.stamp) - stamp).seconds());
+    if (delta < closest_delta) {
+      closest = &odom;
+      closest_delta = delta;
+    }
+  }
+  return closest_delta <= odom_sync_tolerance_sec_ ? closest : nullptr;
+}
+
+PointObservations AutonomyLightNode::observationsFrom(
+    const sensor_msgs::msg::PointCloud2 &message) const {
+  PclCloud cloud;
+  pcl::fromROSMsg(message, cloud);
+  const auto source_field = std::find_if(message.fields.begin(), message.fields.end(),
+      [](const sensor_msgs::msg::PointField &field) {
+        return field.name == "sensor_id" && field.datatype == sensor_msgs::msg::PointField::UINT8;
+      });
+  PointObservations observations;
+  observations.reserve(cloud.size());
+  if (source_field == message.fields.end()) {
+    for (const auto &point : cloud.points) {
+      observations.push_back({point.x, point.y, point.z, 0U});
+    }
+    return observations;
+  }
+  sensor_msgs::PointCloud2ConstIterator<std::uint8_t> source(message, "sensor_id");
+  for (const auto &point : cloud.points) {
+    observations.push_back({point.x, point.y, point.z, *source});
+    ++source;
+  }
+  return observations;
 }
 
 void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message) {
@@ -72,6 +143,10 @@ void AutonomyLightNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr message)
     latest_odom_.header.stamp = now();
   }
   latest_odom_.header.frame_id = global_frame_;
+  odom_history_.push_back(latest_odom_);
+  while (odom_history_.size() > 64U) {
+    odom_history_.pop_front();
+  }
   has_odom_ = true;
   ++odom_count_;
 
@@ -95,19 +170,24 @@ void AutonomyLightNode::onRegisteredCloud(
   if (!message || shutdown_requested_ || !has_odom_) {
     return;
   }
-  PclCloud cloud;
   try {
-    pcl::fromROSMsg(*message, cloud);
+    const rclcpp::Time stamp = message->header.stamp.sec == 0 &&
+                                      message->header.stamp.nanosec == 0
+                                  ? now()
+                                  : rclcpp::Time(message->header.stamp);
+    const auto *odom = odomAt(stamp);
+    if (!odom) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "Skipping cloud without an odometry sample within %.3fs",
+                           odom_sync_tolerance_sec_);
+      return;
+    }
+    mapper_.integrate(observationsFrom(*message), poseOf(*odom), stamp.seconds());
   } catch (const std::exception &error) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Cannot read Super-LIO cloud: %s", error.what());
     return;
   }
-  const rclcpp::Time stamp = message->header.stamp.sec == 0 &&
-                                      message->header.stamp.nanosec == 0
-                                  ? now()
-                                  : rclcpp::Time(message->header.stamp);
-  mapper_.integrate(cloud, poseOf(latest_odom_), stamp.seconds());
   ++cloud_count_;
 }
 
@@ -237,15 +317,6 @@ void AutonomyLightNode::publishPose(const nav_msgs::msg::Odometry &odom,
                                     const double floor_z) {
   odom_pub_->publish(odom);
   path_pub_->publish(path_);
-  geometry_msgs::msg::TransformStamped base;
-  base.header = odom.header;
-  base.header.frame_id = global_frame_;
-  base.child_frame_id = target_frame_;
-  base.transform.translation.x = odom.pose.pose.position.x;
-  base.transform.translation.y = odom.pose.pose.position.y;
-  base.transform.translation.z = odom.pose.pose.position.z;
-  base.transform.rotation = odom.pose.pose.orientation;
-  tf_broadcaster_->sendTransform(base);
   if (height_map_frame_ == target_frame_) {
     return;
   }

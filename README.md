@@ -43,6 +43,11 @@ source install/setup.bash
 LiDAR 출력마다 `map → odom → imu`로 계속 broadcast하므로 TF 체인이 끊기지 않는다.
 `/lio/odom`과 `/lio/cloud_world`는 `map` 좌표를 사용한다.
 
+`/lio/odom`의 child frame은 LiDAR가 아니라 `imu`다. 따라서
+`target_to_lidar_*`와 `imu_from_lidar_*`를 모두 실제 캘리브레이션 값으로 설정해야
+한다. 런타임이 Super-LIO를 시작할 때에는 후자를 `lio.extrinsic.lidar_imu`에도 같은
+값으로 전달한다.
+
 ## Height-map source
 
 ```yaml
@@ -58,6 +63,23 @@ height_map:
 두 모드 모두 `/autonomy_light/height_map_quality`의 `valid`, `variance`, `age`를
 발행한다. `valid=0`인 `unknown` 값은 평지 관측이 아니므로 Isaac Lab 정책에서는
 별도 observation으로 사용해야 한다.
+
+### Robot-centric uncertainty
+
+Rolling은 cloud timestamp와 일치하는 Super-LIO odometry만 사용한다. Super-LIO의
+ESKF 6×6 pose covariance, LiDAR/D435 거리 모델, 각 센서 mounting calibration
+uncertainty를 point별 height variance로 전파한다. XY pose uncertainty는 인접 cell에
+Gaussian splat으로 나누고, 설정된 한계를 넘는 pose는 cloud 전체를 버린다. D435 merge
+output은 `sensor_id`를 보존하므로 두 센서가 같은 noise model로 섞이지 않는다.
+
+실기 로그의 residual로 `rolling_elevation.sensor.*`와 `localization.*`를 보정해야 한다.
+기본값은 과신을 막는 보수적 시작값이며, covariance가 작아도 minimum standard
+deviation 아래로는 낮추지 않는다.
+
+`base_link` 아래 바닥 기준은 주변 셀의 단순 최저값이 아니다. 최근 ground cell에
+Huber 강건 평면을 맞춰 로봇 원점 높이를 구하고, 유효 셀이 부족하거나 기울기가
+25°를 넘으면 기존 20th percentile로 되돌아간다. 따라서 한 개의 낮은 depth outlier나
+drop-off가 height map 전체 기준을 급격히 내리지 않는다.
 
 ### Optional D435/D435i merge
 
@@ -119,7 +141,7 @@ PCD를 저장한다. 저장 PCD는 그대로 `--map`의 입력이 된다.
 
 | Direction | Topic | Type | Purpose |
 |---|---|---|---|
-| input | `/lio/odom` | `nav_msgs/Odometry` | Super-LIO LiDAR pose |
+| input | `/lio/odom` | `nav_msgs/Odometry` | Super-LIO IMU pose + ESKF covariance |
 | input | `/lio/cloud_world` | `sensor_msgs/PointCloud2` | global-frame registered cloud |
 | optional input | D435 depth/color/points | `sensor_msgs/PointCloud2` | camera-depth cloud |
 | intermediate | `/autonomy_light/rolling_cloud` | `sensor_msgs/PointCloud2` | time-aligned LiDAR+D435 cloud |

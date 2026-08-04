@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cerrno>
 #include <csignal>
@@ -31,6 +32,15 @@
 namespace autonomy_light {
 
 using PclCloud = pcl::PointCloud<pcl::PointXYZ>;
+
+struct PointObservation {
+  float x{0.0F};
+  float y{0.0F};
+  float z{0.0F};
+  std::uint8_t sensor_id{0U}; // 0: LiDAR, 1: D435/D435i
+};
+
+using PointObservations = std::vector<PointObservation>;
 
 struct GridSpec {
   double resolution{0.10};
@@ -74,6 +84,9 @@ struct Pose2_5D {
   double y{0.0};
   double z{0.0};
   double yaw{0.0};
+  // nav_msgs/Odometry order: x, y, z, roll, pitch, yaw in the global frame.
+  std::array<double, 36> covariance{};
+  bool has_covariance{false};
 };
 
 struct CellKey {

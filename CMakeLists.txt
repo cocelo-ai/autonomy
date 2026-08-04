@@ -115,6 +115,7 @@ endif()
 target_link_libraries(autonomy_light_node
   autonomy_light_dds_types
   CycloneDDS::ddsc
+  Eigen3::Eigen
   ${PCL_LIBRARIES}
 )
 target_link_libraries(rolling_cloud_merge_node ${PCL_LIBRARIES})

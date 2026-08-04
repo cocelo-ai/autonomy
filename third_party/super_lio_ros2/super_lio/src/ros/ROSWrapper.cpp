@@ -37,6 +37,33 @@ void ROSWrapper::pub_odom(const NavState& state){
   odom.twist.twist.linear.y = state.v[1];
   odom.twist.twist.linear.z = state.v[2];
 
+  // ESKF keeps rotation error in the IMU body frame and position error in odom.
+  // Export a ROS covariance in the selected global frame: x, y, z, roll, pitch, yaw.
+  if (eskf_) {
+    const auto eskf_covariance = eskf_->GetCov();
+    if (eskf_covariance.allFinite()) {
+      const M3 correction_rotation = global_to_imu.R_ * odom_to_imu.R_.transpose();
+      const M3 global_rotation = global_to_imu.R_;
+      Eigen::Matrix<double, 6, 6> covariance = Eigen::Matrix<double, 6, 6>::Zero();
+      covariance.block<3, 3>(0, 0) = (
+          correction_rotation * eskf_covariance.template block<3, 3>(3, 3) *
+          correction_rotation.transpose()).template cast<double>();
+      covariance.block<3, 3>(3, 3) = (
+          global_rotation * eskf_covariance.template block<3, 3>(0, 0) *
+          global_rotation.transpose()).template cast<double>();
+      covariance.block<3, 3>(0, 3) = (
+          correction_rotation * eskf_covariance.template block<3, 3>(3, 0) *
+          global_rotation.transpose()).template cast<double>();
+      covariance.block<3, 3>(3, 0) = covariance.block<3, 3>(0, 3).transpose();
+      covariance = 0.5 * (covariance + covariance.transpose());
+      for (int row = 0; row < 6; ++row) {
+        for (int col = 0; col < 6; ++col) {
+          odom.pose.covariance[6 * row + col] = covariance(row, col);
+        }
+      }
+    }
+  }
+
   pub_odom_->publish(odom);    // imu frame -> lidar frequency
 
   V3 robo_position = global_to_imu.R_ * (-g_odom_robo.R_ * g_odom_robo.t_) +

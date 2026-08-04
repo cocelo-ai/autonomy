@@ -21,7 +21,21 @@ struct ElevationMapperConfig {
   double rolling_max_variance{0.04};
   double rolling_outlier_variance{0.0025};
   double rolling_mahalanobis_threshold{3.0};
+  double d435_base_variance{0.0016};
+  double d435_range_variance_factor{0.002};
+  double lidar_extrinsic_translation_std_m{0.005};
+  double lidar_extrinsic_rotation_std_deg{0.5};
+  double d435_extrinsic_translation_std_m{0.015};
+  double d435_extrinsic_rotation_std_deg{1.0};
+  double pose_min_position_std_m{0.015};
+  double pose_min_orientation_std_deg{0.5};
+  double pose_max_position_std_m{0.25};
+  double pose_max_orientation_std_deg{10.0};
+  int pose_splat_max_cells{2};
   double floor_radius_m{0.60};
+  int floor_plane_min_samples{6};
+  double floor_plane_max_slope_deg{25.0};
+  double floor_plane_huber_delta_m{0.04};
 };
 
 class ElevationMapper {
@@ -29,7 +43,7 @@ public:
   explicit ElevationMapper(ElevationMapperConfig config = {});
 
   void configure(ElevationMapperConfig config);
-  void integrate(const PclCloud &cloud, const Pose2_5D &robot,
+  void integrate(const PointObservations &cloud, const Pose2_5D &robot,
                  double stamp_sec);
   void loadGlobalMap(const PclCloud &cloud);
   [[nodiscard]] bool empty() const;
@@ -38,6 +52,11 @@ public:
   [[nodiscard]] PclCloud::Ptr globalMap() const;
 
 private:
+  struct Sample {
+    float z;
+    float variance;
+  };
+
   struct Surface {
     float ground{std::numeric_limits<float>::quiet_NaN()};
     float upper{std::numeric_limits<float>::quiet_NaN()};
@@ -49,20 +68,24 @@ private:
   };
 
   using SurfaceMap = std::unordered_map<CellKey, Surface, CellKeyHash>;
+  using SampleMap = std::unordered_map<CellKey, std::vector<Sample>, CellKeyHash>;
   using VoxelMap = std::unordered_map<VoxelKey, VoxelMean, VoxelKeyHash>;
 
   [[nodiscard]] CellKey keyFor(double x, double y) const;
-  void updateSurfaces(SurfaceMap &target,
-                      std::unordered_map<CellKey, std::vector<float>, CellKeyHash>
-                          &samples,
+  void updateSurfaces(SurfaceMap &target, SampleMap &samples,
                       const Pose2_5D &robot, double stamp_sec, bool rolling);
+  void addVoxels(const PointObservations &cloud);
   void addVoxels(const PclCloud &cloud);
+  void addRollingSamples(SampleMap &samples, const PointObservation &point,
+                         const Pose2_5D &robot) const;
   [[nodiscard]] const Surface *nearestSurface(const SurfaceMap &surfaces,
                                               double x, double y) const;
   [[nodiscard]] bool validRolling(const Surface &surface, double stamp_sec,
                                   bool upper) const;
   [[nodiscard]] static float percentile(std::vector<float> &values,
                                         double fraction);
+  [[nodiscard]] static Sample percentile(std::vector<Sample> &values,
+                                         double fraction);
   static void fuse(float &mean, float &variance, double &last_time,
                    std::uint32_t &support, float measurement,
                    double measurement_variance, double stamp_sec,

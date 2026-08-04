@@ -1,6 +1,55 @@
 #include "autonomy_light/elevation_mapper.hpp"
 
+#include <Eigen/Dense>
+
 namespace autonomy_light {
+
+namespace {
+
+struct GroundSample {
+  double x;
+  double y;
+  double z;
+  double variance;
+};
+
+bool fitFloorPlane(const std::vector<GroundSample> &samples,
+                   const ElevationMapperConfig &config, double &floor_z) {
+  if (static_cast<int>(samples.size()) < config.floor_plane_min_samples) {
+    return false;
+  }
+  Eigen::Vector3d plane = Eigen::Vector3d::Zero();
+  for (int iteration = 0; iteration < 3; ++iteration) {
+    Eigen::Matrix3d normal = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
+    for (const auto &sample : samples) {
+      const Eigen::Vector3d row(sample.x, sample.y, 1.0);
+      const double residual = sample.z - plane.dot(row);
+      const double robust = iteration == 0 ? 1.0 : std::min(
+          1.0, config.floor_plane_huber_delta_m / std::max(1.0e-9, std::abs(residual)));
+      const double variance = std::isfinite(sample.variance) ? sample.variance : 0.01;
+      const double weight = robust / std::clamp(variance, 1.0e-4, 0.04);
+      normal.noalias() += weight * row * row.transpose();
+      rhs.noalias() += weight * row * sample.z;
+    }
+    if (std::abs(normal.determinant()) < 1.0e-9) {
+      return false;
+    }
+    plane = normal.ldlt().solve(rhs);
+    if (!plane.allFinite()) {
+      return false;
+    }
+  }
+  constexpr double radians_to_degrees = 57.2957795130823208768;
+  const double slope_deg = std::atan(std::hypot(plane.x(), plane.y())) * radians_to_degrees;
+  if (slope_deg > config.floor_plane_max_slope_deg) {
+    return false;
+  }
+  floor_z = plane.z();
+  return true;
+}
+
+} // namespace
 
 ElevationMapper::ElevationMapper(ElevationMapperConfig config) {
   configure(std::move(config));
@@ -18,6 +67,22 @@ void ElevationMapper::configure(ElevationMapperConfig config) {
   config.ground_percentile = std::clamp(config.ground_percentile, 0.0, 1.0);
   config.global_voxel_size = std::max(0.005, config.global_voxel_size);
   config.global_max_voxels = std::max<std::size_t>(1000U, config.global_max_voxels);
+  config.floor_plane_min_samples = std::max(3, config.floor_plane_min_samples);
+  config.floor_plane_max_slope_deg = std::clamp(config.floor_plane_max_slope_deg, 0.0, 85.0);
+  config.floor_plane_huber_delta_m = std::max(0.001, config.floor_plane_huber_delta_m);
+  config.d435_base_variance = std::max(1.0e-6, config.d435_base_variance);
+  config.d435_range_variance_factor = std::max(0.0, config.d435_range_variance_factor);
+  config.lidar_extrinsic_translation_std_m = std::max(0.0, config.lidar_extrinsic_translation_std_m);
+  config.lidar_extrinsic_rotation_std_deg = std::max(0.0, config.lidar_extrinsic_rotation_std_deg);
+  config.d435_extrinsic_translation_std_m = std::max(0.0, config.d435_extrinsic_translation_std_m);
+  config.d435_extrinsic_rotation_std_deg = std::max(0.0, config.d435_extrinsic_rotation_std_deg);
+  config.pose_min_position_std_m = std::max(0.001, config.pose_min_position_std_m);
+  config.pose_min_orientation_std_deg = std::max(0.01, config.pose_min_orientation_std_deg);
+  config.pose_max_position_std_m = std::max(config.pose_min_position_std_m,
+                                              config.pose_max_position_std_m);
+  config.pose_max_orientation_std_deg = std::max(config.pose_min_orientation_std_deg,
+                                                   config.pose_max_orientation_std_deg);
+  config.pose_splat_max_cells = std::clamp(config.pose_splat_max_cells, 0, 4);
   config_ = std::move(config);
   global_surfaces_.clear();
   rolling_surfaces_.clear();
@@ -39,6 +104,16 @@ float ElevationMapper::percentile(std::vector<float> &values,
       static_cast<std::size_t>(std::round(fraction * (values.size() - 1U))));
   std::nth_element(values.begin(), values.begin() + static_cast<long>(index),
                    values.end());
+  return values[index];
+}
+
+ElevationMapper::Sample ElevationMapper::percentile(
+    std::vector<Sample> &values, const double fraction) {
+  const auto index = std::min(
+      values.size() - 1U,
+      static_cast<std::size_t>(std::round(fraction * (values.size() - 1U))));
+  std::nth_element(values.begin(), values.begin() + static_cast<long>(index), values.end(),
+                   [](const Sample &left, const Sample &right) { return left.z < right.z; });
   return values[index];
 }
 
@@ -75,16 +150,19 @@ void ElevationMapper::fuse(float &mean, float &variance, double &last_time,
   ++support;
 }
 
-void ElevationMapper::updateSurfaces(
-    SurfaceMap &target,
-    std::unordered_map<CellKey, std::vector<float>, CellKeyHash> &samples,
-    const Pose2_5D &robot, const double stamp_sec, const bool rolling) {
+void ElevationMapper::updateSurfaces(SurfaceMap &target, SampleMap &samples,
+                                     const Pose2_5D &robot, const double stamp_sec,
+                                     const bool rolling) {
   for (auto &[key, values] : samples) {
     if (static_cast<int>(values.size()) < config_.min_samples_per_cell) {
       continue;
     }
-    const float ground = percentile(values, config_.ground_percentile);
-    const float upper = *std::max_element(values.begin(), values.end());
+    const Sample ground_sample = percentile(values, config_.ground_percentile);
+    const Sample upper_sample = *std::max_element(
+        values.begin(), values.end(),
+        [](const Sample &left, const Sample &right) { return left.z < right.z; });
+    const float ground = ground_sample.z;
+    const float upper = upper_sample.z;
     if (!std::isfinite(ground) || !std::isfinite(upper)) {
       continue;
     }
@@ -98,26 +176,22 @@ void ElevationMapper::updateSurfaces(
       surface.support += static_cast<std::uint32_t>(values.size());
       continue;
     }
-    const double cx = (static_cast<double>(key.x) + 0.5) * config_.grid.resolution;
-    const double cy = (static_cast<double>(key.y) + 0.5) * config_.grid.resolution;
-    const double range2 = (cx - robot.x) * (cx - robot.x) +
-                          (cy - robot.y) * (cy - robot.y) +
-                          (static_cast<double>(ground) - robot.z) *
-                              (static_cast<double>(ground) - robot.z);
-    const double variance = std::clamp(
-        config_.rolling_base_variance + config_.rolling_range_variance_factor * range2,
-        1.0e-6, config_.rolling_max_variance);
+    const double variance = std::clamp(static_cast<double>(ground_sample.variance),
+                                       1.0e-6, config_.rolling_max_variance);
     fuse(surface.ground, surface.ground_variance, surface.ground_time,
          surface.support, ground, variance, stamp_sec, config_);
     if (upper - ground >= config_.obstacle_min_height) {
       fuse(surface.upper, surface.upper_variance, surface.upper_time,
-           surface.support, upper, variance, stamp_sec, config_);
+           surface.support, upper,
+           std::clamp(static_cast<double>(upper_sample.variance), 1.0e-6,
+                      config_.rolling_max_variance),
+           stamp_sec, config_);
     }
   }
 }
 
-void ElevationMapper::addVoxels(const PclCloud &cloud) {
-  for (const auto &point : cloud.points) {
+void ElevationMapper::addVoxels(const PointObservations &cloud) {
+  for (const auto &point : cloud) {
     if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
         !std::isfinite(point.z)) {
       continue;
@@ -141,26 +215,35 @@ void ElevationMapper::addVoxels(const PclCloud &cloud) {
   }
 }
 
-void ElevationMapper::integrate(const PclCloud &cloud, const Pose2_5D &robot,
+void ElevationMapper::addVoxels(const PclCloud &cloud) {
+  PointObservations observations;
+  observations.reserve(cloud.size());
+  for (const auto &point : cloud.points) {
+    observations.push_back({point.x, point.y, point.z, 0U});
+  }
+  addVoxels(observations);
+}
+
+void ElevationMapper::integrate(const PointObservations &cloud, const Pose2_5D &robot,
                                 const double stamp_sec) {
   if (cloud.empty()) {
     return;
   }
   addVoxels(cloud);
-  std::unordered_map<CellKey, std::vector<float>, CellKeyHash> global_samples;
-  std::unordered_map<CellKey, std::vector<float>, CellKeyHash> rolling_samples;
+  SampleMap global_samples;
+  SampleMap rolling_samples;
   const double radius2 = config_.rolling_max_radius_m * config_.rolling_max_radius_m;
-  for (const auto &point : cloud.points) {
+  for (const auto &point : cloud) {
     if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
         !std::isfinite(point.z)) {
       continue;
     }
     const CellKey key = keyFor(point.x, point.y);
-    global_samples[key].push_back(point.z);
+    global_samples[key].push_back({point.z, static_cast<float>(config_.rolling_base_variance)});
     const double dx = point.x - robot.x;
     const double dy = point.y - robot.y;
     if (dx * dx + dy * dy <= radius2) {
-      rolling_samples[key].push_back(point.z);
+      addRollingSamples(rolling_samples, point, robot);
     }
   }
   updateSurfaces(global_surfaces_, global_samples, robot, stamp_sec, false);
@@ -171,10 +254,11 @@ void ElevationMapper::integrate(const PclCloud &cloud, const Pose2_5D &robot,
 
 void ElevationMapper::loadGlobalMap(const PclCloud &cloud) {
   Pose2_5D origin;
-  std::unordered_map<CellKey, std::vector<float>, CellKeyHash> samples;
+  SampleMap samples;
   for (const auto &point : cloud.points) {
     if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
-      samples[keyFor(point.x, point.y)].push_back(point.z);
+      samples[keyFor(point.x, point.y)].push_back(
+          {point.z, static_cast<float>(config_.rolling_base_variance)});
     }
   }
   addVoxels(cloud);
@@ -232,6 +316,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
   const double cos_yaw = std::cos(robot.yaw);
   const double sin_yaw = std::sin(robot.yaw);
   std::vector<float> local_floor;
+  std::vector<GroundSample> floor_samples;
   std::vector<const Surface *> selected(grid.spec.size(), nullptr);
   for (std::uint32_t row = 0; row < grid.spec.height(); ++row) {
     for (std::uint32_t col = 0; col < grid.spec.width(); ++col) {
@@ -248,6 +333,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
       selected[index] = surface;
       if (std::hypot(lx, ly) <= config_.floor_radius_m) {
         local_floor.push_back(surface->ground);
+        floor_samples.push_back({lx, ly, surface->ground, surface->ground_variance});
       }
     }
   }
@@ -262,6 +348,7 @@ HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
     return grid;
   }
   grid.floor_z = percentile(local_floor, 0.20);
+  fitFloorPlane(floor_samples, config_, grid.floor_z);
   for (std::size_t index = 0; index < selected.size(); ++index) {
     const Surface *surface = selected[index];
     if (surface == nullptr) {

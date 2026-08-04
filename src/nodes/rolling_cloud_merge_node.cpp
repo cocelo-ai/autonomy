@@ -7,6 +7,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2/exceptions.h>
 #include <tf2/LinearMath/Transform.h>
 #if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
@@ -60,6 +61,7 @@ void RollingCloudMergeNode::onD435(Cloud::ConstSharedPtr message) {
 void RollingCloudMergeNode::onLidar(Cloud::ConstSharedPtr message) {
   PclCloud merged;
   pcl::fromROSMsg(*message, merged);
+  std::vector<std::uint8_t> sensor_ids(merged.size(), 0U);
   Cloud::ConstSharedPtr closest;
   double closest_delta = std::numeric_limits<double>::infinity();
   for (const auto& camera : d435_buffer_) {
@@ -70,16 +72,17 @@ void RollingCloudMergeNode::onLidar(Cloud::ConstSharedPtr message) {
     }
   }
   if (closest && closest_delta <= max_sync_delta_sec_) {
-    appendD435(*closest, message->header.frame_id, merged);
+    appendD435(*closest, message->header.frame_id, merged, sensor_ids);
   } else if (closest) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "D435 cloud is outside the %.3fs merge window", max_sync_delta_sec_);
   }
-  publish(merged, message->header);
+  publish(merged, sensor_ids, message->header);
 }
 
 void RollingCloudMergeNode::appendD435(const Cloud& camera, const std::string& target_frame,
-                                       PclCloud& merged) {
+                                       PclCloud& merged,
+                                       std::vector<std::uint8_t>& sensor_ids) {
   if (target_frame.empty() || camera.header.frame_id.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "Cannot merge D435 cloud without source and target frames");
@@ -122,15 +125,33 @@ void RollingCloudMergeNode::appendD435(const Cloud& camera, const std::string& t
     PclCloud filtered;
     filter.filter(filtered);
     merged += filtered;
+    sensor_ids.insert(sensor_ids.end(), filtered.size(), 1U);
   } else {
     merged += transformed;
+    sensor_ids.insert(sensor_ids.end(), transformed.size(), 1U);
   }
 }
 
 void RollingCloudMergeNode::publish(const PclCloud& cloud,
+                                    const std::vector<std::uint8_t>& sensor_ids,
                                     const std_msgs::msg::Header& header) {
   Cloud output;
-  pcl::toROSMsg(cloud, output);
+  sensor_msgs::PointCloud2Modifier modifier(output);
+  modifier.setPointCloud2Fields(4, "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+                                 "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+                                 "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+                                 "sensor_id", 1, sensor_msgs::msg::PointField::UINT8);
+  modifier.resize(cloud.size());
+  sensor_msgs::PointCloud2Iterator<float> x(output, "x");
+  sensor_msgs::PointCloud2Iterator<float> y(output, "y");
+  sensor_msgs::PointCloud2Iterator<float> z(output, "z");
+  sensor_msgs::PointCloud2Iterator<std::uint8_t> sensor_id(output, "sensor_id");
+  for (std::size_t index = 0; index < cloud.size(); ++index, ++x, ++y, ++z, ++sensor_id) {
+    *x = cloud[index].x;
+    *y = cloud[index].y;
+    *z = cloud[index].z;
+    *sensor_id = index < sensor_ids.size() ? sensor_ids[index] : 0U;
+  }
   output.header = header;
   merged_pub_->publish(output);
 }

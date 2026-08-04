@@ -26,6 +26,8 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <deque>
+
 namespace autonomy_light {
 
 class AutonomyLightNode final : public rclcpp::Node {
@@ -52,19 +54,29 @@ private:
   [[nodiscard]] bool publishesRosHeight() const;
   [[nodiscard]] bool publishesDdsHeight() const;
   [[nodiscard]] nav_msgs::msg::Odometry baseOdom(
-      const nav_msgs::msg::Odometry &lidar_odom) const;
+      const nav_msgs::msg::Odometry &imu_odom) const;
+  [[nodiscard]] const nav_msgs::msg::Odometry *odomAt(const rclcpp::Time &stamp) const;
+  [[nodiscard]] PointObservations observationsFrom(
+      const sensor_msgs::msg::PointCloud2 &cloud) const;
   [[nodiscard]] Pose2_5D poseOf(const nav_msgs::msg::Odometry &odom) const;
   [[nodiscard]] tf2::Quaternion yawOnly(
       const geometry_msgs::msg::Quaternion &orientation) const;
 
   std::string target_frame_{"base_link"};
   std::string height_map_frame_{"base_link_gravity"};
+  std::string imu_frame_{"imu"};
   std::string lidar_frame_{"lidar_link"};
   std::string global_frame_{"odom"};
   std::vector<double> target_to_lidar_xyz_{0.0, 0.0, 0.3};
   std::vector<double> target_to_lidar_rpy_{0.0, 0.0, 0.0};
+  std::vector<double> imu_from_lidar_xyz_{0.0, 0.0, 0.0};
+  std::vector<double> imu_from_lidar_rpy_{0.0, 0.0, 0.0};
   tf2::Vector3 target_to_lidar_translation_{0.0, 0.0, 0.3};
   tf2::Quaternion target_to_lidar_rotation_{tf2::Quaternion::getIdentity()};
+  tf2::Vector3 imu_from_lidar_translation_;
+  tf2::Quaternion imu_from_lidar_rotation_{tf2::Quaternion::getIdentity()};
+  tf2::Vector3 target_to_imu_translation_;
+  tf2::Quaternion target_to_imu_rotation_{tf2::Quaternion::getIdentity()};
 
   GridSpec grid_spec_;
   ElevationMapperConfig mapper_config_;
@@ -91,6 +103,7 @@ private:
   std::string raw_lidar_msg_type_{"livox_custom"};
   std::string super_lio_odom_topic_{"/lio/odom"};
   std::string super_lio_registered_topic_{"/lio/cloud_world"};
+  double odom_sync_tolerance_sec_{0.03};
   bool rolling_merge_enabled_{false};
   std::string rolling_merge_output_topic_{"/autonomy_light/rolling_cloud"};
   std::string super_lio_config_file_;
@@ -113,6 +126,7 @@ private:
 
   bool has_odom_{false};
   nav_msgs::msg::Odometry latest_odom_;
+  std::deque<nav_msgs::msg::Odometry> odom_history_;
   nav_msgs::msg::Path path_;
   std::uint64_t odom_count_{0U};
   std::uint64_t cloud_count_{0U};

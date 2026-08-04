@@ -41,11 +41,12 @@
     lio.sensor.imu_nbg: 0.0001
 
     # LiDAR in IMU frame: translation followed by row-major rotation matrix.
+    # launch.sh overrides this from autonomy_light.imu_from_lidar_*.
     lio.extrinsic.lidar_imu: [-0.011, -0.02329, 0.04412,
                               1.0, 0.0, 0.0,
                               0.0, 1.0, 0.0,
                               0.0, 0.0, 1.0]
-    # Robot mounting is converted by autonomy-light from target_to_lidar_*.
+    # autonomy_light composes this with target_to_lidar_* to publish base_link.
     lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     lio.hash_map.hash_capacity: 2000000
@@ -56,7 +57,7 @@
     lio.kf.kf_align_gravity: true
     lio.kf.kf_quit_eps: 0.001
 
-    # autonomy-light consumes /lio/odom and /lio/cloud_world.
+    # /lio/odom exports ESKF 6x6 pose covariance for robot-centric elevation fusion.
     lio.output.robot: false
     lio.output.plan_env_world: false
     lio.output.plan_env_body: false
