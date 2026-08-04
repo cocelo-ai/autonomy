@@ -66,6 +66,8 @@ std::vector<std::string> AutonomyLightNode::superLioCommand() const {
       "lio.extrinsic.lidar_imu:=" + rosArray(lidar_imu), "-p",
       "lio.sensor.lidar_type:=1", "-p", "lio.output.map:=true", "-p",
       "lio.output.dense:=true", "-p", "lio.output.pub_step:=1", "-p",
+      "lio.output.tf_publish_rate_hz:=" +
+          std::to_string(publish_rate_hz_), "-p",
       "lio.map.save_map:=" + std::string(full_slam ? "true" : "false")};
   if (full_slam) {
     const auto map_path = std::filesystem::absolute(mapping_pcd_file_);

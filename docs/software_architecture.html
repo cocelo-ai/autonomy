@@ -19,7 +19,7 @@
 </head>
 <body>
   <h1>autonomy_light software architecture</h1>
-  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-03</p>
+  <p class="subtitle">Super-LIO integration and elevation mapping · 2026-08-04</p>
 
   <div class="rule"><strong>Design decision.</strong> SLAM and relocalization are Super-LIO responsibilities.
   This package owns the elevation node and an optional, isolated D435 rolling-cloud merge node.
@@ -52,7 +52,7 @@
   <code>imu → base_link → lidar_link</code>. Super-LIO publishes identity <code>map → odom</code>
   before its first LiDAR update, then owns the correction; this runtime owns the two physical static links.
   Normal LIO keeps that correction at identity. A saved map runs Super-LIO <code>relocation_node</code>.
-  After its NDT→ICP registration succeeds, Super-LIO continuously publishes <code>map → odom → imu</code>;
+  After its NDT→ICP registration succeeds, Super-LIO re-broadcasts <code>map → odom → imu</code> at <code>publish_rate_hz</code>;
   the correction is only recalculated at the configured low global-registration rate. Mapping runs the pose graph in
   Super-LIO. There is no <code>world</code> frame or duplicate SLAM backend in this package.</p>
   <p><code>/lio/odom</code> is the IMU state. The runtime composes
@@ -90,6 +90,11 @@
   the normal Kalman update; the quality variance exposes the prior's low confidence.</p>
   <p><code>base_link → base_link_gravity</code> is present from startup as identity. After odometry
   arrives, only its roll/pitch-removing rotation changes; translation stays zero.</p>
+  <p>The runtime separately schedules heavy cloud fusion and global-PCL publication, so its output timer
+  refreshes odometry, height-map ROS/DDS messages, and <code>base_link → base_link_gravity</code> at
+  <code>publish_rate_hz</code>. Static calibration links remain on <code>/tf_static</code>. RViz
+  <code>/autonomy_light/height_map</code> always contains the entire grid: <code>intensity=1</code>
+  means valid, while <code>intensity=0</code> is the unknown placeholder.</p>
   <p><code>./launch.sh --vis</code> starts a live OpenCV 2D view of only the numeric
   <code>HeightMap.data</code> grid. It keeps the newest sample only and targets 50 Hz, so the image
   follows robot motion instead of rendering a queued stale frame.</p>

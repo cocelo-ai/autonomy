@@ -20,7 +20,9 @@
 The resulting TF chain is `map → odom → imu → base_link → base_link_gravity`, plus
 static `base_link → lidar_link`. Super-LIO publishes identity `map → odom` before
 the first LiDAR update, then updates only that correction for full SLAM or
-relocation; it owns dynamic `odom → imu`. `autonomy_light` publishes static
+relocation; it re-broadcasts dynamic `map → odom` and `odom → imu` at
+`publish_rate_hz`. `autonomy_light` republishes its output odometry and dynamic
+`base_link → base_link_gravity` at the same rate, and publishes static
 `imu → base_link` and `base_link → lidar_link`. No `world` frame exists.
 Before the first odometry, `autonomy_light` publishes identity
 `base_link → base_link_gravity`. Once odometry exists, only the dynamic
@@ -52,9 +54,10 @@ LiDAR-only output. The D435 optical frame must be connected to base_link in TF.
 ## Robot-centric uncertainty fusion
 
 Super-LIO exports ESKF covariance in global-frame `[x, y, z, roll, pitch, yaw]`
-order. Each cloud uses its nearest odom inside
-`rolling_elevation.localization.odom_sync_tolerance_sec`; unmatched clouds are
-discarded. The mapper adds sensor range and mounting uncertainty to the
+order. Each cloud uses an odom inside
+`rolling_elevation.localization.odom_sync_tolerance_sec`; bracketing samples
+are interpolated and callback-order jitter is held in a bounded pending queue.
+Only an entry that outlives that bounded queue is discarded. The mapper adds sensor range and mounting uncertainty to the
 Jacobian-projected pose covariance for every height update. XY uncertainty is a
 bounded Gaussian splat across nearby cells, while a pose above the configured
 limit rejects the cloud. The merge node preserves `sensor_id` and the D435
@@ -64,6 +67,8 @@ giving visibility cleanup the correct ray source.
 `HeightMap.data` is the actual `base_z - terrain_z`, clamped by
 `height_map_distance`. A quality mask marks unobserved cells explicitly:
 `valid=0` means `data` contains only the configured unknown placeholder.
+The RViz PointCloud2 always contains every cell: `intensity=1` is valid and
+`intensity=0` is unknown, whose visual z is `-unknown_distance`.
 
 At startup, `rolling_elevation.initial_prior` seeds only the robot footprint with
 a high-variance ground posterior. It publishes as `valid=1` so the controller
@@ -78,6 +83,13 @@ grid only. The monitor keeps just the newest best-effort sample and targets 50
 Hz, so it does not display a queued, stale terrain frame after robot motion.
 The overlay reports both received `source` Hz and rendered `display` Hz.
 Override the input with `AUTONOMY_LIGHT_VIS_TOPIC`.
+
+## Output cadence
+
+`publish_rate_hz` controls the 50 Hz default cadence for `/autonomy_light/odom`,
+path, height-map ROS/DDS outputs, and dynamic TF. It refreshes the last coherent
+estimate when the estimator updates more slowly. Static calibration transforms
+remain on `/tf_static` and are intentionally not repeated.
 
 ## Gravity-aligned base frame
 

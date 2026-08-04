@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros/ROSWrapper.h"
@@ -25,7 +26,11 @@ int main(int argc, char** argv){
     data_wrapper->getSensorCallbackGroup()
   );
 
-  rclcpp::spin(data_wrapper);
+  rclcpp::executors::MultiThreadedExecutor executor(
+      rclcpp::ExecutorOptions(), 2U);
+  executor.add_node(data_wrapper);
+  executor.spin();
+  executor.remove_node(data_wrapper);
 
   lio->saveMap();
   lio->printTimeRecord();

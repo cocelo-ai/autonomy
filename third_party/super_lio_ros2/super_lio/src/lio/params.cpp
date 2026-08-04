@@ -76,6 +76,7 @@ namespace LI2Sup{
   bool g_visual_map = true;
   bool g_visual_dense = false;
   int  g_pub_step;
+  double g_tf_publish_rate_hz = 50.0;
 
   /// for planner
   bool g_planner_enable;

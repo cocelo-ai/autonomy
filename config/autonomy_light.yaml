@@ -99,7 +99,10 @@ autonomy_light:
       # Floors prevent a numerically overconfident estimator; limits reject a
       # cloud whose uncertain pose would smear terrain across the control grid.
       localization:
-        odom_sync_tolerance_sec: 0.03
+        # Cloud and odometry are matched at their measurement stamps; a short
+        # queue absorbs ROS callback-order jitter instead of dropping a cloud.
+        odom_sync_tolerance_sec: 0.12
+        pending_cloud_queue_size: 32
         min_position_std_m: 0.015
         min_orientation_std_deg: 0.5
         max_position_std_m: 0.25
@@ -143,7 +146,7 @@ autonomy_light:
     start_super_lio: true
     # ROS message aggregation rate. It does not change the LiDAR's physical
     # sampling rate; 50 Hz yields shorter clouds and lower algorithmic latency.
-    livox_publish_freq: 10.0
+    livox_publish_freq: 50.0
     child_use_sim_time: false
 
     child_shutdown_grace_sec: 0.8

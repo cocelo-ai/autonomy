@@ -1,5 +1,7 @@
 #include "autonomy_light/autonomy_light_node.hpp"
 
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   try {
@@ -10,7 +12,11 @@ int main(int argc, char **argv) {
         node->requestFastShutdown();
       }
     });
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor executor(
+        rclcpp::ExecutorOptions(), 3U);
+    executor.add_node(node);
+    executor.spin();
+    executor.remove_node(node);
     node.reset();
   } catch (const std::exception &ex) {
     std::fprintf(stderr, "autonomy_light failed: %s\n", ex.what());

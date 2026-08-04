@@ -1,5 +1,6 @@
 #include "ros/ROSWrapper.h"
 
+#include <algorithm>
 #include <filesystem>
 
 using namespace BASIC;
@@ -207,6 +208,10 @@ void LoadParamFromRos(rclcpp::Node& node)
 
   node.declare_parameter<int>("lio.output.pub_step", 0);
   node.get_parameter("lio.output.pub_step", g_pub_step);
+
+  node.declare_parameter<double>("lio.output.tf_publish_rate_hz", 50.0);
+  node.get_parameter("lio.output.tf_publish_rate_hz", g_tf_publish_rate_hz);
+  g_tf_publish_rate_hz = std::clamp(g_tf_publish_rate_hz, 1.0, 200.0);
 
   // ================= relocation =================
   node.declare_parameter<double>("lio.relocation.global_update_sec", 1.0);

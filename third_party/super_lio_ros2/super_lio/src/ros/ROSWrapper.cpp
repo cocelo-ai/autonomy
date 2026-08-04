@@ -14,9 +14,19 @@ inline builtin_interfaces::msg::Time toRosTime(double t_sec)
 }
 
 void ROSWrapper::pub_odom(const NavState& state){
-  const bool publish_map_to_odom = has_map_to_odom_ && g_global_frame != g_odom_frame;
   const SE3 odom_to_imu = state.GetSE3();
-  const SE3 global_to_imu = publish_map_to_odom ? map_to_odom_ * odom_to_imu
+  SE3 map_to_odom;
+  bool has_map_to_odom = false;
+  {
+    std::lock_guard<std::mutex> lock(tf_mutex_);
+    map_to_odom = map_to_odom_;
+    has_map_to_odom = has_map_to_odom_;
+    latest_odom_to_imu_ = odom_to_imu;
+    has_odom_to_imu_ = true;
+  }
+  const bool publish_map_to_odom =
+      has_map_to_odom && g_global_frame != g_odom_frame;
+  const SE3 global_to_imu = publish_map_to_odom ? map_to_odom * odom_to_imu
                                                  : odom_to_imu;
   nav_msgs::msg::Odometry odom;
   odom.header.frame_id = g_global_frame;
@@ -95,49 +105,28 @@ void ROSWrapper::pub_odom(const NavState& state){
     last_path_point_ = robo_position;
   }
 
-  const Quat tf_quat(odom_to_imu.R_);
-  geometry_msgs::msg::TransformStamped tf_msg;
-
-  tf_msg.header.stamp = odom.header.stamp;
-  tf_msg.header.frame_id = publish_map_to_odom ? g_odom_frame : g_global_frame;
-  tf_msg.child_frame_id = "imu";
-
-  tf_msg.transform.translation.x = odom_to_imu.t_[0];
-  tf_msg.transform.translation.y = odom_to_imu.t_[1];
-  tf_msg.transform.translation.z = odom_to_imu.t_[2];
-
-  tf_msg.transform.rotation.x = tf_quat.x();
-  tf_msg.transform.rotation.y = tf_quat.y();
-  tf_msg.transform.rotation.z = tf_quat.z();
-  tf_msg.transform.rotation.w = tf_quat.w();
-
-  tf_broadcaster_->sendTransform(tf_msg);
-
-  if (publish_map_to_odom) {
-    publishMapToOdom(rclcpp::Time(odom.header.stamp));
-  }
-
-  // tf_msg.child_frame_id = "god";
-  // tf_msg.transform.rotation.x = 0.0;
-  // tf_msg.transform.rotation.y = 0.0;
-  // tf_msg.transform.rotation.z = 0.0;
-  // tf_msg.transform.rotation.w = 1.0;
-  // tf_broadcaster_->sendTransform(tf_msg);
-
 }
 
 void ROSWrapper::publishMapToOdom(const rclcpp::Time& stamp) {
-  if (!tf_broadcaster_ || !has_map_to_odom_ || g_global_frame == g_odom_frame) {
+  SE3 map_to_odom;
+  {
+    std::lock_guard<std::mutex> lock(tf_mutex_);
+    if (!has_map_to_odom_ || g_global_frame == g_odom_frame) {
+      return;
+    }
+    map_to_odom = map_to_odom_;
+  }
+  if (!tf_broadcaster_) {
     return;
   }
   geometry_msgs::msg::TransformStamped transform;
   transform.header.stamp = stamp;
   transform.header.frame_id = g_global_frame;
   transform.child_frame_id = g_odom_frame;
-  transform.transform.translation.x = map_to_odom_.t_[0];
-  transform.transform.translation.y = map_to_odom_.t_[1];
-  transform.transform.translation.z = map_to_odom_.t_[2];
-  Quat correction(map_to_odom_.R_);
+  transform.transform.translation.x = map_to_odom.t_[0];
+  transform.transform.translation.y = map_to_odom.t_[1];
+  transform.transform.translation.z = map_to_odom.t_[2];
+  Quat correction(map_to_odom.R_);
   correction.normalize();
   transform.transform.rotation.x = correction.x();
   transform.transform.rotation.y = correction.y();
@@ -146,13 +135,69 @@ void ROSWrapper::publishMapToOdom(const rclcpp::Time& stamp) {
   tf_broadcaster_->sendTransform(transform);
 }
 
+void ROSWrapper::publishDynamicTransforms(const rclcpp::Time& stamp) {
+  if (!tf_broadcaster_) {
+    return;
+  }
+  SE3 map_to_odom;
+  SE3 odom_to_imu;
+  bool has_map_to_odom = false;
+  bool has_odom_to_imu = false;
+  {
+    std::lock_guard<std::mutex> lock(tf_mutex_);
+    map_to_odom = map_to_odom_;
+    odom_to_imu = latest_odom_to_imu_;
+    has_map_to_odom = has_map_to_odom_;
+    has_odom_to_imu = has_odom_to_imu_;
+  }
+  std::vector<geometry_msgs::msg::TransformStamped> transforms;
+  if (has_map_to_odom && g_global_frame != g_odom_frame) {
+    geometry_msgs::msg::TransformStamped correction;
+    correction.header.stamp = stamp;
+    correction.header.frame_id = g_global_frame;
+    correction.child_frame_id = g_odom_frame;
+    correction.transform.translation.x = map_to_odom.t_[0];
+    correction.transform.translation.y = map_to_odom.t_[1];
+    correction.transform.translation.z = map_to_odom.t_[2];
+    Quat rotation(map_to_odom.R_);
+    rotation.normalize();
+    correction.transform.rotation.x = rotation.x();
+    correction.transform.rotation.y = rotation.y();
+    correction.transform.rotation.z = rotation.z();
+    correction.transform.rotation.w = rotation.w();
+    transforms.push_back(std::move(correction));
+  }
+  if (has_odom_to_imu) {
+    geometry_msgs::msg::TransformStamped pose;
+    pose.header.stamp = stamp;
+    pose.header.frame_id =
+        has_map_to_odom && g_global_frame != g_odom_frame ? g_odom_frame
+                                                            : g_global_frame;
+    pose.child_frame_id = "imu";
+    pose.transform.translation.x = odom_to_imu.t_[0];
+    pose.transform.translation.y = odom_to_imu.t_[1];
+    pose.transform.translation.z = odom_to_imu.t_[2];
+    const Quat rotation(odom_to_imu.R_);
+    pose.transform.rotation.x = rotation.x();
+    pose.transform.rotation.y = rotation.y();
+    pose.transform.rotation.z = rotation.z();
+    pose.transform.rotation.w = rotation.w();
+    transforms.push_back(std::move(pose));
+  }
+  if (!transforms.empty()) {
+    tf_broadcaster_->sendTransform(transforms);
+  }
+}
+
 void ROSWrapper::setMapToOdom(const SE3& map_to_odom) {
+  std::lock_guard<std::mutex> lock(tf_mutex_);
   map_to_odom_ = map_to_odom;
   has_map_to_odom_ = true;
   LOG(INFO) << GREEN << " ---> map -> odom correction is ready." << RESET;
 }
 
 SE3 ROSWrapper::globalPose(const SE3& odom_pose) const {
+  std::lock_guard<std::mutex> lock(tf_mutex_);
   return has_map_to_odom_ && g_global_frame != g_odom_frame
       ? map_to_odom_ * odom_pose
       : odom_pose;

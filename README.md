@@ -41,7 +41,7 @@ source install/setup.bash
 출력 global frame은 항상 `map`이다. 시작 직후에는 identity `map → odom`을 먼저
 발행한다. 초기 NDT→ICP 정합 뒤에는 local LIO를 `odom`에서
 유지하고, 저장 PCD와의 NDT→ICP 보정을 기본 1 Hz로만 갱신한다. 마지막 유효 보정은
-LiDAR 출력마다 `map → odom → imu`로 계속 broadcast하므로 TF 체인이 끊기지 않는다.
+`publish_rate_hz`(기본 50 Hz)로 `map → odom → imu`에 재발행하므로 TF 체인이 끊기지 않는다.
 `/lio/odom`과 `/lio/cloud_world`는 `map` 좌표를 사용한다.
 
 `/lio/odom`의 child frame은 LiDAR가 아니라 `imu`다. 따라서
@@ -72,7 +72,9 @@ Rolling 시작 시에는 LiDAR/D435가 가리는 `base_link` 아래 footprint에
 
 ### Robot-centric uncertainty
 
-Rolling은 cloud timestamp와 일치하는 Super-LIO odometry만 사용한다. Super-LIO의
+Rolling은 cloud timestamp와 일치하는 Super-LIO odometry를 사용한다. 동일 timestamp의
+메시지가 ROS executor에서 역순으로 도착하면 짧은 queue가 odometry를 기다리고, 양쪽
+odom이 있으면 위치·자세·covariance를 timestamp로 보간한다. Super-LIO의
 ESKF 6×6 pose covariance, LiDAR/D435 거리 모델, 각 센서 mounting calibration
 uncertainty를 point별 height variance로 전파한다. XY pose uncertainty는 인접 cell에
 Gaussian splat으로 나누고, 설정된 한계를 넘는 pose는 cloud 전체를 버린다. D435 merge
@@ -111,6 +113,11 @@ wall artifact는 다음 관측을 기다리지 않고 갱신된다. `rolling_ele
 GUI가 잠시 느려도 keep-last 1로 최신 frame만 그려 stale terrain을 표시하지 않는다. 창의
 `source`와 `display` Hz가 모두 50에 가까운지 확인한다. `q` 또는 `Esc`로 viewer만
 종료할 수 있으며, 사용자 topic은 `AUTONOMY_LIGHT_VIS_TOPIC`으로 지정한다.
+
+RViz의 `/autonomy_light/height_map`은 매 frame 전체 grid를 발행한다. `intensity=1`은
+관측된 셀, `intensity=0`은 unknown placeholder이며, unknown z는 `-unknown_distance`다.
+따라서 PointCloud2 display를 `Flat Squares`, size=`elevation_resolution`, color
+transformer=`Intensity`로 설정하면 관측 범위와 전체 grid를 함께 확인할 수 있다.
 
 ### Optional D435/D435i merge
 
@@ -158,6 +165,16 @@ quality, visualization topic을 발행하지 않는다.
 20 ms 길이의 더 작은 cloud가 Super-LIO로 들어가며, 새 elevation 관측의 지연도
 줄어든다. 장치의 레이저 firing/scan 패턴과 초당 원시 포인트 수는 바뀌지 않는다.
 CPU 여유와 Super-LIO 처리율은 `ros2 topic hz /lio/cloud_world`로 확인한다.
+
+## Output and TF rate
+
+`publish_rate_hz` 하나가 `/autonomy_light/odom`, path, `height_map_data`, quality,
+RViz height-map과 `base_link → base_link_gravity` 동적 TF의 재발행 주기를 정한다.
+새 LiDAR/SLAM 추정은 센서와 Super-LIO 처리율에서만 갱신되며, 그 사이에는 마지막
+일관된 estimate를 현재 timestamp로 재발행한다. Super-LIO도 같은 주기로 마지막
+`map → odom`과 `odom → imu`를 재발행한다. `imu → base_link`,
+`base_link → lidar_link`는 변하지 않는 calibration이므로 올바르게 `/tf_static`에 한 번만
+발행된다.
 
 ## Mapping
 

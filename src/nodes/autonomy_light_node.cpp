@@ -299,6 +299,12 @@ void AutonomyLightNode::loadParameters() {
       0.0, declare_parameter<double>(
                "rolling_elevation.localization.odom_sync_tolerance_sec",
                odom_sync_tolerance_sec_));
+  pending_cloud_queue_size_ = static_cast<std::size_t>(
+      std::clamp<std::int64_t>(
+          declare_parameter<std::int64_t>(
+              "rolling_elevation.localization.pending_cloud_queue_size",
+              static_cast<std::int64_t>(pending_cloud_queue_size_)),
+          1, 256));
   rolling_merge_enabled_ =
       declare_parameter<bool>("rolling_merge.enabled", rolling_merge_enabled_);
   rolling_merge_output_topic_ = declare_parameter<std::string>(
@@ -361,12 +367,24 @@ void AutonomyLightNode::loadSavedMap() {
 void AutonomyLightNode::createInterfaces() {
   const auto data_qos = rclcpp::SensorDataQoS();
   const auto output_qos = rclcpp::QoS(10).reliable();
+  odom_callback_group_ =
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cloud_callback_group_ =
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  output_callback_group_ =
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  map_callback_group_ =
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions odom_options;
+  odom_options.callback_group = odom_callback_group_;
+  rclcpp::SubscriptionOptions cloud_options;
+  cloud_options.callback_group = cloud_callback_group_;
   createDdsOutput();
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       super_lio_odom_topic_, output_qos,
       [this](nav_msgs::msg::Odometry::SharedPtr msg) {
         onOdom(std::move(msg));
-      });
+      }, odom_options);
   const std::string elevation_cloud_topic =
       mapper_config_.source == "rolling" && rolling_merge_enabled_
           ? rolling_merge_output_topic_
@@ -375,7 +393,7 @@ void AutonomyLightNode::createInterfaces() {
       elevation_cloud_topic, data_qos,
       [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         onRegisteredCloud(std::move(msg));
-      });
+      }, cloud_options);
   RCLCPP_INFO(get_logger(), "Elevation cloud input: %s",
               elevation_cloud_topic.c_str());
   map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
@@ -401,7 +419,12 @@ void AutonomyLightNode::createInterfaces() {
       std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / publish_rate_hz_));
-  timer_ = create_wall_timer(period, [this]() { onTimer(); });
+  timer_ = create_wall_timer(period, [this]() { onTimer(); },
+                             output_callback_group_);
+  const auto map_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(map_publish_interval_sec_));
+  map_timer_ = create_wall_timer(map_period, [this]() { publishMap(); },
+                                 map_callback_group_);
 }
 
 void AutonomyLightNode::createDdsOutput() {

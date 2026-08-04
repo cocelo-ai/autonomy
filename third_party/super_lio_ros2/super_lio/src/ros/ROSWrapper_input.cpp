@@ -145,10 +145,11 @@ void ROSWrapper::setupIO(){
       std::make_shared<tf2_ros::TransformBroadcaster>(this);
   if (g_global_frame != g_odom_frame) {
     setMapToOdom(SE3());
-    map_to_odom_timer_ = create_wall_timer(
-        std::chrono::milliseconds(100),
-        [this]() { publishMapToOdom(now()); });
   }
+  const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / g_tf_publish_rate_hz));
+  dynamic_tf_timer_ = create_wall_timer(
+      period, [this]() { publishDynamicTransforms(now()); });
 }
 
 

@@ -27,6 +27,8 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <deque>
+#include <mutex>
+#include <optional>
 
 namespace autonomy_light {
 
@@ -46,6 +48,7 @@ private:
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr message);
   void
   onRegisteredCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message);
+  void retryPendingClouds();
   void onTimer();
   void publishMap();
   void publishHeight(const HeightGrid &grid);
@@ -58,8 +61,10 @@ private:
   [[nodiscard]] bool publishesDdsHeight() const;
   [[nodiscard]] nav_msgs::msg::Odometry
   baseOdom(const nav_msgs::msg::Odometry &imu_odom) const;
-  [[nodiscard]] const nav_msgs::msg::Odometry *
+  [[nodiscard]] std::optional<nav_msgs::msg::Odometry>
   odomAt(const rclcpp::Time &stamp) const;
+  bool integrateRegisteredCloud(const sensor_msgs::msg::PointCloud2 &cloud,
+                                const nav_msgs::msg::Odometry &odom);
   [[nodiscard]] PointObservations
   observationsFrom(const sensor_msgs::msg::PointCloud2 &cloud,
                    const nav_msgs::msg::Odometry &odom) const;
@@ -108,7 +113,8 @@ private:
   std::string raw_lidar_msg_type_{"livox_custom"};
   std::string super_lio_odom_topic_{"/lio/odom"};
   std::string super_lio_registered_topic_{"/lio/cloud_world"};
-  double odom_sync_tolerance_sec_{0.03};
+  double odom_sync_tolerance_sec_{0.12};
+  std::size_t pending_cloud_queue_size_{32U};
   bool rolling_merge_enabled_{false};
   std::string rolling_merge_output_topic_{"/autonomy_light/rolling_cloud"};
   std::string super_lio_config_file_;
@@ -132,11 +138,17 @@ private:
   bool has_odom_{false};
   nav_msgs::msg::Odometry latest_odom_;
   std::deque<nav_msgs::msg::Odometry> odom_history_;
+  std::deque<sensor_msgs::msg::PointCloud2::SharedPtr> pending_clouds_;
   nav_msgs::msg::Path path_;
+  std::uint64_t path_version_{0U};
+  std::uint64_t published_path_version_{0U};
+  std::optional<HeightGrid> latest_grid_;
   std::uint64_t odom_count_{0U};
   std::uint64_t cloud_count_{0U};
-  std::chrono::steady_clock::time_point last_map_publish_{};
   bool shutdown_requested_{false};
+
+  mutable std::mutex state_mutex_;
+  mutable std::mutex mapper_mutex_;
 
   ChildProcesses children_;
   std::unique_ptr<DdsHeightMapPublisher> dds_height_map_pub_;
@@ -151,6 +163,11 @@ private:
   rclcpp::Publisher<msg::HeightMapQuality>::SharedPtr quality_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr map_timer_;
+  rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr cloud_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr output_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr map_callback_group_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
 };
