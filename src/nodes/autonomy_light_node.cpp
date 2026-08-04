@@ -130,6 +130,17 @@ void AutonomyLightNode::loadParameters() {
       "rolling_elevation.outlier_variance", mapper_config_.rolling_outlier_variance));
   mapper_config_.rolling_mahalanobis_threshold = std::max(0.1, declare_parameter<double>(
       "rolling_elevation.mahalanobis_threshold", mapper_config_.rolling_mahalanobis_threshold));
+  mapper_config_.rolling_initial_prior_enabled = declare_parameter<bool>(
+      "rolling_elevation.initial_prior.enabled", mapper_config_.rolling_initial_prior_enabled);
+  mapper_config_.rolling_initial_prior_radius_m = std::max(0.0, declare_parameter<double>(
+      "rolling_elevation.initial_prior.footprint_radius_m",
+      mapper_config_.rolling_initial_prior_radius_m));
+  mapper_config_.rolling_initial_prior_ground_distance_m = std::max(0.0,
+      declare_parameter<double>("rolling_elevation.initial_prior.ground_distance_m",
+                                mapper_config_.rolling_initial_prior_ground_distance_m));
+  mapper_config_.rolling_initial_prior_variance = std::max(1.0e-6,
+      declare_parameter<double>("rolling_elevation.initial_prior.variance",
+                                mapper_config_.rolling_initial_prior_variance));
   mapper_config_.d435_base_variance = std::max(1.0e-6, declare_parameter<double>(
       "rolling_elevation.sensor.d435.base_variance", mapper_config_.d435_base_variance));
   mapper_config_.d435_range_variance_factor = std::max(0.0, declare_parameter<double>(

@@ -21,6 +21,10 @@ struct ElevationMapperConfig {
   double rolling_max_variance{0.04};
   double rolling_outlier_variance{0.0025};
   double rolling_mahalanobis_threshold{3.0};
+  bool rolling_initial_prior_enabled{true};
+  double rolling_initial_prior_radius_m{0.30};
+  double rolling_initial_prior_ground_distance_m{0.48};
+  double rolling_initial_prior_variance{0.04};
   double d435_base_variance{0.0016};
   double d435_range_variance_factor{0.002};
   double lidar_extrinsic_translation_std_m{0.005};
@@ -48,7 +52,7 @@ public:
   void loadGlobalMap(const PclCloud &cloud);
   [[nodiscard]] bool empty() const;
   [[nodiscard]] HeightGrid build(const Pose2_5D &robot, double stamp_sec,
-                                 const std_msgs::msg::Header &header) const;
+                                 const std_msgs::msg::Header &header);
   [[nodiscard]] PclCloud::Ptr globalMap() const;
 
 private:
@@ -78,6 +82,7 @@ private:
   void addVoxels(const PclCloud &cloud);
   void addRollingSamples(SampleMap &samples, const PointObservation &point,
                          const Pose2_5D &robot) const;
+  void seedInitialRollingPrior(const Pose2_5D &robot, double stamp_sec);
   [[nodiscard]] const Surface *nearestSurface(const SurfaceMap &surfaces,
                                               double x, double y) const;
   [[nodiscard]] bool validRolling(const Surface &surface, double stamp_sec,
@@ -95,6 +100,7 @@ private:
   SurfaceMap global_surfaces_;
   SurfaceMap rolling_surfaces_;
   VoxelMap global_voxels_;
+  bool rolling_prior_seeded_{false};
 };
 
 } // namespace autonomy_light

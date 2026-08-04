@@ -65,6 +65,11 @@ height_map:
 발행한다. `valid=0`인 `unknown` 값은 평지 관측이 아니므로 Isaac Lab 정책에서는
 별도 observation으로 사용해야 한다.
 
+Rolling 시작 시에는 LiDAR/D435가 가리는 `base_link` 아래 footprint에만 평지 prior를
+넣는다. `initial_prior.ground_distance_m`만큼 아래의 지면을 가정하지만 분산은 기본
+`0.04 m²`로 크게 둔다. 따라서 이 셀도 `valid=1`로 발행되지만 quality variance가
+높으며, 첫 실제 관측은 outlier gate 없이 칼만 업데이트되어 prior를 즉시 대체한다.
+
 ### Robot-centric uncertainty
 
 Rolling은 cloud timestamp와 일치하는 Super-LIO odometry만 사용한다. Super-LIO의

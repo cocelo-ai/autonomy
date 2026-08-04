@@ -61,6 +61,12 @@ and D435 models separate after fusion.
 `height_map_distance`. A quality mask marks unobserved cells explicitly:
 `valid=0` means `data` contains only the configured unknown placeholder.
 
+At startup, `rolling_elevation.initial_prior` seeds only the robot footprint with
+a high-variance ground posterior. It publishes as `valid=1` so the controller
+receives a finite initial value, while its quality variance explicitly marks it
+as low confidence. The first real observation bypasses the innovation gate and
+replaces that prior through the usual Kalman update.
+
 ## Floor tracking
 
 For each height-map frame, ground cells inside `height_origin.floor_radius` are

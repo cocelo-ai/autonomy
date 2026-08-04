@@ -83,10 +83,16 @@ void ElevationMapper::configure(ElevationMapperConfig config) {
   config.pose_max_orientation_std_deg = std::max(config.pose_min_orientation_std_deg,
                                                    config.pose_max_orientation_std_deg);
   config.pose_splat_max_cells = std::clamp(config.pose_splat_max_cells, 0, 4);
+  config.rolling_initial_prior_radius_m = std::max(0.0, config.rolling_initial_prior_radius_m);
+  config.rolling_initial_prior_ground_distance_m = std::max(
+      0.0, config.rolling_initial_prior_ground_distance_m);
+  config.rolling_initial_prior_variance = std::clamp(
+      config.rolling_initial_prior_variance, 1.0e-6, config.rolling_max_variance);
   config_ = std::move(config);
   global_surfaces_.clear();
   rolling_surfaces_.clear();
   global_voxels_.clear();
+  rolling_prior_seeded_ = false;
 }
 
 CellKey ElevationMapper::keyFor(const double x, const double y) const {
@@ -135,7 +141,7 @@ void ElevationMapper::fuse(float &mean, float &variance, double &last_time,
                                 variance + config.rolling_process_variance_per_sec * dt);
   const double innovation = measurement - mean;
   const double innovation_variance = std::max(1.0e-9, prior + measurement_variance);
-  if (std::abs(innovation) > config.rolling_mahalanobis_threshold *
+  if (support != 0U && std::abs(innovation) > config.rolling_mahalanobis_threshold *
                                  std::sqrt(innovation_variance)) {
     variance = static_cast<float>(std::min(config.rolling_max_variance,
                                             prior + config.rolling_outlier_variance));
@@ -148,6 +154,37 @@ void ElevationMapper::fuse(float &mean, float &variance, double &last_time,
                                            config.rolling_max_variance));
   last_time = stamp_sec;
   ++support;
+}
+
+void ElevationMapper::seedInitialRollingPrior(const Pose2_5D &robot,
+                                              const double stamp_sec) {
+  if (rolling_prior_seeded_ || config_.source != "rolling" ||
+      !config_.rolling_initial_prior_enabled || !std::isfinite(robot.x) ||
+      !std::isfinite(robot.y) || !std::isfinite(robot.z) || !std::isfinite(stamp_sec)) {
+    return;
+  }
+  const int radius = static_cast<int>(std::ceil(
+      config_.rolling_initial_prior_radius_m / config_.grid.resolution));
+  const double radius2 = std::pow(config_.rolling_initial_prior_radius_m, 2);
+  const float ground = static_cast<float>(robot.z -
+      config_.rolling_initial_prior_ground_distance_m);
+  for (int y = -radius; y <= radius; ++y) {
+    for (int x = -radius; x <= radius; ++x) {
+      const double dx = x * config_.grid.resolution;
+      const double dy = y * config_.grid.resolution;
+      if (dx * dx + dy * dy > radius2) {
+        continue;
+      }
+      auto &surface = rolling_surfaces_[keyFor(robot.x + dx, robot.y + dy)];
+      if (!std::isfinite(surface.ground)) {
+        surface.ground = ground;
+        surface.ground_variance = static_cast<float>(config_.rolling_initial_prior_variance);
+        surface.ground_time = stamp_sec;
+        surface.support = 0U;
+      }
+    }
+  }
+  rolling_prior_seeded_ = true;
 }
 
 void ElevationMapper::updateSurfaces(SurfaceMap &target, SampleMap &samples,
@@ -305,9 +342,10 @@ bool ElevationMapper::validRolling(const Surface &surface,
 }
 
 HeightGrid ElevationMapper::build(const Pose2_5D &robot, const double stamp_sec,
-                                  const std_msgs::msg::Header &header) const {
+                                  const std_msgs::msg::Header &header) {
   HeightGrid grid(config_.grid);
   grid.header = header;
+  seedInitialRollingPrior(robot, stamp_sec);
   const SurfaceMap &source = config_.source == "global" ? global_surfaces_
                                                            : rolling_surfaces_;
   if (source.empty()) {

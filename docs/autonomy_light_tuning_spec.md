@@ -11,6 +11,10 @@ rolling_elevation:
   base_variance: 0.0004
   range_variance_factor: 0.0005
   mahalanobis_threshold: 3.0
+  initial_prior:
+    footprint_radius_m: 0.30
+    ground_distance_m: 0.48
+    variance: 0.04
 algorithm:
   min_z:
     min_points_per_cell: 2
@@ -25,6 +29,9 @@ algorithm:
   for sparse static terrain.
 - Raise `range_variance_factor` when distant terrain should contribute less.
 - Keep `obstacle_min_height` below the smallest step the policy must detect.
+- Set `initial_prior.ground_distance_m` to the calibrated vertical distance from
+  `base_link` to nominal ground; keep its variance much larger than sensor
+  variance so the first observation dominates the startup footprint posterior.
 
 Use `global` only when a persistent PCD is the intended terrain reference.
 The global source does not age out; it should not be used as a substitute for

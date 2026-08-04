@@ -80,6 +80,9 @@
   calibration are added to the Jacobian-projected pose covariance; XY uncertainty splats the point
   across nearby cells. Over-limit uncertainty rejects the cloud. The merge node keeps a
   <code>sensor_id</code> field so LiDAR and D435 retain independent measurement models.</p>
+  <p>At startup, only the robot footprint receives a flat, high-variance ground prior because its
+  underside is occluded. Its first real observation bypasses the innovation gate and replaces it by
+  the normal Kalman update; the quality variance exposes the prior's low confidence.</p>
 
   <h2>Transport selection</h2>
   <p><code>height_map_output.transport</code> selects <code>ros2</code>,

@@ -67,6 +67,13 @@ autonomy_light:
       max_variance: 0.04
       outlier_variance: 0.0025
       mahalanobis_threshold: 3.0
+      # At the initial pose, the LiDAR cannot observe below the robot. Seed only
+      # this footprint with a weak ground posterior; its first observation wins.
+      initial_prior:
+        enabled: true
+        footprint_radius_m: 0.30
+        ground_distance_m: 0.48
+        variance: 0.04             # m^2, sigma = 0.20 m (intentionally weak)
       # All values are measurement/calibration standard deviations after a
       # real sensor-mount calibration; tune them from logged residuals.
       sensor:
