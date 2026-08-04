@@ -17,6 +17,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include "autonomy_light/dds_height_map_publisher.hpp"
 #include "autonomy_light/msg/height_map.hpp"
 
 namespace autonomy_light {
@@ -124,7 +125,7 @@ struct HeightMapBridge::Impl {
         node.declare_parameter<std::string>("dds.topic", "height_map");
     const auto dds_type =
         node.declare_parameter<std::string>("dds.type", "core_dds::HeightMap");
-    const int dds_history = node.declare_parameter<int>("dds.history_depth", 1);
+    const int dds_history = node.declare_parameter<int>("dds.history_depth", 128);
 
     if (transport != "ros2" && transport != "cyclone_dds" &&
         transport != "both") {
@@ -200,7 +201,7 @@ struct HeightMapBridge::Impl {
       return;
     }
     auto next = std::make_shared<Snapshot>();
-    next->header = message->info.header;
+    next->header = message->header;
     next->resolution = message->info.resolution;
     next->length_x = message->info.length_x;
     next->length_y = message->info.length_y;

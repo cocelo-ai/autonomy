@@ -260,7 +260,7 @@ bridge = {"height_map_bridge": {"ros__parameters": {
     "dds.domain_id": int(dds.get("domain_id", 1)),
     "dds.topic": dds.get("topic", "height_map"),
     "dds.type": dds.get("type", "core_dds::HeightMap"),
-    "dds.history_depth": int(dds.get("history_depth", 1)),
+    "dds.history_depth": int(dds.get("history_depth", 128)),
     "use_sim_time": mode == "sim",
 }}}
 

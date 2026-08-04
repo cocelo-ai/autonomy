@@ -85,7 +85,8 @@ Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `cyclone_dds`, `both`를 선택한다. ROS 2 topic은
 `/autonomy_light/height_map_data`이고, Cyclone DDS는 기존 IDL contract
 `core_dds::HeightMap { sequence<float> data; }`와 `height_map` topic을 사용한다.
-두 transport는 같은 배열을 같은 주기로 보낸다.
+두 transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
+같은 domain `1`, best-effort, `KEEP_LAST 128`을 기본으로 사용한다.
 
 ### Remote Cyclone DDS network
 

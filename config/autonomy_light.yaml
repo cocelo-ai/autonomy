@@ -62,4 +62,5 @@ autonomy_light:
         domain_id: 1
         topic: "height_map"
         type: "core_dds::HeightMap"
-        history_depth: 1
+        # Existing autonomy's direct DDS writer used KEEP_LAST 128.
+        history_depth: 128

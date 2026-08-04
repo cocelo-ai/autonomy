@@ -46,7 +46,7 @@
     <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>D435/D435i cloud; directly fused with the structured-light model.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/elevation_map</code></td><td>Native <code>grid_map_msgs/msg/GridMap</code> at configured 50 Hz, layers: elevation, upper/lower bound, uncertainty range.</td></tr>
     <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Legacy <code>autonomy_light/msg/HeightMap</code>, base-yaw row-major array at the same rate.</td></tr>
-    <tr><td>output</td><td><code>height_map</code></td><td>Cyclone DDS <code>core_dds::HeightMap { sequence&lt;float&gt; data; }</code>; default <code>transport: both</code> publishes this and ROS 2 together.</td></tr>
+    <tr><td>output</td><td><code>height_map</code></td><td>Cyclone DDS <code>core_dds::HeightMap { sequence&lt;float&gt; data; }</code>, domain 1, best-effort, KEEP_LAST 128; default <code>transport: both</code> publishes this and ROS 2 together.</td></tr>
     <tr><td>TF</td><td><code>map → odom → imu → base_link → lidar_link</code><br><code>base_link → camera_link → camera_depth_optical_frame</code></td><td>Super-LIO owns dynamic transforms; launcher owns the calibrated static mounts, while the D435 driver owns camera-internal TF.</td></tr>
   </table>
   <p>The local grid follows <code>base_link</code> in <code>map</code> with Grid Map's circular buffer. It preserves
