@@ -115,8 +115,15 @@ set -u
 command -v ros2 >/dev/null || { echo "error: ros2 is unavailable" >&2; exit 1; }
 
 if [[ "${VIS}" == "true" ]]; then
-  /usr/bin/python3 -c 'import rclpy; from nav_msgs.msg import Odometry; from autonomy_light.msg import HeightMap' || {
-    echo "error: --vis requires rclpy, nav_msgs, and the built autonomy_light HeightMap message" >&2
+  /usr/bin/python3 - <<'PY' || {
+from rclpy.type_support import check_for_type_support
+from nav_msgs.msg import Odometry
+from autonomy_light.msg import HeightMap
+
+check_for_type_support(Odometry)
+check_for_type_support(HeightMap)
+PY
+    echo "error: --vis requires valid rclpy/nav_msgs/autonomy_light interfaces; rerun ./build.sh --clean --skip-apt --skip-sdk --packages autonomy_light" >&2
     exit 1
   }
 fi
