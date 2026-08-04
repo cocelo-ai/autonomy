@@ -389,25 +389,35 @@ wait_for_topic() {
 
 enable_realsense_pointcloud() {
   local node_name="/$1/$1"
-  local parameters pointcloud_parameter=""
+  local parameters pointcloud_prefix=""
   local attempt
 
   # Some Jetson-packaged realsense2_camera builds expose the point-cloud
   # parameter with this literal ARM/NEON-mangled name.  Supplying the normal
   # launch argument alone does not enable it on those builds.
   for ((attempt = 0; attempt < 75; ++attempt)); do
-    parameters="$(ros2 param list "${node_name}" 2>/dev/null || true)"
+    parameters="$(ros2 param list "${node_name}" 2>/dev/null | sed 's/^[[:space:]]*//' || true)"
     if grep -Fxq "pointcloud.enable" <<<"${parameters}"; then
-      pointcloud_parameter="pointcloud.enable"
+      pointcloud_prefix="pointcloud."
     elif grep -Fxq "pointcloud__neon_.enable" <<<"${parameters}"; then
-      pointcloud_parameter="pointcloud__neon_.enable"
+      pointcloud_prefix="pointcloud__neon_."
     elif grep -Fxq "enable_pointcloud" <<<"${parameters}"; then
-      pointcloud_parameter="enable_pointcloud"
+      pointcloud_prefix=""
     fi
 
-    if [[ -n "${pointcloud_parameter}" ]]; then
-      ros2 param set "${node_name}" "${pointcloud_parameter}" true >/dev/null && {
-        echo "RealSense point cloud enabled: ${node_name}.${pointcloud_parameter}"
+    if [[ -n "${pointcloud_prefix}" ]]; then
+      # Texture stream 2 is the color sensor.  The Jetson build otherwise
+      # leaves it as "Any", which creates no textured PointCloud2 even
+      # after the filter itself has been enabled.
+      ros2 param set "${node_name}" "${pointcloud_prefix}stream_filter" 2 >/dev/null &&
+        ros2 param set "${node_name}" "${pointcloud_prefix}allow_no_texture_points" true >/dev/null &&
+        ros2 param set "${node_name}" "${pointcloud_prefix}enable" true >/dev/null && {
+        echo "RealSense point cloud enabled: ${node_name}.${pointcloud_prefix}enable (texture=color)"
+        return 0
+      }
+    elif grep -Fxq "enable_pointcloud" <<<"${parameters}"; then
+      ros2 param set "${node_name}" enable_pointcloud true >/dev/null && {
+        echo "RealSense point cloud enabled: ${node_name}.enable_pointcloud"
         return 0
       }
     fi
