@@ -79,6 +79,7 @@ install(PROGRAMS
   mapping.sh
   scripts/dds_network.py
   scripts/height_map_vis.py
+  scripts/telemetry_vis.py
   scripts/setup_elevation_mapping.sh
   scripts/setup_livox_driver.sh
   DESTINATION lib/${PROJECT_NAME}

@@ -321,8 +321,9 @@ struct HeightMapBridge::Impl {
 
     // The PointCloud2 is the geometric view of the fully post-processed
     // controller map, not a sparse view of native GridMap validity.  Emit one
-    // point per sampled cell (including unknown/fallback cells) and derive z
-    // from the clipped height-map value so both outputs agree exactly.
+    // point per sampled cell (including unknown/fallback cells).  The data
+    // contract is a positive downward distance from base_link, while a point
+    // cloud uses an upward-positive z coordinate, hence z = -data.
     std::vector<PointXYZ> points;
     points.reserve(data.size());
     for (int row = 0; row < height; ++row) {
@@ -331,7 +332,7 @@ struct HeightMapBridge::Impl {
         const double y = -length_y / 2.0 + (row + 0.5) * resolution;
         const float value = data[static_cast<std::size_t>(row) * width + column];
         points.push_back(PointXYZ{static_cast<float>(x), static_cast<float>(y),
-                                  static_cast<float>(reference_height - value)});
+                                  -value});
       }
     }
 

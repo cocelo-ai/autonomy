@@ -38,7 +38,7 @@ source install/setup.bash
 빌드한다. 설치를 건너뛰려면 `--skip-apt`, Livox SDK만 건너뛰려면 `--skip-sdk`를 쓴다.
 
 ```bash
-./launch.sh --vis                 # native GridMap elevation layer를 2D로 표시
+./launch.sh --vis                 # 50 Hz terminal pose/velocity/height-map dashboard
 ./launch.sh --rviz                # GridMap RViz display
 ./launch.sh --map maps/site.pcd   # Super-LIO saved-map relocation
 ./mapping.sh --output maps/site.pcd
@@ -51,6 +51,12 @@ source install/setup.bash
 
 `mapping.sh`는 Super-LIO full SLAM(키프레임·loop closure·pose graph)을 켜고,
 종료 시 최적화된 PCD를 저장한다. `--map`의 PCD는 Super-LIO 재지역화용이다.
+
+`--vis`는 별도 OpenCV 창을 띄우지 않는다. 대신 `/lio/odom`의 위치·속도와
+`/autonomy_light/height_map_data`의 전체 grid를 터미널에서 50 Hz로 갱신한다. 이 모드에서는
+dashboard가 흐트러지지 않도록 다른 node의 stdout/stderr는
+`~/.ros/log/autonomy_light_telemetry_<timestamp>/`로 저장된다. `AUTONOMY_LIGHT_VIS_FPS`로
+갱신 주기를 바꿀 수 있다.
 
 설정 책임은 분리되어 있다. `config/autonomy_light.yaml`은 bringup의 frame,
 calibration, Livox·Super-LIO 입력, height-map output transport와 DDS network를 가진다.
@@ -97,8 +103,9 @@ Bridge는 근처 terrain의 20% percentile을 local floor로 잡고
 `core_dds::HeightMap { sequence<float> data; }`와 `height_map` topic을 사용한다.
 동일한 샘플 표면은 `/autonomy_light/height_map` (`sensor_msgs/msg/PointCloud2`)에도
 발행된다. point cloud는 `base_link` frame이고 `z`는 `height_map_data`의
-후처리된 값(unknown 대체·floor 정규화·clipping)을 역변환한 terrain height다. 따라서
-unknown cell도 포함해 항상 `18 × 8`개 점을 발행한다. 두 data transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
+후처리된 값(unknown 대체·floor 정규화·clipping)의 부호를 바꾼 값이다. 즉 data의
+양수 downward distance는 PCL의 음수 z가 된다. 따라서 unknown cell도 포함해 항상
+`18 × 8`개 점을 발행한다. 두 data transport는 같은 배열을 같은 주기로 보낸다. Direct DDS는 기존 autonomy writer와
 같은 domain `1`, best-effort, `KEEP_LAST 128`을 기본으로 사용한다.
 
 ### Remote Cyclone DDS network

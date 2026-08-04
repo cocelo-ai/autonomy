@@ -64,7 +64,7 @@ class GridMapVis(Node):
                 color = (220, 220, 220) if valid[row, column] else (120, 120, 120)
                 cv2.putText(image, text, (column * scale + 3, row * scale + scale // 2 + 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.30, color, 1, cv2.LINE_AA)
-        label = (f"elevation [m]  grid={values.shape[1]}x{values.shape[0]}  "
+        label = (f"elevation [m] frame={message.header.frame_id}  grid={values.shape[1]}x{values.shape[0]}  "
                  f"res={message.info.resolution:.3f} m  valid={np.count_nonzero(valid)}/{values.size}")
         image = cv2.copyMakeBorder(image, 30, 0, 0, 0, cv2.BORDER_CONSTANT, value=(25, 25, 25))
         cv2.putText(image, label, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (230, 230, 230), 1, cv2.LINE_AA)

@@ -16,7 +16,7 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --raw-imu-topic TOPIC   Override the Super-LIO IMU input topic.
   --sim-topic-prefix PFX  Simulation prefix (default: /f4).
   --mid360|--mid360s      Select the bundled Livox launch file.
-  --vis                   Show the native GridMap elevation layer in a 2D window.
+  --vis                   Show 50 Hz terminal telemetry (pose, velocity, height-map data).
   --rviz                  Start RViz with the GridMap display.
   --no-rviz               Do not auto-start RViz for --map.
   --no-static-tf          Do not publish imu -> base_link -> lidar_link/camera_link.
@@ -44,9 +44,7 @@ LIVOX_MODEL="${AUTONOMY_LIGHT_LIVOX_MODEL:-mid360}"
 VIS="false"
 RVIZ="auto"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
-VIS_TOPIC="${AUTONOMY_LIGHT_VIS_TOPIC:-}"
 VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
-VIS_SCALE="${AUTONOMY_LIGHT_VIS_SCALE:-48}"
 MAP_TOPIC="${AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC:-/autonomy_light/elevation_map}"
 declare -a EXTRA_ELEVATION_ARGS=()
 
@@ -117,8 +115,8 @@ set -u
 command -v ros2 >/dev/null || { echo "error: ros2 is unavailable" >&2; exit 1; }
 
 if [[ "${VIS}" == "true" ]]; then
-  /usr/bin/python3 -c 'import cv2, rclpy; from grid_map_msgs.msg import GridMap' || {
-    echo "error: --vis requires python3-opencv, rclpy, and grid_map_msgs" >&2
+  /usr/bin/python3 -c 'import rclpy; from nav_msgs.msg import Odometry; from autonomy_light.msg import HeightMap' || {
+    echo "error: --vis requires rclpy, nav_msgs, and the built autonomy_light HeightMap message" >&2
     exit 1
   }
 fi
@@ -346,6 +344,8 @@ with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{realsense_camera_name}\n")
     stream.write(f"{realsense_serial}\n")
     stream.write(f"{realsense_topic}\n")
+    stream.write(f"{mapper_params.get('robot_pose_with_covariance_topic', '/lio/odom')}\n")
+    stream.write(f"{height_output.get('ros2_topic', '/autonomy_light/height_map_data')}\n")
 PY
 
 /usr/bin/python3 "${SCRIPT_DIR}/scripts/dds_network.py" --config "${CONFIG_FILE}" \
@@ -364,17 +364,40 @@ REALSENSE_ENABLED="${RUNTIME_VALUES[5]}"
 REALSENSE_CAMERA_NAME="${RUNTIME_VALUES[6]}"
 REALSENSE_SERIAL="${RUNTIME_VALUES[7]}"
 REALSENSE_POINTCLOUD_TOPIC="${RUNTIME_VALUES[8]}"
+ODOM_TOPIC="${RUNTIME_VALUES[9]}"
+HEIGHT_MAP_DATA_TOPIC="${RUNTIME_VALUES[10]}"
 export ROS_DOMAIN_ID
-[[ -n "${VIS_TOPIC}" ]] || VIS_TOPIC="${MAP_TOPIC}"
 read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"
 read -r BASE_LIDAR_X BASE_LIDAR_Y BASE_LIDAR_Z BASE_LIDAR_QX BASE_LIDAR_QY BASE_LIDAR_QZ BASE_LIDAR_QW < <(sed -n '2p' "${STATIC_TF}")
 read -r BASE_CAMERA_X BASE_CAMERA_Y BASE_CAMERA_Z BASE_CAMERA_QX BASE_CAMERA_QY BASE_CAMERA_QZ BASE_CAMERA_QW < <(sed -n '3p' "${STATIC_TF}")
 
 declare -a PIDS=()
+VIS_LOG_DIR=""
+if [[ "${VIS}" == "true" ]]; then
+  VIS_LOG_DIR="${AUTONOMY_LIGHT_VIS_LOG_DIR:-${HOME}/.ros/log/autonomy_light_telemetry_$(date +%Y%m%d_%H%M%S)}"
+  mkdir -p "${VIS_LOG_DIR}"
+  echo "--vis: node logs are redirected to ${VIS_LOG_DIR}"
+fi
+
 start() {
-  echo "autonomy-light: starting $1"
+  local label="$1"
+  local log_name
+  echo "autonomy-light: starting ${label}"
   shift
-  "$@" &
+  if [[ -n "${VIS_LOG_DIR}" ]]; then
+    log_name="${label//[^[:alnum:]._-]/_}"
+    "$@" >"${VIS_LOG_DIR}/${log_name}.log" 2>&1 &
+  else
+    "$@" &
+  fi
+  PIDS+=("$!")
+}
+
+start_telemetry() {
+  echo "autonomy-light: starting 50 Hz telemetry viewer"
+  /usr/bin/python3 "${SCRIPT_DIR}/scripts/telemetry_vis.py" \
+    --odom-topic "${ODOM_TOPIC}" --height-map-topic "${HEIGHT_MAP_DATA_TOPIC}" \
+    --fps "${VIS_FPS}" &
   PIDS+=("$!")
 }
 
@@ -572,8 +595,7 @@ else
 fi
 
 if [[ "${VIS}" == "true" ]]; then
-  start "GridMap viewer" /usr/bin/python3 "${SCRIPT_DIR}/scripts/height_map_vis.py" \
-    --topic "${VIS_TOPIC}" --fps "${VIS_FPS}" --scale "${VIS_SCALE}"
+  start_telemetry
 fi
 if [[ "${RVIZ}" == "true" ]]; then
   RVIZ_CONFIG="${SCRIPT_DIR}/config/elevation_mapping.rviz"
