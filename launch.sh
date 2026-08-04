@@ -11,6 +11,7 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --map FILE              Start Super-LIO relocation against a saved PCD.
   --mapping-output FILE   Enable Super-LIO full SLAM and save its PCD on exit.
   --config FILE           Override autonomy_light.yaml.
+  --elevation-config FILE Override elevation_mapping.yaml.
   --raw-lidar-topic TOPIC Override the Super-LIO LiDAR input topic.
   --raw-imu-topic TOPIC   Override the Super-LIO IMU input topic.
   --sim-topic-prefix PFX  Simulation prefix (default: /f4).
@@ -30,6 +31,7 @@ MODE="real"
 NO_DRIVERS="false"
 NO_STATIC_TF="false"
 CONFIG_FILE="${AUTONOMY_LIGHT_CONFIG:-${SCRIPT_DIR}/config/autonomy_light.yaml}"
+ELEVATION_CONFIG_FILE="${AUTONOMY_LIGHT_ELEVATION_CONFIG:-${SCRIPT_DIR}/config/elevation_mapping.yaml}"
 MAP_FILE="${AUTONOMY_LIGHT_MAP_FILE:-}"
 MAPPING_OUTPUT=""
 RAW_LIDAR_TOPIC=""
@@ -42,6 +44,7 @@ ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 VIS_TOPIC="${AUTONOMY_LIGHT_VIS_TOPIC:-}"
 VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
 VIS_SCALE="${AUTONOMY_LIGHT_VIS_SCALE:-48}"
+MAP_TOPIC="${AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC:-/autonomy_light/elevation_map}"
 declare -a EXTRA_ELEVATION_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -56,6 +59,8 @@ while [[ $# -gt 0 ]]; do
     --no-rviz) RVIZ="false"; shift ;;
     --config) CONFIG_FILE="${2:?--config requires a file}"; shift 2 ;;
     --config=*) CONFIG_FILE="${1#*=}"; shift ;;
+    --elevation-config) ELEVATION_CONFIG_FILE="${2:?--elevation-config requires a file}"; shift 2 ;;
+    --elevation-config=*) ELEVATION_CONFIG_FILE="${1#*=}"; shift ;;
     --map|--map-file) MAP_FILE="${2:?--map requires a PCD}"; shift 2 ;;
     --map=*|--map-file=*) MAP_FILE="${1#*=}"; shift ;;
     --mapping-output) MAPPING_OUTPUT="${2:?--mapping-output requires a PCD path}"; shift 2 ;;
@@ -76,6 +81,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -f "${CONFIG_FILE}" ]] || { echo "error: config not found: ${CONFIG_FILE}" >&2; exit 1; }
+[[ -f "${ELEVATION_CONFIG_FILE}" ]] || {
+  echo "error: elevation config not found: ${ELEVATION_CONFIG_FILE}" >&2
+  exit 1
+}
 if [[ -n "${MAP_FILE}" ]]; then
   MAP_FILE="$(realpath -- "${MAP_FILE}")"
   [[ -f "${MAP_FILE}" ]] || { echo "error: map not found: ${MAP_FILE}" >&2; exit 1; }
@@ -118,7 +127,7 @@ STATIC_TF="${RUNTIME_DIR}/static_tf.txt"
 RUNTIME_INFO="${RUNTIME_DIR}/runtime.env"
 
 /usr/bin/python3 - "${CONFIG_FILE}" "${SCRIPT_DIR}/config/super_lio_mid360.yaml" \
-  "${SCRIPT_DIR}/config/elevation_mapping.yaml" "${LIO_CONFIG}" "${ELEVATION_CONFIG}" \
+  "${ELEVATION_CONFIG_FILE}" "${LIO_CONFIG}" "${ELEVATION_CONFIG}" \
   "${STATIC_TF}" "${RUNTIME_INFO}" "${MODE}" "${MAP_FILE}" "${MAPPING_OUTPUT}" \
   "${RAW_LIDAR_TOPIC}" "${RAW_IMU_TOPIC}" "${SIM_TOPIC_PREFIX}" <<'PY'
 import math
@@ -126,7 +135,7 @@ import os
 import sys
 import yaml
 
-(source_path, lio_default, elevation_default, lio_target, elevation_target, tf_target,
+(source_path, lio_default, elevation_source, lio_target, elevation_target, tf_target,
  runtime_target, mode, map_file, mapping_output, lidar_override, imu_override, sim_prefix) = sys.argv[1:14]
 
 def read_yaml(path):
@@ -173,7 +182,6 @@ def matrix_from_quaternion(x, y, z, w):
     ]
 
 root = params(read_yaml(source_path), "autonomy_light")
-elevation = root.get("elevation_mapping", {})
 lidar_topic = lidar_override or root.get("raw_lidar_topic", "/livox/lidar")
 imu_topic = imu_override or root.get("raw_imu_topic", "/livox/imu")
 if mode == "sim":
@@ -204,7 +212,6 @@ lio_params["lio.ros.imu_topic"] = imu_topic
 lio_params["lio.ros.global_frame"] = root.get("map_frame", "map")
 lio_params["lio.ros.odom_frame"] = root.get("odom_frame", "odom")
 lio_params["lio.extrinsic.lidar_imu"] = imu_from_lidar + matrix_from_quaternion(*imu_from_lidar_q)
-lio_params["lio.output.tf_publish_rate_hz"] = float(elevation.get("publish_rate_hz", 50.0))
 lio_params["lio.map.save_map"] = bool(mapping_output)
 lio_params["lio.slam.enable"] = bool(mapping_output)
 lio_params["use_sim_time"] = mode == "sim"
@@ -213,24 +220,13 @@ if map_file or mapping_output:
     lio_params["lio.map.save_map_dir"] = os.path.dirname(output)
     lio_params["lio.map.map_name"] = os.path.basename(output)
 
-mapper = read_yaml(elevation_default)
+mapper = read_yaml(elevation_source)
 mapper_params = params(mapper, "elevation_mapping")
 mapper_params["use_sim_time"] = mode == "sim"
+# The TF contract is platform-wide; keep its names in one canonical config.
 mapper_params["map_frame_id"] = root.get("map_frame", "map")
 mapper_params["robot_base_frame_id"] = root.get("target_frame", "base_link")
-mapper_params["robot_pose_with_covariance_topic"] = root.get("super_lio_odom_topic", "/lio/odom")
-mapper_params["length_in_x"] = float(elevation.get("length_in_x", 1.80))
-mapper_params["length_in_y"] = float(elevation.get("length_in_y", 0.80))
-mapper_params["resolution"] = float(elevation.get("resolution", 0.10))
-mapper_params["fused_map_publishing_rate"] = float(elevation.get("publish_rate_hz", 50.0))
-mapper_params["min_update_rate"] = float(elevation.get("publish_rate_hz", 50.0))
-mapper_params["visibility_cleanup_rate"] = float(elevation.get("visibility_cleanup_rate_hz", 10.0))
-mapper_params["underlying_map_topic"] = elevation.get("underlying_map_topic", "")
-mapper_params["lidar"]["topic"] = elevation.get("lidar_topic", root.get("super_lio_cloud_topic", "/lio/cloud_world"))
-mapper_params["d435"]["topic"] = elevation.get("d435_topic", "/camera/camera/depth/color/points")
-mapper_params["d435"]["sensor_processor"]["cutoff_max_depth"] = float(elevation.get("d435_max_depth_m", 3.25))
-if not bool(elevation.get("d435_enabled", True)):
-    mapper_params["inputs"] = [name for name in mapper_params["inputs"] if name != "d435"]
+mapper_params["track_point_frame_id"] = root.get("target_frame", "base_link")
 
 with open(lio_target, "w", encoding="utf-8") as stream:
     yaml.safe_dump(lio, stream, default_flow_style=False, sort_keys=False)
@@ -241,7 +237,6 @@ with open(tf_target, "w", encoding="utf-8") as stream:
     stream.write(" ".join(str(value) for value in (*base_to_lidar, *base_to_lidar_q)) + "\n")
 with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{int(root.get('ros_domain_id', 0))}\n")
-    stream.write(f"{elevation.get('map_topic', '/autonomy_light/elevation_map')}\n")
     stream.write(f"{root.get('imu_frame', 'imu')}\n")
     stream.write(f"{root.get('target_frame', 'base_link')}\n")
     stream.write(f"{root.get('lidar_frame', 'lidar_link')}\n")
@@ -249,10 +244,9 @@ PY
 
 mapfile -t RUNTIME_VALUES < "${RUNTIME_INFO}"
 ROS_DOMAIN_ID="${RUNTIME_VALUES[0]}"
-MAP_TOPIC="${RUNTIME_VALUES[1]}"
-IMU_FRAME="${RUNTIME_VALUES[2]}"
-BASE_FRAME="${RUNTIME_VALUES[3]}"
-LIDAR_FRAME="${RUNTIME_VALUES[4]}"
+IMU_FRAME="${RUNTIME_VALUES[1]}"
+BASE_FRAME="${RUNTIME_VALUES[2]}"
+LIDAR_FRAME="${RUNTIME_VALUES[3]}"
 export ROS_DOMAIN_ID
 [[ -n "${VIS_TOPIC}" ]] || VIS_TOPIC="${MAP_TOPIC}"
 read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"

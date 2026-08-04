@@ -39,6 +39,14 @@ source install/setup.bash
 `mapping.sh`는 Super-LIO full SLAM(키프레임·loop closure·pose graph)을 켜고,
 종료 시 최적화된 PCD를 저장한다. `--map`의 PCD는 Super-LIO 재지역화용이다.
 
+설정 책임은 분리되어 있다. `config/autonomy_light.yaml`은 bringup의 frame,
+calibration, Livox와 Super-LIO 입력만 가진다. `map`/`base_link` frame은 이 공통
+설정에서 elevation mapper로 한 번만 전달한다. `config/elevation_mapping.yaml`은
+LiDAR/D435 입력, local-grid 크기·해상도·주기, 융합과 cleanup을 전부 가진다. 다른
+mapper 설정은 `./launch.sh --elevation-config FILE`로 교체한다.
+기본 출력 topic은 launcher remap이며, 필요하면
+`AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC=/my_map ./launch.sh`로 바꾼다.
+
 ## Native elevation-map interface
 
 기본 output topic은 `/autonomy_light/elevation_map`, type은
@@ -58,10 +66,12 @@ mapper는 Super-LIO `/lio/odom`의 6×6 pose covariance를 motion prediction과 
 variance에 반영한다. LiDAR와 D435는 서로 다른 sensor model로 바로 구독되므로, 기존의
 동기화/병합 노드는 없다. D435가 꺼져 있으면 해당 구독은 유휴 상태이며 LiDAR만 융합한다.
 
-`elevation_mapping.underlying_map_topic`에 표준 `GridMap`(반드시 `elevation` layer 포함)을
+`config/elevation_mapping.yaml`의 `underlying_map_topic`에 표준 `GridMap`(반드시 `elevation` layer 포함)을
 지정하면 사전 구축 지형 지도를 underlying map으로 사용할 수 있다. PCD는 elevation-map
 format이 아니므로 이 입력에는 사용할 수 없다. 즉 Super-LIO PCD는 localization용, GridMap은
 terrain prior용으로 분리한다.
+
+D435를 사용하지 않으려면 같은 파일의 `inputs`를 `['lidar']`로 바꾼다.
 
 ## TF and calibration
 

@@ -18,21 +18,4 @@ autonomy_light:
     livox_publish_freq: 50.0
     raw_lidar_topic: "/livox/lidar"
     raw_imu_topic: "/livox/imu"
-    super_lio_cloud_topic: "/lio/cloud_world"
-    super_lio_odom_topic: "/lio/odom"
     super_lio_config_file: ""
-
-    # The mapper uses native grid_map_msgs/GridMap.  A non-empty underlying
-    # map topic may provide a prebuilt GridMap with an `elevation` layer.
-    elevation_mapping:
-      map_topic: "/autonomy_light/elevation_map"
-      lidar_topic: "/lio/cloud_world"
-      d435_topic: "/camera/camera/depth/color/points"
-      underlying_map_topic: ""
-      resolution: 0.10
-      length_in_x: 1.80
-      length_in_y: 0.80
-      publish_rate_hz: 50.0
-      visibility_cleanup_rate_hz: 10.0
-      d435_enabled: true
-      d435_max_depth_m: 3.25

@@ -1,14 +1,14 @@
 elevation_mapping:
   ros__parameters:
+    # Sole configuration for the ETH elevation mapper: inputs, local-grid
+    # geometry, fusion and cleanup live here. Shared map/base frame names are
+    # bound from autonomy_light.yaml by the launcher.
     # A robot-centric circular grid: overlapping cells are retained when the
     # base moves; only the newly exposed strips become unknown.
     num_callback_threads: 4
     postprocessor_num_threads: 0
-    map_frame_id: "map"
-    robot_base_frame_id: "base_link"
     robot_pose_with_covariance_topic: "/lio/odom"
     robot_pose_cache_size: 500
-    track_point_frame_id: "base_link"
     track_point_x: 0.0
     track_point_y: 0.0
     track_point_z: 0.0

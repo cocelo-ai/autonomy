@@ -57,7 +57,12 @@
   lingering wall and overhanging-obstacle artifacts without an additional local implementation.</p>
 
   <h2>Prebuilt terrain input</h2>
-  <p><code>elevation_mapping.underlying_map_topic</code> accepts a prebuilt <code>GridMap</code> carrying an
+  <p><code>config/elevation_mapping.yaml</code> owns mapper inputs, local grid, fusion and cleanup.
+  <code>config/autonomy_light.yaml</code> contains the one canonical map/base TF names, calibration and
+  Super-LIO/Livox inputs; the launcher binds those shared frame names to the mapper. Use
+  <code>--elevation-config FILE</code> to select another mapper profile; the output
+  topic is a launcher remap (<code>AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC</code>).</p>
+  <p><code>underlying_map_topic</code> accepts a prebuilt <code>GridMap</code> carrying an
   <code>elevation</code> layer. A Super-LIO PCD remains the map used by <code>--map</code> relocation and is not
   silently reinterpreted as terrain. This keeps localization and terrain-map contracts explicit.</p>
 
