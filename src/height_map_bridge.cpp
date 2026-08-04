@@ -339,7 +339,11 @@ struct HeightMapBridge::Impl {
     }
     if (pointcloud_publisher) {
       sensor_msgs::msg::PointCloud2 cloud;
-      cloud.header.stamp = current ? current->header.stamp : node.now();
+      if (current) {
+        cloud.header.stamp = current->header.stamp;
+      } else {
+        cloud.header.stamp = node.now();
+      }
       cloud.header.frame_id = base_frame;
       cloud.height = 1;
       cloud.width = static_cast<std::uint32_t>(points.size());
