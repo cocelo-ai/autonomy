@@ -16,13 +16,30 @@ autonomy_light:
     camera_frame: "camera_link"
     target_to_camera_xyz: [0.18, 0.0, 0.18]
     target_to_camera_rpy: [0.0, 0.7854, 0.0]
-    # The bundled launcher starts this RealSense driver before elevation
-    # mapping. Leave serial_no empty to select the only connected camera.
+    # Two D435i units are connected. Pin the elevation camera by its physical
+    # USB topology, not by serial number or nondeterministic auto-selection.
     realsense:
       enabled: true
+      # Fuse the connected D435 point cloud with the LiDAR elevation map.
+      # launch.sh starts the LiDAR mapper first, then brings up this source.
+      use_for_elevation_mapping: true
       camera_name: "camera"
-      serial_no: ""
+      camera_namespace: "camera"
+      # Matches autonomy's known-good front-camera binding (D435i at 2-1.1).
+      usb_port_id: "2-1.1"
       pointcloud_topic: "/camera/camera/depth/color/points"
+      # 30 Hz keeps the combined RGB+Depth stream stable on the Jetson USB bus.
+      depth_profile: "848x480x30"
+      # Reduce depth at the camera before transport/fusion.  One point per
+      # roughly 5 cm native map cell is sufficient and preserves 50 Hz map
+      # publication under concurrent LiDAR updates.
+      depth_decimation: 3
+      enable_color: true
+      color_profile: "640x480x30"
+      # Super-LIO already owns the calibrated Livox IMU.  The D435 IMU is not
+      # needed for depth point clouds and keeping it off avoids an unnecessary
+      # USB stream on the elevation-camera branch.
+      enable_imu: false
     # T_imu_lidar: keep this identical to the calibrated Super-LIO extrinsic.
     imu_from_lidar_xyz: [-0.011, -0.02329, 0.04412]
     imu_from_lidar_rpy: [0.0, 0.0, 0.0]
@@ -55,7 +72,9 @@ autonomy_light:
     # follows elevation_mapping.fused_map_publishing_rate; it is configured
     # only in elevation_mapping.yaml to keep one cadence authority.
     height_map_output:
-      transport: "both"  # ros2 | cyclone_dds | both
+      # Keep ROS output deterministic; the optional direct DDS writer can be
+      # enabled explicitly once its participant is configured independently.
+      transport: "ros2"  # ros2 | cyclone_dds | both
       ros2_topic: "/autonomy_light/height_map_data"
       # Controller/output ROI, independent of the larger native fusion ROI
       # in elevation_mapping.yaml. This keeps the established 18 x 8 / 10 cm

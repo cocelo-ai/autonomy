@@ -39,6 +39,7 @@ source install/setup.bash
 
 ```bash
 ./launch.sh --vis                 # 50 Hz terminal pose/velocity/height-map dashboard
+./launch.sh --no-camera           # 이번 실행만 LiDAR-only (카메라 설정은 유지)
 ./launch.sh --rviz                # GridMap RViz display
 ./launch.sh --map maps/site.pcd   # Super-LIO saved-map relocation
 ./mapping.sh --output maps/site.pcd
@@ -47,7 +48,9 @@ source install/setup.bash
 실기 launch는 기본으로 `realsense2_camera`도 시작하고
 `/camera/camera/depth/color/points`를 D435 입력으로 연결한다. 카메라가 여러 대면
 `config/autonomy_light.yaml`의 `realsense.serial_no`를 지정한다. 카메라 없이 실행할
-때는 같은 파일에서 `realsense.enabled: false`로 설정한다.
+때는 같은 파일에서 `realsense.enabled: false`로 설정하거나, 설정을 바꾸지 않고
+`./launch.sh --no-camera`를 사용한다. 후자는 카메라를 다시 장착했을 때 기존 설정을
+그대로 재사용할 수 있다.
 
 `mapping.sh`는 Super-LIO full SLAM(키프레임·loop closure·pose graph)을 켜고,
 종료 시 최적화된 PCD를 저장한다. `--map`의 PCD는 Super-LIO 재지역화용이다.
@@ -57,6 +60,11 @@ source install/setup.bash
 dashboard가 흐트러지지 않도록 다른 node의 stdout/stderr는
 `~/.ros/log/autonomy_light_telemetry_<timestamp>/`로 저장된다. `AUTONOMY_LIGHT_VIS_FPS`로
 갱신 주기를 바꿀 수 있다.
+
+기본 launch는 `cocelo-hd-slam-yaw`와 같은 저주기 상태표도 출력한다. LiDAR cloud 및
+GridMap 주기, 유효 cell 비율, elevation 범위, p95 uncertainty와 실제 `elevation`
+layer의 top-view, Super-LIO mode, pose, RPY, 속도를 한 박스에서 확인할 수 있다.
+터미널 redraw는 기본 50 Hz이고 `--status-rate HZ`로 바꾸거나 `--no-status`로 끌 수 있다.
 
 설정 책임은 분리되어 있다. `config/autonomy_light.yaml`은 bringup의 frame,
 calibration, Livox·Super-LIO 입력, height-map output transport와 DDS network를 가진다.
@@ -71,7 +79,7 @@ mapper 설정은 `./launch.sh --elevation-config FILE`로 교체한다.
 
 기본 output topic은 `/autonomy_light/elevation_map`, type은
 `grid_map_msgs/msg/GridMap`이다. 기본 native fusion ROI는 `3.0 m × 2.0 m`,
-resolution `0.02 m`,
+resolution `0.05 m`,
 50 Hz publish다. mapper는 subscriber가 없어도 이 timer에서 fused map을 갱신·publish하며,
 기본으로 시작되는 bridge가 구독하므로 native output도 계속 활성 상태다. 주요 layer는 다음과 같다.
 

@@ -48,6 +48,7 @@ ElevationMap::ElevationMap(std::shared_ptr<rclcpp::Node> nodeHandle)
       multiHeightNoise_(0.000009),
       minHorizontalVariance_(0.0001),
       maxHorizontalVariance_(0.05),
+      fusionHeightDifferenceThreshold_(std::numeric_limits<double>::infinity()),
       enableVisibilityCleanup_(true),
       enableContinuousCleanup_(false),
       visibilityCleanupDuration_(0.0),
@@ -139,7 +140,13 @@ bool ElevationMap::add(const PointCloudType::Ptr pointCloud, Eigen::VectorXf& po
     auto& sensorYatLowestScan = sensorYatLowestScanLayer(index(0), index(1));
     auto& sensorZatLowestScan = sensorZatLowestScanLayer(index(0), index(1));
 
-    const float& pointVariance = 1e-11 * pointCloudVariances(i);
+    // `pointCloudVariances` is already expressed in m^2 by the sensor
+    // processor.  Scaling it down here made every LiDAR return effectively
+    // noise-free: the first point in a cell then dominated the estimate and
+    // later returns were repeatedly classified as multi-height outliers.
+    // Keep the physical variance so the Mahalanobis gate and Kalman update
+    // can actually smooth consecutive scans.
+    const float pointVariance = pointCloudVariances(i);
     bool isValid = std::all_of(basicLayers_.begin(), basicLayers_.end(),
                                [&](Eigen::Ref<const grid_map::Matrix> layer) { 
                                 return std::isfinite(layer(index(0), index(1))); });
@@ -291,6 +298,7 @@ bool ElevationMap::fuse(const grid_map::Index& topLeftIndex, const grid_map::Ind
       // TODO(max):
       continue;
     }
+    const float centerElevation = rawMapCopy.at("elevation", *areaIterator);
 
     // Get size of error ellipse.
     const float& sigmaXsquare = rawMapCopy.at("horizontal_variance_x", *areaIterator);
@@ -348,7 +356,14 @@ bool ElevationMap::fuse(const grid_map::Index& topLeftIndex, const grid_map::Ind
         continue;
       }
 
-      means[i] = rawMapCopy.at("elevation", *ellipseIterator);
+      const float neighborElevation = rawMapCopy.at("elevation", *ellipseIterator);
+      // A vertical wall and its adjacent floor occupy neighbouring x-y cells
+      // but are not samples of one continuous surface.  Mixing them created
+      // a broad, high-variance halo that looked like elevation noise.
+      if (std::abs(neighborElevation - centerElevation) > fusionHeightDifferenceThreshold_) {
+        continue;
+      }
+      means[i] = neighborElevation;
 
       // Compute weight from probability.
       grid_map::Position absolutePosition;

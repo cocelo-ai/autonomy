@@ -8,6 +8,8 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --real                  Start Livox and Super-LIO (default).
   --sim                   Use Livox CustomMsg simulation input; do not start Livox.
   --no-drivers            Use externally running Super-LIO and sensor drivers.
+  --no-camera             Force LiDAR-only mapping for this run; leave the
+                          RealSense configuration unchanged for later use.
   --map FILE              Start Super-LIO relocation against a saved PCD.
   --mapping-output FILE   Enable Super-LIO full SLAM and save its PCD on exit.
   --config FILE           Override autonomy_light.yaml.
@@ -17,6 +19,8 @@ Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <ele
   --sim-topic-prefix PFX  Simulation prefix (default: /f4).
   --mid360|--mid360s      Select the bundled Livox launch file.
   --vis                   Show 50 Hz terminal telemetry (pose, velocity, height-map data).
+  --status-rate HZ        Set terminal elevation-map redraw rate (default: 50 Hz).
+  --no-status             Do not start the normal terminal map-status display.
   --rviz                  Start RViz with the GridMap display.
   --no-rviz               Do not auto-start RViz for --map.
   --no-static-tf          Do not publish imu -> base_link -> lidar_link/camera_link.
@@ -33,6 +37,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MODE="real"
 NO_DRIVERS="false"
 NO_STATIC_TF="false"
+NO_CAMERA="false"
 CONFIG_FILE="${AUTONOMY_LIGHT_CONFIG:-${SCRIPT_DIR}/config/autonomy_light.yaml}"
 ELEVATION_CONFIG_FILE="${AUTONOMY_LIGHT_ELEVATION_CONFIG:-${SCRIPT_DIR}/config/elevation_mapping.yaml}"
 MAP_FILE="${AUTONOMY_LIGHT_MAP_FILE:-}"
@@ -42,6 +47,8 @@ RAW_IMU_TOPIC=""
 SIM_TOPIC_PREFIX="${AUTONOMY_LIGHT_SIM_TOPIC_PREFIX:-/f4}"
 LIVOX_MODEL="${AUTONOMY_LIGHT_LIVOX_MODEL:-mid360}"
 VIS="false"
+STATUS="true"
+STATUS_RATE="${AUTONOMY_LIGHT_STATUS_RATE:-50.0}"
 RVIZ="auto"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
@@ -54,8 +61,12 @@ while [[ $# -gt 0 ]]; do
     --real) MODE="real"; shift ;;
     --sim) MODE="sim"; shift ;;
     --no-drivers) NO_DRIVERS="true"; shift ;;
+    --no-camera) NO_CAMERA="true"; shift ;;
     --no-static-tf) NO_STATIC_TF="true"; shift ;;
     --vis) VIS="true"; shift ;;
+    --status-rate) STATUS_RATE="${2:?--status-rate requires a positive frequency}"; shift 2 ;;
+    --status-rate=*) STATUS_RATE="${1#*=}"; shift ;;
+    --no-status) STATUS="false"; shift ;;
     --rviz) RVIZ="true"; shift ;;
     --no-rviz) RVIZ="false"; shift ;;
     --config) CONFIG_FILE="${2:?--config requires a file}"; shift 2 ;;
@@ -114,6 +125,19 @@ source "${ROS_SETUP}"
 set -u
 command -v ros2 >/dev/null || { echo "error: ros2 is unavailable" >&2; exit 1; }
 
+# Fast DDS shared-memory participants can survive a forcibly stopped launch on
+# this target and then block subsequent discovery.  Keep every branch of this
+# stack on one, explicit RMW implementation.  An integrator may override it
+# for a site-wide DDS policy through AUTONOMY_LIGHT_RMW_IMPLEMENTATION.
+RMW_IMPLEMENTATION="${AUTONOMY_LIGHT_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+if [[ "${RMW_IMPLEMENTATION}" == "rmw_cyclonedds_cpp" && \
+      ! -f "/opt/ros/${ROS_DISTRO_NAME}/lib/librmw_cyclonedds_cpp.so" ]]; then
+  echo "error: Cyclone DDS RMW is not installed; install ros-${ROS_DISTRO_NAME}-rmw-cyclonedds-cpp or set AUTONOMY_LIGHT_RMW_IMPLEMENTATION" >&2
+  exit 1
+fi
+export RMW_IMPLEMENTATION
+echo "ROS middleware: ${RMW_IMPLEMENTATION}"
+
 if [[ "${VIS}" == "true" ]]; then
   /usr/bin/python3 - <<'PY' || {
 from rclpy.type_support import check_for_type_support
@@ -141,7 +165,7 @@ RUNTIME_INFO="${RUNTIME_DIR}/runtime.env"
   "${ELEVATION_CONFIG_FILE}" "${LIO_CONFIG}" "${ELEVATION_CONFIG}" \
   "${STATIC_TF}" "${RUNTIME_INFO}" "${MODE}" "${MAP_FILE}" "${MAPPING_OUTPUT}" \
   "${RAW_LIDAR_TOPIC}" "${RAW_IMU_TOPIC}" "${SIM_TOPIC_PREFIX}" "${MAP_TOPIC}" \
-  "${HEIGHT_MAP_BRIDGE_CONFIG}" <<'PY'
+  "${HEIGHT_MAP_BRIDGE_CONFIG}" "${NO_CAMERA}" <<'PY'
 import math
 import os
 import sys
@@ -149,7 +173,7 @@ import yaml
 
 (source_path, lio_default, elevation_source, lio_target, elevation_target, tf_target,
  runtime_target, mode, map_file, mapping_output, lidar_override, imu_override, sim_prefix,
- map_topic, bridge_target) = sys.argv[1:16]
+ map_topic, bridge_target, no_camera) = sys.argv[1:17]
 
 def read_yaml(path):
     with open(path, encoding="utf-8") as stream:
@@ -178,6 +202,15 @@ def text(value, name, default=""):
         return default
     if any(character.isspace() for character in result):
         raise SystemExit(f"error: {name} must not contain whitespace")
+    return result
+
+def positive_integer(value, name, default):
+    try:
+        result = int(value if value is not None else default)
+    except (TypeError, ValueError) as error:
+        raise SystemExit(f"error: {name} must be a positive integer") from error
+    if result < 1 or result > 8:
+        raise SystemExit(f"error: {name} must be in [1, 8]")
     return result
 
 def quaternion_from_rpy(roll, pitch, yaw):
@@ -229,8 +262,25 @@ realsense = root.get("realsense") or {}
 if not isinstance(realsense, dict):
     raise SystemExit("error: realsense must be a mapping")
 realsense_enabled = boolean(realsense.get("enabled", True), "realsense.enabled")
+# Camera streaming and using camera points in the elevation filter are
+# deliberately separate.  The LiDAR map must remain usable before a camera
+# calibration/point-cloud pipeline has been validated.
+realsense_for_elevation = boolean(
+    realsense.get("use_for_elevation_mapping", False),
+    "realsense.use_for_elevation_mapping")
+if no_camera == "true":
+    realsense_enabled = False
+    realsense_for_elevation = False
 realsense_camera_name = text(realsense.get("camera_name"), "realsense.camera_name", "camera")
-realsense_serial = text(realsense.get("serial_no"), "realsense.serial_no")
+realsense_camera_namespace = text(
+    realsense.get("camera_namespace"), "realsense.camera_namespace", realsense_camera_name)
+realsense_usb_port = text(realsense.get("usb_port_id"), "realsense.usb_port_id")
+realsense_depth_profile = text(realsense.get("depth_profile"), "realsense.depth_profile")
+realsense_color_profile = text(realsense.get("color_profile"), "realsense.color_profile")
+realsense_depth_decimation = positive_integer(
+    realsense.get("depth_decimation"), "realsense.depth_decimation", 1)
+realsense_enable_imu = boolean(realsense.get("enable_imu", False), "realsense.enable_imu")
+realsense_enable_color = boolean(realsense.get("enable_color", True), "realsense.enable_color")
 realsense_topic = text(
     realsense.get("pointcloud_topic"), "realsense.pointcloud_topic",
     f"/{realsense_camera_name}/{realsense_camera_name}/depth/color/points")
@@ -273,7 +323,7 @@ mapper_params["track_point_frame_id"] = root.get("target_frame", "base_link")
 mapper_inputs = mapper_params.get("inputs", [])
 if not isinstance(mapper_inputs, list) or not all(isinstance(value, str) for value in mapper_inputs):
     raise SystemExit("error: elevation_mapping.inputs must be a list of strings")
-if realsense_enabled:
+if realsense_enabled and realsense_for_elevation:
     if "d435" not in mapper_inputs:
         mapper_inputs.append("d435")
     d435 = mapper_params.setdefault("d435", {})
@@ -348,9 +398,16 @@ with open(runtime_target, "w", encoding="utf-8") as stream:
     stream.write(f"{root.get('lidar_frame', 'lidar_link')}\n")
     stream.write(f"{root.get('camera_frame', 'camera_link')}\n")
     stream.write(f"{'true' if realsense_enabled else 'false'}\n")
+    stream.write(f"{'true' if realsense_for_elevation else 'false'}\n")
     stream.write(f"{realsense_camera_name}\n")
-    stream.write(f"{realsense_serial}\n")
+    stream.write(f"{realsense_camera_namespace}\n")
+    stream.write(f"{realsense_usb_port}\n")
     stream.write(f"{realsense_topic}\n")
+    stream.write(f"{realsense_depth_profile}\n")
+    stream.write(f"{realsense_color_profile}\n")
+    stream.write(f"{'true' if realsense_enable_imu else 'false'}\n")
+    stream.write(f"{'true' if realsense_enable_color else 'false'}\n")
+    stream.write(f"{realsense_depth_decimation}\n")
     stream.write(f"{mapper_params.get('robot_pose_with_covariance_topic', '/lio/odom')}\n")
     stream.write(f"{height_output.get('ros2_topic', '/autonomy_light/height_map_data')}\n")
 PY
@@ -368,17 +425,26 @@ BASE_FRAME="${RUNTIME_VALUES[2]}"
 LIDAR_FRAME="${RUNTIME_VALUES[3]}"
 CAMERA_FRAME="${RUNTIME_VALUES[4]}"
 REALSENSE_ENABLED="${RUNTIME_VALUES[5]}"
-REALSENSE_CAMERA_NAME="${RUNTIME_VALUES[6]}"
-REALSENSE_SERIAL="${RUNTIME_VALUES[7]}"
-REALSENSE_POINTCLOUD_TOPIC="${RUNTIME_VALUES[8]}"
-ODOM_TOPIC="${RUNTIME_VALUES[9]}"
-HEIGHT_MAP_DATA_TOPIC="${RUNTIME_VALUES[10]}"
+REALSENSE_FOR_ELEVATION="${RUNTIME_VALUES[6]}"
+REALSENSE_CAMERA_NAME="${RUNTIME_VALUES[7]}"
+REALSENSE_CAMERA_NAMESPACE="${RUNTIME_VALUES[8]}"
+REALSENSE_USB_PORT="${RUNTIME_VALUES[9]}"
+REALSENSE_POINTCLOUD_TOPIC="${RUNTIME_VALUES[10]}"
+REALSENSE_DEPTH_PROFILE="${RUNTIME_VALUES[11]}"
+REALSENSE_COLOR_PROFILE="${RUNTIME_VALUES[12]}"
+REALSENSE_ENABLE_IMU="${RUNTIME_VALUES[13]}"
+REALSENSE_ENABLE_COLOR="${RUNTIME_VALUES[14]}"
+REALSENSE_DEPTH_DECIMATION="${RUNTIME_VALUES[15]}"
+ODOM_TOPIC="${RUNTIME_VALUES[16]}"
+HEIGHT_MAP_DATA_TOPIC="${RUNTIME_VALUES[17]}"
 export ROS_DOMAIN_ID
 read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"
 read -r BASE_LIDAR_X BASE_LIDAR_Y BASE_LIDAR_Z BASE_LIDAR_QX BASE_LIDAR_QY BASE_LIDAR_QZ BASE_LIDAR_QW < <(sed -n '2p' "${STATIC_TF}")
 read -r BASE_CAMERA_X BASE_CAMERA_Y BASE_CAMERA_Z BASE_CAMERA_QX BASE_CAMERA_QY BASE_CAMERA_QZ BASE_CAMERA_QW < <(sed -n '3p' "${STATIC_TF}")
 
 declare -a PIDS=()
+declare -A PID_LABELS=()
+CLEANUP_RUNNING="false"
 VIS_LOG_DIR=""
 if [[ "${VIS}" == "true" ]]; then
   VIS_LOG_DIR="${AUTONOMY_LIGHT_VIS_LOG_DIR:-${HOME}/.ros/log/autonomy_light_telemetry_$(date +%Y%m%d_%H%M%S)}"
@@ -393,19 +459,48 @@ start() {
   shift
   if [[ -n "${VIS_LOG_DIR}" ]]; then
     log_name="${label//[^[:alnum:]._-]/_}"
-    "$@" >"${VIS_LOG_DIR}/${log_name}.log" 2>&1 &
+    # A ros2 CLI process may spawn the actual node and then exit.  Give every
+    # branch its own session so cleanup always reaches that real node too.
+    setsid "$@" >"${VIS_LOG_DIR}/${log_name}.log" 2>&1 &
   else
-    "$@" &
+    setsid "$@" &
   fi
-  PIDS+=("$!")
+  local pid="$!"
+  PIDS+=("${pid}")
+  PID_LABELS["${pid}"]="${label}"
 }
 
 start_telemetry() {
-  echo "autonomy-light: starting 50 Hz telemetry viewer"
-  /usr/bin/python3 "${SCRIPT_DIR}/scripts/telemetry_vis.py" \
+  start "50 Hz telemetry viewer" /usr/bin/python3 "${SCRIPT_DIR}/scripts/telemetry_vis.py" \
     --odom-topic "${ODOM_TOPIC}" --height-map-topic "${HEIGHT_MAP_DATA_TOPIC}" \
-    --fps "${VIS_FPS}" &
-  PIDS+=("$!")
+    --fps "${VIS_FPS}"
+}
+
+start_status_monitor() {
+  local slam_mode="Super-LIO odometry"
+  local status_script="${SCRIPT_DIR}/scripts/monitor_elevation_state.py"
+  local -a camera_args=()
+  # Support both source-tree ./launch.sh and the installed launch script.
+  [[ -f "${status_script}" ]] || status_script="${SCRIPT_DIR}/monitor_elevation_state.py"
+  [[ -f "${status_script}" ]] || {
+    echo "error: elevation-map status monitor is missing" >&2
+    return 1
+  }
+  if [[ -n "${MAPPING_OUTPUT}" ]]; then
+    slam_mode="Super-LIO full SLAM"
+  elif [[ -n "${MAP_FILE}" ]]; then
+    slam_mode="Super-LIO relocalization"
+  elif [[ "${NO_DRIVERS}" == "true" ]]; then
+    slam_mode="external Super-LIO"
+  fi
+  if [[ "${REALSENSE_ENABLED}" == "true" ]]; then
+    camera_args=(--camera-topic "${REALSENSE_POINTCLOUD_TOPIC}")
+  fi
+  start "elevation-map status monitor (${STATUS_RATE} Hz)" \
+    /usr/bin/python3 "${status_script}" \
+    --rate "${STATUS_RATE}" --cloud-topic "/lio/cloud_world" --odom-topic "${ODOM_TOPIC}" \
+    --map-topic "${MAP_TOPIC}" --height-map-topic "${HEIGHT_MAP_DATA_TOPIC}" \
+    --slam-mode "${slam_mode}" "${camera_args[@]}"
 }
 
 realsense_pointcloud_argument() {
@@ -424,56 +519,35 @@ realsense_pointcloud_argument() {
   fi
 }
 
-wait_for_topic() {
-  local topic="$1"
-  local attempts="${2:-75}"
-  local attempt
-  for ((attempt = 0; attempt < attempts; ++attempt)); do
-    ros2 topic list 2>/dev/null | grep -Fxq "${topic}" && return 0
-    sleep 0.2
-  done
-  return 1
-}
+start_realsense_camera() {
+  [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
+     "${REALSENSE_ENABLED}" == "true" ]] || return 0
 
-enable_realsense_pointcloud() {
-  local node_name="/$1/$1"
-  local parameters pointcloud_prefix=""
-  local attempt
-
-  # Some Jetson-packaged realsense2_camera builds expose the point-cloud
-  # parameter with this literal ARM/NEON-mangled name.  Supplying the normal
-  # launch argument alone does not enable it on those builds.
-  for ((attempt = 0; attempt < 75; ++attempt)); do
-    parameters="$(ros2 param list "${node_name}" 2>/dev/null | sed 's/^[[:space:]]*//' || true)"
-    if grep -Fxq "pointcloud.enable" <<<"${parameters}"; then
-      pointcloud_prefix="pointcloud."
-    elif grep -Fxq "pointcloud__neon_.enable" <<<"${parameters}"; then
-      pointcloud_prefix="pointcloud__neon_."
-    elif grep -Fxq "enable_pointcloud" <<<"${parameters}"; then
-      pointcloud_prefix=""
-    fi
-
-    if [[ -n "${pointcloud_prefix}" ]]; then
-      # Texture stream 2 is the color sensor.  The Jetson build otherwise
-      # leaves it as "Any", which creates no textured PointCloud2 even
-      # after the filter itself has been enabled.
-      ros2 param set "${node_name}" "${pointcloud_prefix}stream_filter" 2 >/dev/null &&
-        ros2 param set "${node_name}" "${pointcloud_prefix}allow_no_texture_points" true >/dev/null &&
-        ros2 param set "${node_name}" "${pointcloud_prefix}enable" true >/dev/null && {
-        echo "RealSense point cloud enabled: ${node_name}.${pointcloud_prefix}enable (texture=color)"
-        return 0
-      }
-    elif grep -Fxq "enable_pointcloud" <<<"${parameters}"; then
-      ros2 param set "${node_name}" enable_pointcloud true >/dev/null && {
-        echo "RealSense point cloud enabled: ${node_name}.enable_pointcloud"
-        return 0
-      }
-    fi
-    sleep 0.2
-  done
-
-  echo "error: RealSense point-cloud enable parameter was not available on ${node_name}" >&2
-  return 1
+  ros2 pkg prefix realsense2_camera >/dev/null 2>&1 || {
+    echo "error: realsense2_camera is required; run ./build.sh or install ros-${ROS_DISTRO_NAME}-realsense2-camera" >&2
+    return 1
+  }
+  REALSENSE_POINTCLOUD_ARGUMENT="$(realsense_pointcloud_argument)" || return 1
+  local -a realsense_args=(
+    "camera_name:=${REALSENSE_CAMERA_NAME}"
+    "camera_namespace:=${REALSENSE_CAMERA_NAMESPACE}"
+    "enable_depth:=true"
+    "enable_color:=${REALSENSE_ENABLE_COLOR}"
+    "${REALSENSE_POINTCLOUD_ARGUMENT}"
+    # Elevation fusion uses XYZ only.  Keep publishing depth points even if
+    # the optional RGB texture transport briefly drops on the Jetson USB bus.
+    "pointcloud.allow_no_texture_points:=true"
+  )
+  [[ -n "${REALSENSE_USB_PORT}" ]] && realsense_args+=("usb_port_id:=${REALSENSE_USB_PORT}")
+  [[ -n "${REALSENSE_DEPTH_PROFILE}" ]] && realsense_args+=("depth_module.depth_profile:=${REALSENSE_DEPTH_PROFILE}")
+  if [[ "${REALSENSE_DEPTH_DECIMATION}" -gt 1 ]]; then
+    realsense_args+=("decimation_filter.enable:=true" "decimation_filter.filter_magnitude:=${REALSENSE_DEPTH_DECIMATION}")
+  fi
+  [[ "${REALSENSE_ENABLE_COLOR}" == "true" && -n "${REALSENSE_COLOR_PROFILE}" ]] && realsense_args+=("rgb_camera.color_profile:=${REALSENSE_COLOR_PROFILE}")
+  if [[ "${REALSENSE_ENABLE_IMU}" == "true" ]]; then
+    realsense_args+=("enable_gyro:=true" "enable_accel:=true" "enable_motion:=true" "unite_imu_method:=2")
+  fi
+  start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${realsense_args[@]}"
 }
 
 interface_has_cidr() {
@@ -496,7 +570,7 @@ ip_exists_on_another_interface() {
 }
 
 configure_dds_network() {
-  [[ "${DDS_OUTPUT_ENABLED}" == "true" ]] || return
+  [[ "${DDS_OUTPUT_ENABLED}" == "true" ]] || return 0
   command -v ip >/dev/null || { echo "error: iproute2 is required for DDS networking" >&2; exit 1; }
   [[ -d "/sys/class/net/${DDS_INTERFACE}" ]] || {
     echo "error: dds_network.interface does not exist: ${DDS_INTERFACE}" >&2
@@ -522,22 +596,104 @@ configure_dds_network() {
   echo "Cyclone DDS height-map writer: ${CYCLONEDDS_HEIGHT_MAP_URI}"
 }
 
+process_group_running() {
+  local pid="$1"
+  # start() makes the recorded PID the session/process-group leader.  Test
+  # the whole group because a ros2 CLI wrapper may exit before its node does.
+  pgrep -g "${pid}" >/dev/null 2>&1
+}
+
+signal_process_group() {
+  local signal_name="$1"
+  local pid="$2"
+  # A ROS node's normal Ctrl-C path is SIGINT.  Use it for launcher cleanup;
+  # SIGTERM was not handled by every vendored Super-LIO executable.
+  kill "-${signal_name}" -- "-${pid}" 2>/dev/null || \
+    kill "-${signal_name}" "${pid}" 2>/dev/null || true
+}
+
 cleanup() {
   trap - EXIT INT TERM
-  for pid in "${PIDS[@]:-}"; do
-    kill -0 "${pid}" 2>/dev/null && kill -INT "${pid}" 2>/dev/null || true
+  if [[ "${CLEANUP_RUNNING}" == "true" ]]; then
+    return 0
+  fi
+  CLEANUP_RUNNING="true"
+
+  # Stop every sensor/mapper branch at once.  The previous serial teardown
+  # could take more than half a minute and made Ctrl-C look ignored while the
+  # terminal monitor kept redrawing.  All branches have independent sessions,
+  # so this does not signal the invoking shell.
+  local -a remaining=()
+  local pid
+  for pid in "${PIDS[@]}"; do
+    if process_group_running "${pid}"; then
+      echo "autonomy-light: stopping ${PID_LABELS[${pid}]:-process ${pid}}"
+      signal_process_group INT "${pid}"
+      remaining+=("${pid}")
+    fi
   done
-  for pid in "${PIDS[@]:-}"; do
+
+  # Give each ROS node the same 4 s graceful window, in parallel.
+  for _ in {1..40}; do
+    remaining=()
+    for pid in "${PIDS[@]}"; do
+      process_group_running "${pid}" && remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && break
+    sleep 0.1
+  done
+
+  # A third-party node that does not install a SIGINT handler must not leave
+  # a second LiDAR/TF stack behind for the next launch.
+  for pid in "${remaining[@]}"; do
+    echo "warning: ${PID_LABELS[${pid}]:-process ${pid}} did not stop after 4 s; forcing shutdown" >&2
+    signal_process_group KILL "${pid}"
+  done
+  for pid in "${PIDS[@]}"; do
     wait "${pid}" 2>/dev/null || true
   done
   find "${RUNTIME_DIR}" -depth -delete 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+
+handle_signal() {
+  local status="$1"
+  cleanup
+  exit "${status}"
+}
+
+verify_running() {
+  local pid="$1"
+  local label="${PID_LABELS[${pid}]:-process ${pid}}"
+  sleep 2
+  if kill -0 "${pid}" 2>/dev/null; then
+    return 0
+  fi
+  local status=1
+  if wait "${pid}"; then
+    status=0
+  else
+    status="$?"
+  fi
+  echo "error: ${label} exited during startup (exit status ${status})." >&2
+  exit "${status}"
+}
+
+trap cleanup EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 echo "autonomy-light: mode=${MODE} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} config=${CONFIG_FILE}"
 echo "elevation mapping: native GridMap ${MAP_TOPIC}"
 echo "height-map data: ${MAP_TOPIC} -> ${HEIGHT_MAP_BRIDGE_CONFIG}"
-[[ "${REALSENSE_ENABLED}" == "true" ]] && echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC}"
+if [[ "${REALSENSE_ENABLED}" == "true" ]]; then
+  if [[ "${REALSENSE_FOR_ELEVATION}" == "true" ]]; then
+    echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC} (elevation fusion enabled)"
+  else
+    echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC} (streaming; LiDAR elevation only)"
+  fi
+else
+  echo "sensor mode: LiDAR-only (RealSense launch path remains configured)"
+fi
 [[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO map=${MAP_FILE}"
 [[ -n "${MAPPING_OUTPUT}" ]] && echo "full SLAM: Super-LIO map=${MAPPING_OUTPUT}"
 configure_dds_network
@@ -552,11 +708,13 @@ print(float(params.get("livox_publish_freq", 50.0)))
 PY
 )"
   start "Livox driver" ros2 launch livox_ros_driver2 "${LIVOX_LAUNCH}" "publish_freq:=${LIVOX_FREQ}"
+  verify_running "${PIDS[$((${#PIDS[@]} - 1))]}"
 fi
 if [[ "${NO_DRIVERS}" != "true" ]]; then
   LIO_EXECUTABLE="super_lio_node"
   [[ -n "${MAP_FILE}" ]] && LIO_EXECUTABLE="relocation_node"
   start "Super-LIO" ros2 run super_lio "${LIO_EXECUTABLE}" --ros-args --params-file "${LIO_CONFIG}"
+  verify_running "${PIDS[$((${#PIDS[@]} - 1))]}"
 fi
 if [[ "${NO_STATIC_TF}" != "true" ]]; then
   start "static imu -> base_link TF" ros2 run tf2_ros static_transform_publisher \
@@ -567,38 +725,45 @@ if [[ "${NO_STATIC_TF}" != "true" ]]; then
     --x "${BASE_LIDAR_X}" --y "${BASE_LIDAR_Y}" --z "${BASE_LIDAR_Z}" \
     --qx "${BASE_LIDAR_QX}" --qy "${BASE_LIDAR_QY}" --qz "${BASE_LIDAR_QZ}" --qw "${BASE_LIDAR_QW}" \
     --frame-id "${BASE_FRAME}" --child-frame-id "${LIDAR_FRAME}"
+fi
+
+# The camera TF is static platform calibration.  It is available regardless
+# of whether the optional D435 driver is currently connected.
+if [[ "${NO_STATIC_TF}" != "true" && "${REALSENSE_ENABLED}" == "true" ]]; then
   start "static base_link -> camera_link TF" ros2 run tf2_ros static_transform_publisher \
     --x "${BASE_CAMERA_X}" --y "${BASE_CAMERA_Y}" --z "${BASE_CAMERA_Z}" \
     --qx "${BASE_CAMERA_QX}" --qy "${BASE_CAMERA_QY}" --qz "${BASE_CAMERA_QZ}" --qw "${BASE_CAMERA_QW}" \
     --frame-id "${BASE_FRAME}" --child-frame-id "${CAMERA_FRAME}"
 fi
 
-if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
-      "${REALSENSE_ENABLED}" == "true" ]]; then
-  ros2 pkg prefix realsense2_camera >/dev/null 2>&1 || {
-    echo "error: realsense2_camera is required; run ./build.sh or install ros-${ROS_DISTRO_NAME}-realsense2-camera" >&2
-    exit 1
-  }
-  REALSENSE_POINTCLOUD_ARGUMENT="$(realsense_pointcloud_argument)" || exit 1
-  REALSENSE_ARGS=("camera_name:=${REALSENSE_CAMERA_NAME}" "${REALSENSE_POINTCLOUD_ARGUMENT}")
-  [[ -n "${REALSENSE_SERIAL}" ]] && REALSENSE_ARGS+=("serial_no:=${REALSENSE_SERIAL}")
-  start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${REALSENSE_ARGS[@]}"
-  enable_realsense_pointcloud "${REALSENSE_CAMERA_NAME}" || exit 1
-  wait_for_topic "${REALSENSE_POINTCLOUD_TOPIC}" || {
-    echo "error: RealSense started but did not publish ${REALSENSE_POINTCLOUD_TOPIC}" >&2
-    exit 1
-  }
+# Establish the lightweight rclpy DDS participant before the C++ GridMap
+# process. On this target it prevents mapper discovery from stalling; it is a
+# monitor only and has no control-path dependency on either sensor branch.
+if [[ "${VIS}" != "true" && "${STATUS}" == "true" ]]; then
+  start_status_monitor
 fi
-
 start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
   --params-file "${ELEVATION_CONFIG}" -r "elevation_map:=${MAP_TOPIC}" "${EXTRA_ELEVATION_ARGS[@]}"
 MAPPER_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
+verify_running "${MAPPER_PID}"
+
+# This branch has exactly one input: native elevation GridMap.  It must never
+# depend on RealSense discovery, camera TF availability, or DDS direct output.
 if [[ "${DDS_OUTPUT_ENABLED}" == "true" ]]; then
   start "height-map output bridge" env "CYCLONEDDS_URI=${CYCLONEDDS_HEIGHT_MAP_URI}" \
     ros2 run autonomy_light height_map_bridge --ros-args --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
 else
   start "height-map output bridge" ros2 run autonomy_light height_map_bridge --ros-args \
     --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
+fi
+BRIDGE_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
+verify_running "${BRIDGE_PID}"
+
+# Optional camera branch: independent process group, no readiness wait and no
+# launch-time parameter mutation. If it is absent or reconnecting, the LiDAR
+# elevation map and height-map output continue normally.
+if ! start_realsense_camera; then
+  echo "warning: RealSense branch was not started; continuing LiDAR-only" >&2
 fi
 
 if [[ "${VIS}" == "true" ]]; then

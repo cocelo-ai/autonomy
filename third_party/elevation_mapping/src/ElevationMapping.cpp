@@ -9,6 +9,7 @@
 #define BOOST_BIND_NO_PLACEHOLDERS
 
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include <grid_map_msgs/msg/grid_map.h>
@@ -82,11 +83,6 @@ ElevationMapping::ElevationMapping(std::shared_ptr<rclcpp::Node>& nodeHandle) :
 }
 
 void ElevationMapping::setupSubscribers() {  // Handle deprecated point_cloud_topic and input_sources configuration.
-  auto res = nodeHandle_->get_topic_names_and_types();
-  for (auto a:res){
-    RCLCPP_INFO(nodeHandle_->get_logger(), "topic: %s", a.first.c_str());
-  }
-
   const bool configuredInputSources = inputSources_.configureFromRos("input_sources");
   const bool hasDeprecatedPointcloudTopic = nodeHandle_->get_parameter("point_cloud_topic", pointCloudTopic_);
   if (hasDeprecatedPointcloudTopic) {
@@ -275,6 +271,7 @@ bool ElevationMapping::readParameters() {
   nodeHandle_->declare_parameter("multi_height_noise", pow(0.003, 2));
   nodeHandle_->declare_parameter("min_horizontal_variance", pow(resolution / 2.0, 2));  // two-sigma
   nodeHandle_->declare_parameter("max_horizontal_variance", 0.5);
+  nodeHandle_->declare_parameter("fusion_height_difference_threshold", std::numeric_limits<double>::infinity());
   nodeHandle_->declare_parameter("underlying_map_topic", std::string());
   nodeHandle_->declare_parameter("enable_visibility_cleanup", true);
   nodeHandle_->declare_parameter("enable_continuous_cleanup", false);
@@ -287,6 +284,7 @@ bool ElevationMapping::readParameters() {
   nodeHandle_->get_parameter("multi_height_noise", map_.multiHeightNoise_);
   nodeHandle_->get_parameter("min_horizontal_variance", map_.minHorizontalVariance_);  // two-sigma
   nodeHandle_->get_parameter("max_horizontal_variance", map_.maxHorizontalVariance_);
+  nodeHandle_->get_parameter("fusion_height_difference_threshold", map_.fusionHeightDifferenceThreshold_);
   nodeHandle_->get_parameter("underlying_map_topic", map_.underlyingMapTopic_);
   nodeHandle_->get_parameter("enable_visibility_cleanup", map_.enableVisibilityCleanup_);
   nodeHandle_->get_parameter("enable_continuous_cleanup", map_.enableContinuousCleanup_);

@@ -326,6 +326,8 @@ class ElevationMap {
   double multiHeightNoise_;
   double minHorizontalVariance_;
   double maxHorizontalVariance_;
+  //! Do not spatially blend raw cells across a terrain discontinuity.
+  double fusionHeightDifferenceThreshold_;
   std::string underlyingMapTopic_;
   bool enableVisibilityCleanup_;
   bool enableContinuousCleanup_;

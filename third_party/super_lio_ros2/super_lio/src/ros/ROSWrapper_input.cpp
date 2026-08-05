@@ -128,12 +128,6 @@ void ROSWrapper::setupIO(){
   pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>(
       "/lio/odom", 100);
 
-  pub_imu_odom_ = this->create_publisher<nav_msgs::msg::Odometry>(
-      "/lio/imu/odom", 10);
-
-  pub_robo_odom_ = this->create_publisher<nav_msgs::msg::Odometry>(
-      "/lio/robo/odom", 10);
-
   pub_path_ = this->create_publisher<nav_msgs::msg::Path>(
       "/lio/path", 10);
 
@@ -175,53 +169,11 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
   imu_buffer_.push_back(data);
   last_timestamp_imu_ = data.secs;
 
+  // Predict still advances the ESKF on every IMU sample. The historical
+  // /lio/imu/odom and /lio/robo/odom debug publishers were intentionally
+  // removed: /lio/odom is the sole downstream odometry contract.
   DynamicState imu_state, robo_state;
-  if(eskf_->Predict(data, imu_state, robo_state)){
-    nav_msgs::msg::Odometry odom_imu, odom_robo;
-
-    {
-      odom_imu.pose.pose.position.x = imu_state.p(0);
-      odom_imu.pose.pose.position.y = imu_state.p(1);
-      odom_imu.pose.pose.position.z = imu_state.p(2);
-
-      Quat q(imu_state.R);
-      q.normalize();
-
-      odom_imu.pose.pose.orientation.x = q.x();
-      odom_imu.pose.pose.orientation.y = q.y();
-      odom_imu.pose.pose.orientation.z = q.z();
-      odom_imu.pose.pose.orientation.w = q.w();
-
-      odom_imu.twist.twist.linear.x = imu_state.v(0);
-      odom_imu.twist.twist.linear.y = imu_state.v(1);
-      odom_imu.twist.twist.linear.z = imu_state.v(2);
-
-      odom_imu.twist.twist.angular.x = imu_state.w(0);
-      odom_imu.twist.twist.angular.y = imu_state.w(1);
-      odom_imu.twist.twist.angular.z = imu_state.w(2);
-    }
-
-    {
-      odom_robo.pose.pose.position.x = robo_state.p(0);
-      odom_robo.pose.pose.position.y = robo_state.p(1);
-      odom_robo.pose.pose.position.z = robo_state.p(2);
-
-      Quat q(robo_state.R);
-      q.normalize();
-
-      odom_robo.pose.pose.orientation.x = q.x();
-      odom_robo.pose.pose.orientation.y = q.y();
-      odom_robo.pose.pose.orientation.z = q.z();
-      odom_robo.pose.pose.orientation.w = q.w();
-    }
-
-    odom_imu.header.stamp = msg->header.stamp;
-    odom_robo.header.stamp = msg->header.stamp;
-    odom_imu.header.frame_id = g_global_frame;
-    odom_robo.header.frame_id = g_global_frame;
-    pub_imu_odom_->publish(odom_imu);
-    pub_robo_odom_->publish(odom_robo);
-  }
+  eskf_->Predict(data, imu_state, robo_state);
 }
 
 

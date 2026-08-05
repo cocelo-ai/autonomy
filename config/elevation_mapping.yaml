@@ -19,9 +19,11 @@ elevation_mapping:
     length_in_y: 2.00
     position_x: 0.0
     position_y: 0.0
-    # The 3 cm D435 voxel filter is the limiting input resolution, so 2 cm
-    # cells retain useful terrain detail without a 1 cm grid of duplicates.
-    resolution: 0.02
+    # This is the native visualization/fusion grid, independent of the
+    # controller height-map contract below. Five-centimetre cells retain the
+    # wall/terrain edge detail while allowing the complete native fused map
+    # to be updated at the 50 Hz LiDAR cadence.
+    resolution: 0.05
 
     # Native fused GridMap output. `elevation`, upper/lower bounds, and
     # uncertainty_range are published without a custom message conversion.
@@ -31,12 +33,27 @@ elevation_mapping:
     # lower-latency LiDAR cloud.  The mapper accepts that bounded delay but
     # preserves the newest map timestamp in code.
     time_tolerance: 0.50
-    min_variance: 0.0001
-    max_variance: 0.04
-    min_horizontal_variance: 0.0025
-    max_horizontal_variance: 0.0625
-    mahalanobis_distance_threshold: 2.5
-    multi_height_noise: 0.0025
+    # MID360's vertical precision and residual LIO pose error are centimetre
+    # scale.  Do not clamp observations to an unrealistic 1 cm standard
+    # deviation, otherwise normal consecutive scans are rejected as outliers.
+    min_variance: 0.0004
+    # Cap per-cell vertical uncertainty at 5 cm (variance 0.0025 m²).
+    # The previous 20 cm cap could publish an 0.8 m four-sigma range and
+    # allowed isolated Livox returns to make the elevation layer visibly jump.
+    max_variance: 0.0025
+    # Keep fusion local at a wall/ground boundary.  The old 5–25 cm
+    # horizontal standard deviation blended the two surfaces into a broad,
+    # flickering band around every wall.
+    min_horizontal_variance: 0.0004
+    max_horizontal_variance: 0.0100
+    # Preserve the wall edge instead of spatially blending wall and floor
+    # cells. The gate is only for cross-cell fusion; repeated observations
+    # of an individual cell still use the measurement variance above.
+    fusion_height_difference_threshold: 0.12
+    mahalanobis_distance_threshold: 3.0
+    # A repeated incompatible return should be treated as a small transient,
+    # not grow a cell into a wall/floor blend over successive scans.
+    multi_height_noise: 0.0004
     underlying_map_topic: ""
 
     # ETH/ANYbotics visibility cleanup removes surfaces that a newer ray
@@ -60,6 +77,8 @@ elevation_mapping:
         beam_angle: 0.0006
         beam_constant: 0.0015
         apply_voxelgrid_filter: true
+        # Retain one representative return per native 5 cm cell to reject
+        # duplicate Livox hits before elevation fusion.
         voxelgrid_filter_size: 0.05
         # Keep terrain below the roof / upper-body envelope. This is relative
         # to base_link in the gravity-aligned map frame.
@@ -86,4 +105,7 @@ elevation_mapping:
         apply_voxelgrid_filter: true
         voxelgrid_filter_size: 0.03
         ignore_points_above: 0.60
-        ignore_points_below: -2.0
+        # The provisional camera extrinsic can expose invalid far-depth
+        # returns below the robot.  Retain the terrain band shared with LiDAR
+        # and reject those isolated -2 m outliers before fusion.
+        ignore_points_below: -1.0
