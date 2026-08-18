@@ -1,46 +1,42 @@
 #include "autonomy_light/height_map_bridge.hpp"
+#include "autonomy_light/dds_height_map_publisher.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
-#include <cstdint>
-#include <cstring>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <grid_map_msgs/msg/grid_map.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
-#include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-
-#include "autonomy_light/dds_height_map_publisher.hpp"
-#include "autonomy_light/msg/height_map.hpp"
 
 namespace autonomy_light {
 namespace {
 
 constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
 
-struct PointXYZ {
-  float x;
-  float y;
-  float z;
-  float intensity;
-};
-static_assert(sizeof(PointXYZ) == 4U * sizeof(float));
-
 int wrap(const int value, const int size) {
   const int result = value % size;
   return result < 0 ? result + size : result;
+}
+
+bool hasToken(const std::string &value, const std::string &token) {
+  std::string lower;
+  lower.reserve(value.size());
+  for (const auto character : value) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+  }
+  return lower.find(token) != std::string::npos;
 }
 
 double yawOf(const geometry_msgs::msg::Quaternion &orientation) {
@@ -115,9 +111,6 @@ struct HeightMapBridge::Impl {
     input_layer =
         node.declare_parameter<std::string>("input_layer", "elevation");
     base_frame = node.declare_parameter<std::string>("base_frame", "base_link");
-    transport = node.declare_parameter<std::string>("transport", "both");
-    ros_topic = node.declare_parameter<std::string>(
-        "ros2_topic", "/autonomy_light/height_map_data");
     rate_hz = node.declare_parameter<double>("publish_rate_hz", 50.0);
     fallback_resolution =
         node.declare_parameter<double>("fallback.resolution", 0.1);
@@ -131,8 +124,6 @@ struct HeightMapBridge::Impl {
         node.declare_parameter<double>("output.x_length", 1.8);
     output_y_length =
         node.declare_parameter<double>("output.y_length", 0.8);
-    pointcloud_topic = node.declare_parameter<std::string>(
-        "pointcloud_topic", "/autonomy_light/height_map");
     floor_radius = node.declare_parameter<double>("floor.radius_m", 0.6);
     floor_percentile = std::clamp(
         node.declare_parameter<double>("floor.percentile", 0.20), 0.0, 1.0);
@@ -144,15 +135,7 @@ struct HeightMapBridge::Impl {
     const int dds_domain = node.declare_parameter<int>("dds.domain_id", 1);
     const auto dds_topic =
         node.declare_parameter<std::string>("dds.topic", "height_map");
-    const auto dds_type =
-        node.declare_parameter<std::string>("dds.type", "core_dds::HeightMap");
     const int dds_history = node.declare_parameter<int>("dds.history_depth", 128);
-
-    if (transport != "ros2" && transport != "cyclone_dds" &&
-        transport != "both") {
-      throw std::invalid_argument(
-          "transport must be ros2, cyclone_dds, or both");
-    }
     if (rate_hz <= 0.0 || fallback_resolution <= 0.0 ||
         fallback_x_length <= 0.0 || fallback_y_length <= 0.0) {
       throw std::invalid_argument(
@@ -172,39 +155,22 @@ struct HeightMapBridge::Impl {
         [this](const grid_map_msgs::msg::GridMap::SharedPtr message) {
           onMap(message);
         });
-    if (publishesRos()) {
-      ros_publisher = node.create_publisher<autonomy_light::msg::HeightMap>(
-          ros_topic, rclcpp::QoS(1).reliable());
-    }
-    if (!pointcloud_topic.empty()) {
-      pointcloud_publisher = node.create_publisher<sensor_msgs::msg::PointCloud2>(
-          pointcloud_topic, rclcpp::SensorDataQoS());
-    }
-    if (publishesDds()) {
-      dds_publisher = std::make_unique<DdsHeightMapPublisher>(
-          static_cast<std::uint32_t>(std::max(0, dds_domain)), dds_topic,
-          dds_type, static_cast<std::uint32_t>(std::max(1, dds_history)));
-      if (!dds_publisher->ready()) {
-        throw std::runtime_error("Cyclone DDS height-map writer failed: " +
-                                 dds_publisher->error());
-      }
+    dds_publisher = std::make_unique<DdsHeightMapPublisher>(
+        static_cast<std::uint32_t>(std::max(0, dds_domain)), dds_topic,
+        static_cast<std::uint32_t>(std::max(1, dds_history)));
+    if (!dds_publisher->ready()) {
+      throw std::runtime_error("DDS height-map writer failed: " +
+                               dds_publisher->error());
     }
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / rate_hz));
     timer = node.create_wall_timer(period, [this]() { publish(); });
     RCLCPP_INFO(node.get_logger(),
-                "HeightMap bridge: input=%s output=%.3fm (%dx%d) transport=%s rate=%.1fHz",
-                input_topic.c_str(), output_resolution,
+                "HeightMap DDS: input=%s topic=%s output=%.3fm (%dx%d) rate=%.1fHz",
+                input_topic.c_str(), dds_topic.c_str(), output_resolution,
                 static_cast<int>(std::round(output_x_length / output_resolution)),
                 static_cast<int>(std::round(output_y_length / output_resolution)),
-                transport.c_str(), rate_hz);
-  }
-
-  bool publishesRos() const {
-    return transport == "ros2" || transport == "both";
-  }
-  bool publishesDds() const {
-    return transport == "cyclone_dds" || transport == "both";
+                rate_hz);
   }
 
   void onMap(const grid_map_msgs::msg::GridMap::SharedPtr &message) {
@@ -244,7 +210,23 @@ struct HeightMapBridge::Impl {
     next->size_y = static_cast<int>(matrix.layout.dim[1].size);
     next->outer_start = static_cast<int>(message->outer_start_index);
     next->inner_start = static_cast<int>(message->inner_start_index);
-    next->elevation = matrix.data;
+    // GridMap serializes Eigen matrices as column-major data.  The old bridge
+    // treated that payload as row-major, silently transposing/scrambling a
+    // fine grid.  Normalize it once here; Snapshot::sample remains x-major.
+    const bool is_column_major =
+        hasToken(matrix.layout.dim[0].label, "column") &&
+        hasToken(matrix.layout.dim[1].label, "row");
+    next->elevation.resize(matrix.data.size());
+    for (int y = 0; y < next->size_y; ++y) {
+      for (int x = 0; x < next->size_x; ++x) {
+        const auto destination = static_cast<std::size_t>(x) +
+                                 static_cast<std::size_t>(y) * next->size_x;
+        const auto source = is_column_major
+                                ? static_cast<std::size_t>(x) * next->size_y + y
+                                : destination;
+        next->elevation[destination] = matrix.data[source];
+      }
+    }
     std::lock_guard<std::mutex> lock(snapshot_mutex);
     snapshot = std::move(next);
   }
@@ -262,10 +244,9 @@ struct HeightMapBridge::Impl {
         std::max(1, static_cast<int>(std::round(length_x / resolution)));
     const int height =
         std::max(1, static_cast<int>(std::round(length_y / resolution)));
-    std::vector<float> data(cells(length_x, length_y, resolution),
-                            static_cast<float>(unknown_value));
-    std::vector<PointXYZ> points(data.size());
-    std::vector<bool> point_has_elevation(data.size(), false);
+    std::vector<float> data(
+        cells(length_x, length_y, resolution),
+        static_cast<float>(unknown_value));
 
     if (current) {
       try {
@@ -278,9 +259,6 @@ struct HeightMapBridge::Impl {
         const double base_y = transform.transform.translation.y;
         const double cosine = std::cos(base_yaw);
         const double sine = std::sin(base_yaw);
-        tf2::Transform map_from_base;
-        tf2::fromMsg(transform.transform, map_from_base);
-        const tf2::Transform base_from_map = map_from_base.inverse();
         std::vector<float> floor_samples;
         for (int row = 0; row < height; ++row) {
           for (int column = 0; column < width; ++column) {
@@ -309,25 +287,12 @@ struct HeightMapBridge::Impl {
                   current->sample(base_x + cosine * x - sine * y,
                                   base_y + sine * x + cosine * y);
               if (std::isfinite(elevation)) {
-                // Stable RL contract: keep the legacy data conversion
-                // independent from the PointCloud2 visualization geometry.
                 const float relative_height = elevation - floor;
                 const auto sample_index = static_cast<std::size_t>(row) * width + column;
                 data[sample_index] =
                     static_cast<float>(
                         std::clamp(reference_height - static_cast<double>(relative_height),
                                    clipping_min, clipping_max));
-                // xyz is geometry, so transform the actual native elevation
-                // sample into base_link. This makes the cloud coincide with
-                // the native GridMap in RViz even with base roll/pitch.
-                const tf2::Vector3 point_in_base = base_from_map * tf2::Vector3(
-                    base_x + cosine * x - sine * y,
-                    base_y + sine * x + cosine * y, elevation);
-                points[sample_index] = PointXYZ{
-                    static_cast<float>(point_in_base.x()),
-                    static_cast<float>(point_in_base.y()),
-                    static_cast<float>(point_in_base.z()), data[sample_index]};
-                point_has_elevation[sample_index] = true;
               }
             }
           }
@@ -340,74 +305,9 @@ struct HeightMapBridge::Impl {
       }
     }
 
-    // Emit every sampled cell. Valid cells retain the native terrain xyz so
-    // the cloud overlays the elevation map. Unknown cells use the configured
-    // height-map fallback plane; all cells carry clipped controller data in
-    // the intensity field.
-    for (int row = 0; row < height; ++row) {
-      for (int column = 0; column < width; ++column) {
-        const auto sample_index = static_cast<std::size_t>(row) * width + column;
-        if (point_has_elevation[sample_index]) {
-          continue;
-        }
-        const double x = -length_x / 2.0 + (column + 0.5) * resolution;
-        const double y = -length_y / 2.0 + (row + 0.5) * resolution;
-        const float value = data[sample_index];
-        points[sample_index] = PointXYZ{static_cast<float>(x), static_cast<float>(y),
-                                        -value, value};
-      }
-    }
-
-    if (ros_publisher) {
-      autonomy_light::msg::HeightMap message;
-      message.header.stamp = node.now();
-      message.header.frame_id = base_frame;
-      message.resolution = static_cast<float>(resolution);
-      message.x_length = static_cast<float>(length_x);
-      message.y_length = static_cast<float>(length_y);
-      message.data = data;
-      ros_publisher->publish(std::move(message));
-    }
-    if (dds_publisher && !dds_publisher->publish(data)) {
+    if (!dds_publisher->publish(data)) {
       RCLCPP_ERROR_THROTTLE(node.get_logger(), *node.get_clock(), 2000, "%s",
                             dds_publisher->error().c_str());
-    }
-    if (pointcloud_publisher) {
-      sensor_msgs::msg::PointCloud2 cloud;
-      if (current) {
-        cloud.header.stamp = current->header.stamp;
-      } else {
-        cloud.header.stamp = node.now();
-      }
-      cloud.header.frame_id = base_frame;
-      cloud.height = 1;
-      cloud.width = static_cast<std::uint32_t>(points.size());
-      cloud.is_bigendian = false;
-      cloud.is_dense = true;
-      cloud.point_step = sizeof(PointXYZ);
-      cloud.row_step = cloud.point_step * cloud.width;
-      cloud.fields.resize(4);
-      cloud.fields[0].name = "x";
-      cloud.fields[0].offset = 0;
-      cloud.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
-      cloud.fields[0].count = 1;
-      cloud.fields[1].name = "y";
-      cloud.fields[1].offset = 4;
-      cloud.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
-      cloud.fields[1].count = 1;
-      cloud.fields[2].name = "z";
-      cloud.fields[2].offset = 8;
-      cloud.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
-      cloud.fields[2].count = 1;
-      cloud.fields[3].name = "intensity";
-      cloud.fields[3].offset = 12;
-      cloud.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
-      cloud.fields[3].count = 1;
-      cloud.data.resize(static_cast<std::size_t>(cloud.row_step));
-      if (!points.empty()) {
-        std::memcpy(cloud.data.data(), points.data(), cloud.data.size());
-      }
-      pointcloud_publisher->publish(std::move(cloud));
     }
   }
 
@@ -415,8 +315,6 @@ struct HeightMapBridge::Impl {
   std::string input_topic;
   std::string input_layer;
   std::string base_frame;
-  std::string transport;
-  std::string ros_topic;
   double rate_hz{50.0};
   double fallback_resolution{0.1};
   double fallback_x_length{1.8};
@@ -424,7 +322,6 @@ struct HeightMapBridge::Impl {
   double output_resolution{0.1};
   double output_x_length{1.8};
   double output_y_length{0.8};
-  std::string pointcloud_topic;
   double floor_radius{0.6};
   double floor_percentile{0.20};
   double reference_height{0.48};
@@ -435,8 +332,6 @@ struct HeightMapBridge::Impl {
   std::shared_ptr<Snapshot> snapshot;
   std::unique_ptr<DdsHeightMapPublisher> dds_publisher;
   rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr subscriber;
-  rclcpp::Publisher<autonomy_light::msg::HeightMap>::SharedPtr ros_publisher;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher;
   rclcpp::TimerBase::SharedPtr timer;
   tf2_ros::Buffer tf_buffer;
   tf2_ros::TransformListener tf_listener;

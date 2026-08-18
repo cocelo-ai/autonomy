@@ -1,3 +1,19 @@
+bringup:
+  ros__parameters:
+    # Livox transport configuration. launch.sh converts this into the exact
+    # JSON schema required by Livox-SDK2; do not edit the vendor JSON files.
+    # Valid model values: MID360, MID360S.
+    #
+    # Replace lidar_ip and jetson_ip with the values assigned on the physical
+    # LiDAR Ethernet network. CLI values --lidar-type/--lidar-ip/--jetson-ip
+    # intentionally override these YAML defaults for a one-off run.
+    livox:
+      model: "MID360"
+      lidar_ip: "192.168.1.166"
+      jetson_ip: "192.168.1.50"
+      publish_frequency_hz: 60.0
+      frame_id: "lidar_link"
+
 /**:
   ros__parameters:
     # Native Super-LIO configuration for one Livox MID360/MID360s CustomMsg stream.
@@ -10,14 +26,17 @@
 
     lio.ros.lidar_topic: "/livox/lidar"
     lio.ros.imu_topic: "/livox/imu"
-    # Always retain map -> odom -> imu. Normal LIO starts map -> odom at identity;
+    # Super-LIO owns map -> odom -> lidar_link. launch.sh parses the URDF and
+    # publishes only the required fixed lidar_link -> base_link and sensor edges.
     # full SLAM and relocation update only that correction.
     lio.ros.global_frame: "map"
     lio.ros.odom_frame: "odom"
+    lio.ros.body_frame: "lidar_link"
 
-    # Enabled by mapping.sh: keyframes + Scan Context + GICP + iSAM2.
-    # The correction is recomputed slowly, but its TF is broadcast at LiDAR rate.
-    lio.slam.enable: false
+    # Full SLAM is the normal launch mode: keyframes + Scan Context + GICP +
+    # iSAM2. The correction is recomputed slowly, but TF is broadcast at
+    # LiDAR rate. Map-file relocation disables this in launch.sh.
+    lio.slam.enable: true
     lio.slam.keyframe_distance: 1.0
     lio.slam.keyframe_yaw_deg: 10.0
     lio.slam.keyframe_leaf_size: 0.10
@@ -46,7 +65,7 @@
                               1.0, 0.0, 0.0,
                               0.0, 1.0, 0.0,
                               0.0, 0.0, 1.0]
-    # autonomy_light composes this with target_to_lidar_* to publish base_link.
+    # base_link is related to lidar_link by the static sensor TF configuration.
     lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     lio.hash_map.hash_capacity: 2000000
@@ -66,7 +85,7 @@
     lio.output.map: true
     lio.output.dense: true
     lio.output.pub_step: 1
-    # Re-broadcast map -> odom -> imu and the latest /lio/odom state at 50 Hz.
+    # Re-broadcast map -> odom -> lidar_link and the latest /lio/odom state at 50 Hz.
     # This does not fabricate a faster estimator update; reissued odometry
     # retains its original measurement timestamp.
     lio.output.tf_publish_rate_hz: 50.0

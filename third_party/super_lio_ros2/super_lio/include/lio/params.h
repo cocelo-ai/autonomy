@@ -42,6 +42,7 @@ namespace LI2Sup{
   extern std::string g_lidar_topic;
   extern std::string g_global_frame;
   extern std::string g_odom_frame;
+  extern std::string g_body_frame;
 
   extern bool g_slam_enable;
   extern float g_slam_keyframe_distance;

@@ -30,7 +30,7 @@ void ROSWrapper::pub_odom(const NavState& state){
                                                  : odom_to_imu;
   nav_msgs::msg::Odometry odom;
   odom.header.frame_id = g_global_frame;
-  odom.child_frame_id = "imu";
+  odom.child_frame_id = g_body_frame;
 
   odom.header.stamp = toRosTime(state.timestamp);
   odom.pose.pose.position.x = global_to_imu.t_[0];
@@ -79,7 +79,7 @@ void ROSWrapper::pub_odom(const NavState& state){
     latest_odom_ = odom;
     has_latest_odom_ = true;
   }
-  pub_odom_->publish(odom);    // imu frame -> lidar frequency
+  pub_odom_->publish(odom);
 
   V3 robo_position = global_to_imu.R_ * (-g_odom_robo.R_ * g_odom_robo.t_) +
                      global_to_imu.t_;
@@ -182,7 +182,7 @@ void ROSWrapper::publishDynamicTransforms(const rclcpp::Time& stamp) {
     pose.header.frame_id =
         has_map_to_odom && g_global_frame != g_odom_frame ? g_odom_frame
                                                             : g_global_frame;
-    pose.child_frame_id = "imu";
+    pose.child_frame_id = g_body_frame;
     pose.transform.translation.x = odom_to_imu.t_[0];
     pose.transform.translation.y = odom_to_imu.t_[1];
     pose.transform.translation.z = odom_to_imu.t_[2];

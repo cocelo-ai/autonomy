@@ -1,0 +1,254 @@
+live_occupancy_mapper:
+  ros__parameters:
+    input_topic: /lio/cloud_world
+    map_topic: /map
+    sensor_cloud_topic: /lio/cloud_sensor
+    obstacle_cloud_topic: /lio/cloud_sensor_obstacles
+    map_frame: map
+    sensor_frame: lidar_link
+    resolution: 0.10
+    publish_frequency: 2.0
+    # Heights are measured above the per-scan RANSAC ground plane, not from
+    # the pitched lidar origin. This keeps floor returns out of obstacle cells.
+    min_obstacle_height: -0.4
+    max_obstacle_height: 1.20
+    ground_distance_threshold: 0.055
+    max_ground_tilt_deg: 35.0
+    min_ground_points: 100
+    ground_ransac_iterations: 100
+    min_range: 0.50
+    max_range: 12.0
+    padding: 2.0
+    # Grow in coarse blocks so Nav2 StaticLayer does not resize every scan.
+    expansion_chunk_size: 5.0
+    occupied_increment: 3
+    free_decrement: 1
+    occupied_threshold: 2
+    min_score: -10
+    max_score: 20
+    max_cells: 4000000
+
+command_user_bridge:
+  ros__parameters:
+    input_topic: /nav2/cmd_vel
+    # The domain bridge is the only process that republishes this command on
+    # the external robot-control domain.
+    output_topic: /autonomy_light/command_out
+    publish_rate_hz: 20.0
+    command_timeout_sec: 0.5
+    custom_drive_id: 2
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    costmap_update_timeout: 0.30
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.5                                                                                                                                                                    
+    odom_topic: /lio/odom
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.20
+      movement_time_allowance: 12.0
+    goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.18
+      yaw_goal_tolerance: 0.18
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.45
+      lookahead_dist: 0.60
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.90
+      lookahead_time: 1.5
+      rotate_to_heading_angular_vel: 0.70
+      transform_tolerance: 0.30
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.70
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.2
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.70
+      regulated_linear_scaling_min_speed: 0.08
+      use_rotate_to_heading: true
+      allow_reversing: false
+      rotate_to_heading_min_angle: 0.50
+      # The learned locomotion policy has a small-command dead zone. Do not
+      # let RPP clamp forever against zero measured yaw rate during rotate-in-place.
+      max_angular_accel: 20.0
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 10.0
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 8
+      height: 8
+      resolution: 0.10
+      robot_radius: 0.15
+      footprint_padding: 0.03
+      transform_tolerance: 0.30
+      always_send_full_costmap: true
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: true
+        max_obstacle_height: 5.0
+        combination_method: 1
+        observation_sources: lio_marking lio_clearing
+        lio_marking:
+          topic: /lio/cloud_sensor_obstacles
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -5.0
+          max_obstacle_height: 5.0
+          obstacle_min_range: 0.10
+          obstacle_max_range: 7.0
+          expected_update_rate: 0.0
+          observation_persistence: 0.25
+        lio_clearing:
+          topic: /lio/cloud_sensor
+          data_type: "PointCloud2"
+          marking: false
+          clearing: true
+          min_obstacle_height: -5.0
+          max_obstacle_height: 5.0
+          raytrace_min_range: 0.10
+          raytrace_max_range: 8.0
+          expected_update_rate: 0.0
+          observation_persistence: 0.25
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.1
+        cost_scaling_factor: 3.0
+
+planner_server:
+  ros__parameters:
+    expected_planneri_frequency: 5.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      # Humble exports Navfn with the pluginlib slash identifier.
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.30
+      use_astar: true
+      allow_unknown: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: map
+      robot_base_frame: base_link
+      rolling_window: false
+      resolution: 0.10
+      robot_radius: 0.15
+      footprint_padding: 0.03
+      transform_tolerance: 0.30
+      track_unknown_space: true
+      always_send_full_costmap: true
+      plugins: ["static_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /map
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        transform_tolerance: 0.30
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: true
+        max_obstacle_height: 5.0
+        combination_method: 1
+        observation_sources: lio_marking lio_clearing
+        lio_marking:
+          topic: /lio/cloud_sensor_obstacles
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -5.0
+          max_obstacle_height: 5.0
+          obstacle_min_range: 0.10
+          obstacle_max_range: 10.0
+          expected_update_rate: 0.0
+          observation_persistence: 1.0
+        lio_clearing:
+          topic: /lio/cloud_sensor
+          data_type: "PointCloud2"
+          marking: false
+          clearing: true
+          min_obstacle_height: -5.0
+          max_obstacle_height: 5.0
+          raytrace_min_range: 0.10
+          raytrace_max_range: 12.0
+          expected_update_rate: 0.0
+          observation_persistence: 1.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.1
+        cost_scaling_factor: 3.0
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.55, 0.0, 0.90]
+    min_velocity: [-0.20, 0.0, -0.90]
+    max_accel: [0.40, 0.0, 4.00]
+    max_decel: [-0.55, 0.0, -6.00]
+    odom_topic: /lio/odom
+    odom_duration: 0.10
+    deadband_velocity: [0.01, 0.0, 0.01]
+    velocity_timeout: 0.50
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.30
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.80
+    min_rotational_vel: 0.15
+    rotational_acc_lim: 20.0
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /lio/odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    navigators: ["navigate_to_pose"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"

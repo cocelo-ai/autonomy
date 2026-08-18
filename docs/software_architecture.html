@@ -2,89 +2,22 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>autonomy_light software architecture</title>
+  <title>autonomy_light architecture</title>
   <style>
-    @page { size: A4; margin: 16mm; }
-    body { font: 10.5pt/1.45 Arial, "Noto Sans KR", sans-serif; color: #17212b; }
-    h1 { color: #173b5b; font-size: 23pt; margin-bottom: 4px; }
-    h2 { color: #a65e00; border-bottom: 1px solid #d9e2e8; padding-bottom: 4px; margin-top: 20px; }
-    code { background: #f3f6f8; padding: 1px 3px; border-radius: 3px; }
-    .subtitle { color: #52616b; margin-top: 0; }
-    .rule { background: #fff4df; border-left: 4px solid #a65e00; padding: 9px 12px; }
-    img { display: block; width: 100%; max-width: 720px; margin: 12px auto; }
-    table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-    th { background: #edf5fb; } th, td { border: 1px solid #ccd7df; padding: 6px; text-align: left; vertical-align: top; }
-    ul { padding-left: 20px; }
+    body { font: 11pt/1.5 Arial, sans-serif; margin: 32px; color: #17212b; }
+    img { display: block; max-width: 900px; width: 100%; margin: 20px 0; }
+    code { background: #f3f6f8; padding: 1px 3px; }
   </style>
 </head>
 <body>
-  <h1>autonomy_light software architecture</h1>
-  <p class="subtitle">Super-LIO + ETH/ANYbotics robot-centric elevation mapping · 2026-08-04</p>
-
-  <div class="rule"><strong>Design decision.</strong> ETH/ANYbotics owns elevation fusion. This repository owns
-  calibrated bringup and one compact output bridge: native GridMap is always published at the configured rate, then
-  converted at the same rate to the previous ROS 2 <code>HeightMap</code> or Cyclone DDS <code>core_dds::HeightMap</code> contract.</div>
-
+  <h1>autonomy_light</h1>
+  <p>LiDAR는 Super-LIO와 Nav2에만 사용하고, elevation map은 선택된 카메라 PointCloud2만 병합해 사용한다. Super-LIO의 map → base_link 자세에서 roll/pitch를 제거해 카메라 포인트를 수평 보정한다.</p>
   <img src="software_node_topology.svg" alt="Node topology">
-
-  <h2>Node responsibilities</h2>
-  <table>
-    <tr><th>Node</th><th>Owner</th><th>Responsibility</th></tr>
-    <tr><td>Livox driver</td><td>external</td><td>Publishes one Livox CustomMsg and IMU stream.</td></tr>
-    <tr><td>Super-LIO</td><td>external</td><td>LiDAR–IMU odometry, ESKF covariance, full SLAM, saved-map relocation, and <code>map → odom → imu</code>.</td></tr>
-    <tr><td>D435/D435i driver</td><td>external</td><td>Publishes one PointCloud2 stream with its calibrated TF chain.</td></tr>
-    <tr><td><code>elevation_mapping</code></td><td>vendored ETH/ANYbotics</td><td>Robot-centric circular grid, sensor-specific variance, pose-covariance prediction, Bayesian fusion, and visibility cleanup.</td></tr>
-    <tr><td><code>height_map_bridge</code></td><td>this repository</td><td>50 Hz GridMap-to-legacy conversion, base-yaw resampling, local-floor-relative data, ROS 2/Cyclone DDS output selection.</td></tr>
-    <tr><td><code>autonomy_light</code></td><td>this repository</td><td>Configuration, process lifecycle, calibrated static TF, output transport and direct-DDS network contract.</td></tr>
-  </table>
-
-  <h2>Data and TF contract</h2>
-  <table>
-    <tr><th>Direction</th><th>Topic / frame</th><th>Meaning</th></tr>
-    <tr><td>input</td><td><code>/lio/odom</code></td><td>Super-LIO pose and 6×6 covariance for motion uncertainty propagation.</td></tr>
-    <tr><td>input</td><td><code>/lio/cloud_world</code></td><td>Registered LiDAR cloud, transformed to the map at its timestamp.</td></tr>
-    <tr><td>optional input</td><td><code>/camera/.../depth/color/points</code></td><td>D435/D435i cloud; directly fused with the structured-light model.</td></tr>
-    <tr><td>output</td><td><code>/autonomy_light/elevation_map</code></td><td>Native <code>grid_map_msgs/msg/GridMap</code> at configured 50 Hz, layers: elevation, upper/lower bound, uncertainty range.</td></tr>
-    <tr><td>output</td><td><code>/autonomy_light/height_map_data</code></td><td>Legacy <code>autonomy_light/msg/HeightMap</code>, base-yaw row-major array at the same rate.</td></tr>
-    <tr><td>output</td><td><code>height_map</code></td><td>Cyclone DDS <code>core_dds::HeightMap { sequence&lt;float&gt; data; }</code>, domain 1, best-effort, KEEP_LAST 128; default <code>transport: both</code> publishes this and ROS 2 together.</td></tr>
-    <tr><td>TF</td><td><code>map → odom → imu → base_link → lidar_link</code><br><code>base_link → camera_link → camera_depth_optical_frame</code></td><td>Super-LIO owns dynamic transforms; launcher owns the calibrated static mounts, while the D435 driver owns camera-internal TF.</td></tr>
-  </table>
-  <p>The local grid follows <code>base_link</code> in <code>map</code> with Grid Map's circular buffer. It preserves
-  overlapping posterior cells while moving and clears only newly exposed strips. Unobserved terrain remains <code>NaN</code>;
-  no arbitrary startup floor value is inserted. The compatibility bridge alone maps unknown cells to its legacy
-  configured fill value (<code>0.48</code> by default).</p>
-
-  <h2>Remote DDS network</h2>
-  <p><code>config/autonomy_light.yaml</code> owns <code>dds_network</code>: mode, NIC, fixed local IP,
-  peer and multicast. With the default direct-DDS output, the launcher verifies the address and that it does
-  not overlap <code>livox_network.subnet</code> (<code>192.168.1.0/24</code>) or its configured NIC, then adds
-  <code>192.168.20.10/24</code> only to the configured computer-link NIC when missing. It passes a generated
-  Cyclone DDS interface/peer configuration only to <code>height_map_bridge</code>; ROS 2, Livox and Super-LIO
-  retain their own middleware/network behavior. The remote computer uses <code>192.168.20.1/24</code> and
-  peer <code>192.168.20.10</code>. Explicit peers preserve discovery when Wi-Fi multicast is filtered.</p>
-
-  <h2>Uncertainty and cleanup</h2>
-  <p>Each input uses its own laser or D435 noise model. At each cloud timestamp the elevation node obtains the
-  Super-LIO covariance, predicts map uncertainty due to robot motion, and applies the measurement update in the
-  map frame. Its visibility cleanup ray-traces newer observations to remove penetrated stale cells, addressing
-  lingering wall and overhanging-obstacle artifacts without an additional local implementation.</p>
-
-  <h2>Prebuilt terrain input</h2>
-  <p><code>config/elevation_mapping.yaml</code> owns mapper inputs, local grid, fusion and cleanup.
-  <code>config/autonomy_light.yaml</code> contains the one canonical map/base TF names, calibration and
-  Super-LIO/Livox inputs plus the compatibility-output transport; the launcher binds shared frame names and one
-  publish rate to mapper and bridge. Use
-  <code>--elevation-config FILE</code> to select another mapper profile; the output
-  topic is a launcher remap (<code>AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC</code>).</p>
-  <p><code>underlying_map_topic</code> accepts a prebuilt <code>GridMap</code> carrying an
-  <code>elevation</code> layer. A Super-LIO PCD remains the map used by <code>--map</code> relocation and is not
-  silently reinterpreted as terrain. This keeps localization and terrain-map contracts explicit.</p>
-
-  <h2>Operational commands</h2>
   <ul>
-    <li><code>./build.sh</code> installs/builds Livox, Super-LIO, Grid Map, vendored KINDR/KINDR ROS, the mapper, and bringup.</li>
-    <li><code>./launch.sh --vis</code> opens a latest-frame GridMap elevation viewer; <code>--rviz</code> opens the GridMap RViz display.</li>
-    <li><code>./mapping.sh --output maps/site.pcd</code> runs Super-LIO full SLAM and writes the optimized PCD at shutdown.</li>
+    <li>Nav2의 <code>/nav2/cmd_vel</code>은 <code>geometry_msgs/msg/Twist</code>이다.</li>
+    <li><code>command_user_bridge</code>가 이를 <code>core/msg/CommandCore</code>로 변환하여 <code>/control_command/autopilot</code>에 publish한다. <code>linear.x</code>, <code>linear.y</code>, <code>angular.z</code>는 각각 <code>motion_command[0..2]</code>이고 <code>custom_drive_id</code>는 2이다.</li>
+    <li>최종 height map은 ROS 토픽으로 publish하지 않고, DDS <code>core_dds::HeightMap</code> (<code>height_map</code>, domain 1)으로만 전송한다.</li>
+    <li>실행 설정은 <code>elevation_mapping.yaml</code>, <code>super_lio_mid360.yaml</code>, <code>nav2_live.yaml</code> 세 파일뿐이다.</li>
   </ul>
 </body>
 </html>

@@ -1,111 +1,176 @@
+# F4 camera-only elevation map.  LiDAR is used only by Super-LIO/Nav2.
+
+bringup:
+  ros__parameters:
+    # All perception, SLAM, TF, and Nav2 traffic remains on this private ROS
+    # domain. Only outbound_command_bridge crosses into the external domain.
+    internal_ros_domain_id: 10
+    external_ros_domain_id: 0
+    # The launcher parses this URDF and publishes only the fixed paths needed
+    # for LiDAR -> base and the cameras selected below; it never starts a
+    # robot model or joint-state publisher.
+    urdf: resources/urdf/f4/f4.urdf
+    lidar_frame: lidar_link
+    base_frame: base_link
+    # A camera key is also the mapper/merge source name. launch.sh starts only
+    # keys selected by observation_merge.inputs.
+    realsense_cameras:
+      front_d435:
+        name: front_d435
+        namespace: front_d435
+        # Observed by show_realsense_usb_ports.py (D435i, serial 243522073112).
+        usb_port_id: 2-1.3
+        # This name is private to realsense2_camera. Its TF publishing is
+        # disabled: elevation uses the static F_camera_link TF plus the fixed
+        # source_to_mount_* conversion below, so no driver-specific frames
+        # appear in the global TF graph.
+        driver_base_frame_id: link
+        depth_profile: 640x480x60
+
+camera_frame_mapper:
+  ros__parameters:
+    # Each selected source receives one mapper process. launch.sh supplies its
+    # input/output topic and static sensor mount from sources.<name> below.
+    map_frame: map
+    base_frame: base_link
+    frame_override: ""
+    noise_stddev: 0.025
+    min_range: 0.30
+    max_range: 3.00
+    max_points: 60000
+    tf_timeout_sec: 0.020
+
+gravity_frame_broadcaster:
+  ros__parameters:
+    # Owns the dynamic base_link -> base_link_gravity edge.  Its rotation is
+    # the inverse of the instantaneous Super-LIO roll/pitch correction so
+    # map -> base_link_gravity retains yaw while remaining level. Translation
+    # is zero because the gravity frame shares base_link's local origin.
+    map_frame: map
+    base_frame: base_link
+    gravity_frame: base_link_gravity
+    publish_rate_hz: 50.0
+    tf_timeout_sec: 0.020
+
+observation_merge:
+  ros__parameters:
+    base_frame: base_link
+    map_frame: map
+    target_frame: base_link_gravity
+    output_topic: /autonomy_light/merged_observations
+    publish_rate_hz: 60.0
+    # A single F camera is consumed FIFO at its input cadence.  No time cohort
+    # is formed, so no valid existing frame is held for another sensor.
+    max_cloud_age_sec: 0.25
+    sync.require_all_sources: true
+    sync.slop_sec: 0.015
+    sync.queue_size: 256
+    # Retained for a future multi-camera configuration.  Such a configuration
+    # is explicitly cohort-synchronised; it never changes the F4 one-camera
+    # passthrough behaviour below.
+    sync.wait_for_complete_window: true
+    sync.single_source_passthrough: true
+    tf_timeout_sec: 0.020
+    roi.x_min: -1.50
+    roi.x_max: 1.50
+    roi.y_min: -1.00
+    roi.y_max: 1.00
+    roi.z_min: -1.20
+    roi.z_max: 0.80
+    roi.max_range: 3.00
+    roi.voxel_size: 0.02
+    # Inputs arrive in map coordinates from their camera_frame_mapper nodes.
+    # Add a mapper and a source entry for each future rear/side camera; then
+    # inputs becomes an explicit cohort, with the sync settings above.
+    inputs: [front_d435]
+    sources.front_d435.type: camera
+    sources.front_d435.mount_frame: F_camera_link
+    sources.front_d435.raw_topic: /front_d435/front_d435/depth/color/points
+    sources.front_d435.topic: /autonomy_light/camera_observations/front_d435_map
+    sources.front_d435.frame_override: map
+    sources.front_d435.validate_mount_tf: false
+    # F_camera_link is already the D435 optical frame at its
+    # calibrated physical mounting angle.  The raw D435 PointCloud2 uses that
+    # same optical-axis convention, so this conversion must stay identity.
+    # Applying the standard optical-frame rotation here would rotate it twice
+    # and bend the merged observation.
+    sources.front_d435.source_to_mount_xyz: [0.0, 0.0, 0.0]
+    sources.front_d435.source_to_mount_rpy: [0.0, 0.0, 0.0]
+    sources.front_d435.noise_stddev: 0.025
+    sources.front_d435.min_range: 0.30
+    sources.front_d435.max_points: 60000
+
 elevation_mapping:
   ros__parameters:
-    # Sole configuration for the ETH elevation mapper: inputs, local-grid
-    # geometry, fusion and cleanup live here. Shared map/base frame names are
-    # bound from autonomy_light.yaml by the launcher.
-    # A robot-centric circular grid: overlapping cells are retained when the
-    # base moves; only the newly exposed strips become unknown.
-    num_callback_threads: 4
-    postprocessor_num_threads: 0
-    robot_pose_with_covariance_topic: "/lio/odom"
-    robot_pose_cache_size: 500
-    track_point_x: 0.0
-    track_point_y: 0.0
-    track_point_z: 0.0
+    input_topic: /autonomy_light/merged_observations
+    output_topic: /autonomy_light/elevation_map
+    output_frame: base_link_gravity
+    # Processing consumes every merged observation.  The most recent complete
+    # grid is published at 50 Hz for DDS consumers without throttling input.
+    publish_rate_hz: 50.0
+    # Temporal state is reprojected through map -> base_link_gravity. Never
+    # fuse unregistered history when the SLAM attitude transform is unavailable.
+    slam.map_frame: map
+    grid.resolution: 0.1
+    grid.x_min: -0.90
+    grid.x_max: 0.90
+    grid.y_min: -0.40
+    grid.y_max: 0.40
+    grid.z_min: -1.20
+    grid.z_max: 0.80
+    algorithm.uncertainty.noise_alpha: 0.001
+    algorithm.uncertainty.min_meas_var: 0.0004
+    algorithm.uncertainty.max_cell_var: 0.0100
+    algorithm.temporal.enabled: true
+    algorithm.temporal.require_slam_tf: true
+    algorithm.temporal.tf_timeout_sec: 0.020
+    algorithm.temporal.time_variance_rate: 0.20
+    algorithm.temporal.mahalanobis_threshold: 3.0
+    algorithm.temporal.dynamic_reset_delta: 0.10
+    algorithm.temporal.dynamic_variance_bump: 0.0225
+    algorithm.frame_aggregation.robust_height_gate: 0.04
+    algorithm.frame_aggregation.intra_cell_min_support_gap: 0.025
+    algorithm.frame_aggregation.intra_cell_min_support_count: 3
+    algorithm.frame_aggregation.edge_mix_height_diff: 0.035
+    algorithm.frame_aggregation.edge_prefer_prev_support_count: 2
+    algorithm.isolated_filter.radius: 1
+    algorithm.isolated_filter.min_support_neighbors: 2
+    algorithm.isolated_filter.support_height_diff: 0.025
+    algorithm.isolated_filter.outlier_height_diff: 0.050
+    algorithm.hole_fill.radius: 1
+    algorithm.hole_fill.min_neighbors: 3
+    algorithm.hole_fill.max_height_diff: 0.030
+    algorithm.surface_smoothing.enabled: true
+    algorithm.surface_smoothing.radius: 1
+    algorithm.surface_smoothing.sigma_spatial: 1.1
+    algorithm.surface_smoothing.sigma_height: 0.025
+    algorithm.surface_smoothing.max_height_diff: 0.040
+    algorithm.surface_smoothing.min_support_neighbors: 3
+    algorithm.surface_smoothing.blend: 0.60
+    algorithm.surface_smoothing.passes: 2
+    # Debug data stays in base_link_gravity, therefore RViz can render it
+    # without interpreting GridMap's column-major circular-buffer layout.
+    # Final filtered/temporal height map for RViz PointCloud2 inspection.
+    debug.enabled: true
+    debug.pointcloud_topic: /autonomy_light/elevation_map/debug_points
 
-    # Native fusion ROI.  This is deliberately wider than the controller
-    # height-map ROI configured in autonomy_light.yaml.
-    length_in_x: 3.00
-    length_in_y: 2.00
-    position_x: 0.0
-    position_y: 0.0
-    # This is the native visualization/fusion grid, independent of the
-    # controller height-map contract below. Five-centimetre cells retain the
-    # wall/terrain edge detail while allowing the complete native fused map
-    # to be updated at the 50 Hz LiDAR cadence.
-    resolution: 0.05
-
-    # Native fused GridMap output. `elevation`, upper/lower bounds, and
-    # uncertainty_range are published without a custom message conversion.
-    fused_map_publishing_rate: 50.0
-    min_update_rate: 50.0
-    # D435 frames can reach the callback roughly 0.1–0.3 s after the
-    # lower-latency LiDAR cloud.  The mapper accepts that bounded delay but
-    # preserves the newest map timestamp in code.
-    time_tolerance: 0.50
-    # MID360's vertical precision and residual LIO pose error are centimetre
-    # scale.  Do not clamp observations to an unrealistic 1 cm standard
-    # deviation, otherwise normal consecutive scans are rejected as outliers.
-    min_variance: 0.0004
-    # Cap per-cell vertical uncertainty at 5 cm (variance 0.0025 m²).
-    # The previous 20 cm cap could publish an 0.8 m four-sigma range and
-    # allowed isolated Livox returns to make the elevation layer visibly jump.
-    max_variance: 0.0025
-    # Keep fusion local at a wall/ground boundary.  The old 5–25 cm
-    # horizontal standard deviation blended the two surfaces into a broad,
-    # flickering band around every wall.
-    min_horizontal_variance: 0.0004
-    max_horizontal_variance: 0.0100
-    # Preserve the wall edge instead of spatially blending wall and floor
-    # cells. The gate is only for cross-cell fusion; repeated observations
-    # of an individual cell still use the measurement variance above.
-    fusion_height_difference_threshold: 0.12
-    mahalanobis_distance_threshold: 3.0
-    # A repeated incompatible return should be treated as a small transient,
-    # not grow a cell into a wall/floor blend over successive scans.
-    multi_height_noise: 0.0004
-    underlying_map_topic: ""
-
-    # ETH/ANYbotics visibility cleanup removes surfaces that a newer ray
-    # penetrates, preventing stale walls and overhanging artifacts from
-    # remaining in the local terrain map.
-    enable_visibility_cleanup: true
-    enable_continuous_cleanup: false
-    visibility_cleanup_rate: 10.0
-    scanning_duration: 0.02
-    robot_motion_map_update/covariance_scale: 1.0
-
-    inputs: ["lidar", "d435"]
-    lidar:
-      type: "pointcloud"
-      topic: "/lio/cloud_world"
-      queue_size: 5
-      publish_on_update: false
-      sensor_processor:
-        type: "laser"
-        min_radius: 0.018
-        beam_angle: 0.0006
-        beam_constant: 0.0015
-        apply_voxelgrid_filter: true
-        # Retain one representative return per native 5 cm cell to reject
-        # duplicate Livox hits before elevation fusion.
-        voxelgrid_filter_size: 0.05
-        # Keep terrain below the roof / upper-body envelope. This is relative
-        # to base_link in the gravity-aligned map frame.
-        ignore_points_above: 0.60
-        ignore_points_below: -2.0
-
-    # The D435 source is intentionally independent of LiDAR timing.  When a
-    # camera is absent the subscription is idle; no merge node is required.
-    d435:
-      type: "pointcloud"
-      topic: "/camera/camera/depth/color/points"
-      queue_size: 2
-      publish_on_update: false
-      sensor_processor:
-        type: "structured_light"
-        cutoff_min_depth: 0.20
-        cutoff_max_depth: 3.25
-        normal_factor_a: 0.000611
-        normal_factor_b: 0.003587
-        normal_factor_c: 0.3515
-        normal_factor_d: 0.0
-        normal_factor_e: 1.0
-        lateral_factor: 0.01576
-        apply_voxelgrid_filter: true
-        voxelgrid_filter_size: 0.03
-        ignore_points_above: 0.60
-        # The provisional camera extrinsic can expose invalid far-depth
-        # returns below the robot.  Retain the terrain band shared with LiDAR
-        # and reject those isolated -2 m outliers before fusion.
-        ignore_points_below: -1.0
+height_map_bridge:
+  ros__parameters:
+    input_topic: /autonomy_light/elevation_map
+    base_frame: base_link_gravity
+    publish_rate_hz: 50.0
+    fallback.resolution: 0.05
+    fallback.x_length: 3.0
+    fallback.y_length: 2.0
+    output.resolution: 0.10
+    output.x_length: 1.80
+    output.y_length: 0.80
+    dds.domain_id: 1
+    dds.topic: height_map
+    dds.history_depth: 128
+    distance.reference_height: 0.48
+    distance.min: 0.0
+    distance.max: 0.75
+    distance.unknown: 0.48
+    floor.radius_m: 0.60
+    floor.percentile: 0.20

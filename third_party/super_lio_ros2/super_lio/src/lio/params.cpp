@@ -25,6 +25,7 @@ namespace LI2Sup{
   string g_lidar_topic;
   string g_global_frame = "map";
   string g_odom_frame = "odom";
+  string g_body_frame = "imu";
 
   bool g_slam_enable = false;
   float g_slam_keyframe_distance = 1.0f;

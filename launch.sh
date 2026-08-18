@@ -3,776 +3,776 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./launch.sh [--real|--sim] [--no-drivers] [--map FILE] [options] [-- <elevation ROS args>]
+Usage: ./launch.sh [--real|--sim] [--no-drivers] [--no-nav2] [--rviz] [--map FILE] [--mapping [FILE]]
+                   [--lidar-type mid360|mid360s] [--lidar-ip IPV4] [--jetson-ip IPV4]
+                   [--vis-rate HZ] [--no-status]
 
-  --real                  Start Livox and Super-LIO (default).
-  --sim                   Use Livox CustomMsg simulation input; do not start Livox.
-  --no-drivers            Use externally running Super-LIO and sensor drivers.
-  --no-camera             Force LiDAR-only mapping for this run; leave the
-                          RealSense configuration unchanged for later use.
-  --map FILE              Start Super-LIO relocation against a saved PCD.
-  --mapping-output FILE   Enable Super-LIO full SLAM and save its PCD on exit.
-  --config FILE           Override autonomy_light.yaml.
-  --elevation-config FILE Override elevation_mapping.yaml.
-  --raw-lidar-topic TOPIC Override the Super-LIO LiDAR input topic.
-  --raw-imu-topic TOPIC   Override the Super-LIO IMU input topic.
-  --sim-topic-prefix PFX  Simulation prefix (default: /f4).
-  --mid360|--mid360s      Select the bundled Livox launch file.
-  --vis                   Show 50 Hz terminal telemetry (pose, velocity, height-map data).
-  --status-rate HZ        Set terminal elevation-map redraw rate (default: 50 Hz).
-  --no-status             Do not start the normal terminal map-status display.
-  --rviz                  Start RViz with the GridMap display.
-  --no-rviz               Do not auto-start RViz for --map.
-  --no-static-tf          Do not publish imu -> base_link -> lidar_link/camera_link.
-  --ros-distro NAME       ROS distribution (default: $ROS_DISTRO or humble).
+Starts full Super-LIO SLAM, camera-only elevation mapping, and Nav2.
 
-Extra ROS arguments after `--` are passed only to elevation_mapping.
-
-The RealSense driver is started for real-hardware launches when
-realsense.enabled is true in autonomy_light.yaml.
+  --real                  Start Livox and RealSense drivers (default).
+  --sim                   Use /f4/lidar/points and /f4/lidar/imu.
+  --no-drivers            Use externally running drivers and Super-LIO.
+  --no-nav2               Do not start Nav2 or autopilot command output.
+  --rviz                  Start RViz2.
+  --map FILE              Start Super-LIO relocation with a saved PCD.
+  --mapping [FILE]        Save the full-SLAM PCD on shutdown. Without FILE,
+                          writes maps/super_lio_map_<timestamp>.pcd.
+  --lidar-type TYPE       Override YAML Livox model: mid360 or mid360s.
+  --lidar-ip IPV4         Override bringup.livox.lidar_ip for this run.
+  --jetson-ip IPV4        Override bringup.livox.jetson_ip for this run.
+  --mid360|--mid360s      Backward-compatible aliases for --lidar-type.
+  --vis-rate HZ           Terminal status-table refresh rate (default: 2.0 Hz).
+  --no-status             Do not start the terminal status table.
+  --check                 Validate the three configuration files and exit.
 EOF
 }
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ELEVATION_CONFIG="${ROOT}/config/elevation_mapping.yaml"
+LIO_CONFIG="${ROOT}/config/super_lio_mid360.yaml"
+NAV2_CONFIG="${ROOT}/config/nav2_live.yaml"
 MODE="real"
 NO_DRIVERS="false"
-NO_STATIC_TF="false"
-NO_CAMERA="false"
-CONFIG_FILE="${AUTONOMY_LIGHT_CONFIG:-${SCRIPT_DIR}/config/autonomy_light.yaml}"
-ELEVATION_CONFIG_FILE="${AUTONOMY_LIGHT_ELEVATION_CONFIG:-${SCRIPT_DIR}/config/elevation_mapping.yaml}"
-MAP_FILE="${AUTONOMY_LIGHT_MAP_FILE:-}"
+ENABLE_NAV2="true"
+ENABLE_RVIZ="false"
+CHECK_ONLY="false"
+LIDAR_TYPE_OVERRIDE=""
+LIDAR_IP_OVERRIDE=""
+JETSON_IP_OVERRIDE=""
+LIVOX_RUNTIME_CONFIG=""
+VIS_RATE="2.0"
+ENABLE_STATUS="true"
+RUNTIME_LOG_DIR=""
+MAP_FILE=""
 MAPPING_OUTPUT=""
-RAW_LIDAR_TOPIC=""
-RAW_IMU_TOPIC=""
-SIM_TOPIC_PREFIX="${AUTONOMY_LIGHT_SIM_TOPIC_PREFIX:-/f4}"
-LIVOX_MODEL="${AUTONOMY_LIGHT_LIVOX_MODEL:-mid360}"
-VIS="false"
-STATUS="true"
-STATUS_RATE="${AUTONOMY_LIGHT_STATUS_RATE:-50.0}"
-RVIZ="auto"
-ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
-VIS_FPS="${AUTONOMY_LIGHT_VIS_FPS:-50}"
-MAP_TOPIC="${AUTONOMY_LIGHT_ELEVATION_MAP_TOPIC:-/autonomy_light/elevation_map}"
-declare -a EXTRA_ELEVATION_ARGS=()
+MAPPING_TIMESTAMP=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --real) MODE="real"; shift ;;
-    --sim) MODE="sim"; shift ;;
-    --no-drivers) NO_DRIVERS="true"; shift ;;
-    --no-camera) NO_CAMERA="true"; shift ;;
-    --no-static-tf) NO_STATIC_TF="true"; shift ;;
-    --vis) VIS="true"; shift ;;
-    --status-rate) STATUS_RATE="${2:?--status-rate requires a positive frequency}"; shift 2 ;;
-    --status-rate=*) STATUS_RATE="${1#*=}"; shift ;;
-    --no-status) STATUS="false"; shift ;;
-    --rviz) RVIZ="true"; shift ;;
-    --no-rviz) RVIZ="false"; shift ;;
-    --config) CONFIG_FILE="${2:?--config requires a file}"; shift 2 ;;
-    --config=*) CONFIG_FILE="${1#*=}"; shift ;;
-    --elevation-config) ELEVATION_CONFIG_FILE="${2:?--elevation-config requires a file}"; shift 2 ;;
-    --elevation-config=*) ELEVATION_CONFIG_FILE="${1#*=}"; shift ;;
-    --map|--map-file) MAP_FILE="${2:?--map requires a PCD}"; shift 2 ;;
-    --map=*|--map-file=*) MAP_FILE="${1#*=}"; shift ;;
-    --mapping-output) MAPPING_OUTPUT="${2:?--mapping-output requires a PCD path}"; shift 2 ;;
-    --mapping-output=*) MAPPING_OUTPUT="${1#*=}"; shift ;;
-    --raw-lidar-topic) RAW_LIDAR_TOPIC="${2:?--raw-lidar-topic requires a topic}"; shift 2 ;;
-    --raw-lidar-topic=*) RAW_LIDAR_TOPIC="${1#*=}"; shift ;;
-    --raw-imu-topic) RAW_IMU_TOPIC="${2:?--raw-imu-topic requires a topic}"; shift 2 ;;
-    --raw-imu-topic=*) RAW_IMU_TOPIC="${1#*=}"; shift ;;
-    --sim-topic-prefix) SIM_TOPIC_PREFIX="${2:?--sim-topic-prefix requires a prefix}"; shift 2 ;;
-    --sim-topic-prefix=*) SIM_TOPIC_PREFIX="${1#*=}"; shift ;;
-    --mid360) LIVOX_MODEL="mid360"; shift ;;
-    --mid360s) LIVOX_MODEL="mid360s"; shift ;;
-    --ros-distro) ROS_DISTRO_NAME="${2:?--ros-distro requires a name}"; shift 2 ;;
-    --ros-distro=*) ROS_DISTRO_NAME="${1#*=}"; shift ;;
-    --) shift; EXTRA_ELEVATION_ARGS=("$@"); break ;;
+    --real) MODE="real" ;;
+    --sim) MODE="sim" ;;
+    --no-drivers) NO_DRIVERS="true" ;;
+    --no-nav2) ENABLE_NAV2="false" ;;
+    --rviz) ENABLE_RVIZ="true" ;;
+    --check) CHECK_ONLY="true" ;;
+    --lidar-type) LIDAR_TYPE_OVERRIDE="${2:?--lidar-type requires mid360 or mid360s}"; shift ;;
+    --lidar-type=*) LIDAR_TYPE_OVERRIDE="${1#*=}" ;;
+    --lidar-ip) LIDAR_IP_OVERRIDE="${2:?--lidar-ip requires an IPv4 address}"; shift ;;
+    --lidar-ip=*) LIDAR_IP_OVERRIDE="${1#*=}" ;;
+    --jetson-ip) JETSON_IP_OVERRIDE="${2:?--jetson-ip requires an IPv4 address}"; shift ;;
+    --jetson-ip=*) JETSON_IP_OVERRIDE="${1#*=}" ;;
+    --mid360) LIDAR_TYPE_OVERRIDE="MID360" ;;
+    --mid360s) LIDAR_TYPE_OVERRIDE="MID360S" ;;
+    --vis-rate) VIS_RATE="${2:?--vis-rate requires a positive frequency}"; shift ;;
+    --vis-rate=*) VIS_RATE="${1#*=}" ;;
+    --no-status) ENABLE_STATUS="false" ;;
+    --map) MAP_FILE="${2:?--map requires a PCD file}"; shift ;;
+    --mapping)
+      if [[ $# -gt 1 && "${2}" != --* ]]; then
+        MAPPING_OUTPUT="$2"
+        shift
+      else
+        MAPPING_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+        MAPPING_OUTPUT="${PWD}/maps/super_lio_map_${MAPPING_TIMESTAMP}.pcd"
+      fi
+      ;;
+    --mapping=*) MAPPING_OUTPUT="${1#*=}" ;;
     *) echo "error: unsupported option: $1" >&2; usage >&2; exit 2 ;;
   esac
+  shift
 done
 
-[[ -f "${CONFIG_FILE}" ]] || { echo "error: config not found: ${CONFIG_FILE}" >&2; exit 1; }
-[[ -f "${ELEVATION_CONFIG_FILE}" ]] || {
-  echo "error: elevation config not found: ${ELEVATION_CONFIG_FILE}" >&2
+[[ -f "${ELEVATION_CONFIG}" && -f "${LIO_CONFIG}" && -f "${NAV2_CONFIG}" ]] || {
+  echo "error: config/elevation_mapping.yaml, config/super_lio_mid360.yaml, and config/nav2_live.yaml are required" >&2
   exit 1
 }
-if [[ -n "${MAP_FILE}" ]]; then
-  MAP_FILE="$(realpath -- "${MAP_FILE}")"
-  [[ -f "${MAP_FILE}" ]] || { echo "error: map not found: ${MAP_FILE}" >&2; exit 1; }
-  [[ "${RVIZ}" == "auto" ]] && RVIZ="true"
-fi
-if [[ -n "${MAPPING_OUTPUT}" && -n "${MAP_FILE}" ]]; then
-  echo "error: --map and --mapping-output cannot be used together" >&2
+STATUS_SCRIPT="${ROOT}/scripts/monitor_autonomy_state.py"
+[[ -f "${STATUS_SCRIPT}" ]] || { echo "error: terminal status monitor is missing: ${STATUS_SCRIPT}" >&2; exit 1; }
+[[ -z "${MAP_FILE}" || -z "${MAPPING_OUTPUT}" ]] || {
+  echo "error: --map and --mapping cannot be used together" >&2
   exit 2
-fi
-if [[ -n "${MAPPING_OUTPUT}" ]]; then
-  MAPPING_OUTPUT="$(realpath -m -- "${MAPPING_OUTPUT}")"
-fi
+}
+[[ -z "${MAP_FILE}" || -f "${MAP_FILE}" ]] || { echo "error: map not found: ${MAP_FILE}" >&2; exit 1; }
 
-case "${LIVOX_MODEL,,}" in
-  mid360|mid-360) LIVOX_LAUNCH="msg_MID360_launch.py" ;;
-  mid360s|mid-360s) LIVOX_LAUNCH="msg_MID360s_launch.py" ;;
-  *) echo "error: --mid360 or --mid360s is required" >&2; exit 2 ;;
-esac
-
+ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 [[ -f "${ROS_SETUP}" ]] || { echo "error: ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
 set +u
 # shellcheck source=/dev/null
 source "${ROS_SETUP}"
-[[ -f "${SCRIPT_DIR}/install/setup.bash" ]] && source "${SCRIPT_DIR}/install/setup.bash"
+[[ -f "${ROOT}/install/setup.bash" ]] && source "${ROOT}/install/setup.bash"
 set -u
-command -v ros2 >/dev/null || { echo "error: ros2 is unavailable" >&2; exit 1; }
 
-# Fast DDS shared-memory participants can survive a forcibly stopped launch on
-# this target and then block subsequent discovery.  Keep every branch of this
-# stack on one, explicit RMW implementation.  An integrator may override it
-# for a site-wide DDS policy through AUTONOMY_LIGHT_RMW_IMPLEMENTATION.
-RMW_IMPLEMENTATION="${AUTONOMY_LIGHT_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
-if [[ "${RMW_IMPLEMENTATION}" == "rmw_cyclonedds_cpp" && \
-      ! -f "/opt/ros/${ROS_DISTRO_NAME}/lib/librmw_cyclonedds_cpp.so" ]]; then
-  echo "error: Cyclone DDS RMW is not installed; install ros-${ROS_DISTRO_NAME}-rmw-cyclonedds-cpp or set AUTONOMY_LIGHT_RMW_IMPLEMENTATION" >&2
-  exit 1
-fi
-export RMW_IMPLEMENTATION
-echo "ROS middleware: ${RMW_IMPLEMENTATION}"
-
-if [[ "${VIS}" == "true" ]]; then
-  /usr/bin/python3 - <<'PY' || {
-from rclpy.type_support import check_for_type_support
-from nav_msgs.msg import Odometry
-from autonomy_light.msg import HeightMap
-
-check_for_type_support(Odometry)
-check_for_type_support(HeightMap)
-PY
-    echo "error: --vis requires valid rclpy/nav_msgs/autonomy_light interfaces; rerun ./build.sh --clean --skip-apt --skip-sdk --packages autonomy_light" >&2
-    exit 1
-  }
-fi
-
-RUNTIME_DIR="$(mktemp -d "/tmp/autonomy_light_$(id -u)_XXXXXX")"
-LIO_CONFIG="${RUNTIME_DIR}/super_lio.yaml"
-ELEVATION_CONFIG="${RUNTIME_DIR}/elevation_mapping.yaml"
-HEIGHT_MAP_BRIDGE_CONFIG="${RUNTIME_DIR}/height_map_bridge.yaml"
-CYCLONEDDS_CONFIG="${RUNTIME_DIR}/cyclonedds_height_map.xml"
-DDS_RUNTIME_ENV="${RUNTIME_DIR}/dds_network.env"
-STATIC_TF="${RUNTIME_DIR}/static_tf.txt"
-RUNTIME_INFO="${RUNTIME_DIR}/runtime.env"
-
-/usr/bin/python3 - "${CONFIG_FILE}" "${SCRIPT_DIR}/config/super_lio_mid360.yaml" \
-  "${ELEVATION_CONFIG_FILE}" "${LIO_CONFIG}" "${ELEVATION_CONFIG}" \
-  "${STATIC_TF}" "${RUNTIME_INFO}" "${MODE}" "${MAP_FILE}" "${MAPPING_OUTPUT}" \
-  "${RAW_LIDAR_TOPIC}" "${RAW_IMU_TOPIC}" "${SIM_TOPIC_PREFIX}" "${MAP_TOPIC}" \
-  "${HEIGHT_MAP_BRIDGE_CONFIG}" "${NO_CAMERA}" <<'PY'
+if [[ "${ENABLE_STATUS}" == "true" ]]; then
+  /usr/bin/python3 - "${VIS_RATE}" <<'PY'
 import math
-import os
+import sys
+
+try:
+    value = float(sys.argv[1])
+except ValueError as error:
+    raise SystemExit("error: --vis-rate must be a positive finite number") from error
+if not math.isfinite(value) or value <= 0.0:
+    raise SystemExit("error: --vis-rate must be a positive finite number")
+PY
+fi
+
+# Read the few bringup values that are not ROS node parameters.  Everything
+# else is passed directly from one of the three YAML files above.
+source <(/usr/bin/python3 - "${ELEVATION_CONFIG}" "${ROOT}" <<'PY'
+from collections import deque
+from pathlib import Path
+import math
+import shlex
+import sys
+import xml.etree.ElementTree as element_tree
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream) or {}
+bringup = config.get("bringup", {})
+bringup = bringup.get("ros__parameters", {})
+merge = config.get("observation_merge", {})
+merge = merge.get("ros__parameters", {})
+source_names = merge.get("inputs", [])
+source_definitions = bringup.get("realsense_cameras", {})
+
+def required(mapping, key):
+    value = mapping.get(key)
+    if value in (None, ""):
+        raise SystemExit(f"error: elevation bringup.{key} is required")
+    return value
+
+if not isinstance(source_names, list) or not source_names:
+    raise SystemExit("error: observation_merge.inputs must select at least one camera")
+if not isinstance(source_definitions, dict):
+    raise SystemExit("error: bringup.realsense_cameras must be a mapping")
+
+def source_parameter(source_name, suffix):
+    return merge.get(f"sources.{source_name}.{suffix}")
+
+def camera_value(source_name, camera, key):
+    value = camera.get(key)
+    if value in (None, ""):
+        raise SystemExit(
+            f"error: selected camera '{source_name}' requires "
+            f"bringup.realsense_cameras.{source_name}.{key}"
+        )
+    return value
+
+def shell_array(name, values):
+    print(f"{name}=({' '.join(shlex.quote(str(value)) for value in values)})")
+
+def numeric_vector(value, label):
+    if not isinstance(value, list) or len(value) != 3:
+        raise SystemExit(f"error: {label} must contain exactly three numbers")
+    try:
+        result = [float(component) for component in value]
+    except (TypeError, ValueError) as error:
+        raise SystemExit(f"error: {label} must contain exactly three numbers") from error
+    if not all(math.isfinite(component) for component in result):
+        raise SystemExit(f"error: {label} must be finite")
+    return result
+
+def urdf_vector(value, label):
+    try:
+        result = [float(component) for component in value.split()]
+    except (AttributeError, ValueError) as error:
+        raise SystemExit(f"error: {label} must contain exactly three numbers") from error
+    if len(result) != 3 or not all(math.isfinite(component) for component in result):
+        raise SystemExit(f"error: {label} must contain exactly three finite numbers")
+    return result
+
+def identity_transform():
+    return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), (0.0, 0.0, 0.0)
+
+def multiply_matrix(left, right):
+    return tuple(tuple(sum(left[row][index] * right[index][column] for index in range(3))
+                       for column in range(3)) for row in range(3))
+
+def multiply_vector(matrix, vector):
+    return tuple(sum(matrix[row][index] * vector[index] for index in range(3))
+                 for row in range(3))
+
+def compose_transform(left, right):
+    left_rotation, left_translation = left
+    right_rotation, right_translation = right
+    rotated_translation = multiply_vector(left_rotation, right_translation)
+    return (multiply_matrix(left_rotation, right_rotation),
+            tuple(left_translation[index] + rotated_translation[index] for index in range(3)))
+
+def inverse_transform(transform):
+    rotation, translation = transform
+    inverse_rotation = tuple(tuple(rotation[column][row] for column in range(3)) for row in range(3))
+    return inverse_rotation, tuple(-value for value in multiply_vector(inverse_rotation, translation))
+
+def origin_transform(xyz, rpy):
+    roll, pitch, yaw = rpy
+    cos_roll, sin_roll = math.cos(roll), math.sin(roll)
+    cos_pitch, sin_pitch = math.cos(pitch), math.sin(pitch)
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+    rotation = (
+        (cos_yaw * cos_pitch, cos_yaw * sin_pitch * sin_roll - sin_yaw * cos_roll,
+         cos_yaw * sin_pitch * cos_roll + sin_yaw * sin_roll),
+        (sin_yaw * cos_pitch, sin_yaw * sin_pitch * sin_roll + cos_yaw * cos_roll,
+         sin_yaw * sin_pitch * cos_roll - cos_yaw * sin_roll),
+        (-sin_pitch, cos_pitch * sin_roll, cos_pitch * cos_roll),
+    )
+    return rotation, tuple(xyz)
+
+def transform_rpy(transform):
+    rotation, _ = transform
+    pitch = math.asin(max(-1.0, min(1.0, -rotation[2][0])))
+    if abs(math.cos(pitch)) > 1.0e-8:
+        roll = math.atan2(rotation[2][1], rotation[2][2])
+        yaw = math.atan2(rotation[1][0], rotation[0][0])
+    else:
+        roll = math.atan2(-rotation[1][2], rotation[1][1])
+        yaw = 0.0
+    return roll, pitch, yaw
+
+urdf_path = required(bringup, "urdf")
+urdf_file = Path(urdf_path)
+if not urdf_file.is_absolute():
+    urdf_file = Path(sys.argv[2]) / urdf_file
+try:
+    urdf_root = element_tree.parse(urdf_file).getroot()
+except (OSError, element_tree.ParseError) as error:
+    raise SystemExit(f"error: unable to parse URDF '{urdf_file}': {error}") from error
+
+urdf_links = {
+    link.attrib["name"] for link in urdf_root.findall("link") if link.attrib.get("name")
+}
+fixed_adjacency = {link: [] for link in urdf_links}
+for joint in urdf_root.findall("joint"):
+    if joint.attrib.get("type") != "fixed":
+        continue
+    parent = joint.find("parent")
+    child = joint.find("child")
+    if parent is None or child is None:
+        raise SystemExit("error: a fixed URDF joint is missing parent or child")
+    parent_frame = parent.attrib.get("link", "")
+    child_frame = child.attrib.get("link", "")
+    if parent_frame not in urdf_links or child_frame not in urdf_links:
+        raise SystemExit("error: a fixed URDF joint references an unknown link")
+    origin = joint.find("origin")
+    xyz = urdf_vector(origin.attrib.get("xyz", "0 0 0") if origin is not None else "0 0 0",
+                      f"URDF fixed joint '{joint.attrib.get('name', '')}' xyz")
+    rpy = urdf_vector(origin.attrib.get("rpy", "0 0 0") if origin is not None else "0 0 0",
+                      f"URDF fixed joint '{joint.attrib.get('name', '')}' rpy")
+    transform = origin_transform(xyz, rpy)
+    fixed_adjacency[parent_frame].append((child_frame, transform))
+    fixed_adjacency[child_frame].append((parent_frame, inverse_transform(transform)))
+
+def fixed_transform(source_frame, target_frame):
+    if source_frame not in urdf_links or target_frame not in urdf_links:
+        raise SystemExit(
+            f"error: configured sensor TF '{source_frame}' -> '{target_frame}' is not in the URDF")
+    queue = deque([(source_frame, identity_transform())])
+    visited = {source_frame}
+    while queue:
+        current_frame, source_from_current = queue.popleft()
+        if current_frame == target_frame:
+            return source_from_current
+        for next_frame, current_from_next in fixed_adjacency[current_frame]:
+            if next_frame not in visited:
+                visited.add(next_frame)
+                queue.append((next_frame, compose_transform(source_from_current, current_from_next)))
+    raise SystemExit(
+        f"error: no fixed-joint URDF path from '{source_frame}' to '{target_frame}'")
+
+static_tf_parents = []
+static_tf_children = []
+static_tf_xyzs = []
+static_tf_rpys = []
+static_tf_children_set = set()
+
+def append_static_transform(parent_frame, child_frame):
+    if child_frame in static_tf_children_set:
+        return
+    transform = fixed_transform(parent_frame, child_frame)
+    rotation, translation = transform
+    del rotation
+    static_tf_children_set.add(child_frame)
+    static_tf_parents.append(parent_frame)
+    static_tf_children.append(child_frame)
+    static_tf_xyzs.append(" ".join(str(value) for value in translation))
+    static_tf_rpys.append(" ".join(str(value) for value in transform_rpy(transform)))
+
+lidar_frame = required(bringup, "lidar_frame").strip()
+base_frame = required(bringup, "base_frame").strip()
+if not lidar_frame or not base_frame:
+    raise SystemExit("error: elevation bringup.lidar_frame and base_frame must be non-empty strings")
+append_static_transform(lidar_frame, base_frame)
+
+camera_names = []
+camera_namespaces = []
+camera_ports = []
+camera_driver_frames = []
+camera_profiles = []
+camera_raw_topics = []
+camera_mapped_topics = []
+camera_mount_frames = []
+camera_source_to_mount_xyzs = []
+camera_source_to_mount_rpys = []
+camera_noise_stddevs = []
+camera_min_ranges = []
+camera_max_points = []
+seen_sources = set()
+for source_name in source_names:
+    if not isinstance(source_name, str) or not source_name:
+        raise SystemExit("error: observation_merge.inputs contains an invalid source name")
+    if source_name in seen_sources:
+        raise SystemExit(f"error: observation_merge.inputs contains duplicate '{source_name}'")
+    seen_sources.add(source_name)
+    if source_parameter(source_name, "type") != "camera":
+        raise SystemExit(f"error: selected source '{source_name}' must have type: camera")
+    mount_frame = source_parameter(source_name, "mount_frame")
+    if not mount_frame or mount_frame not in urdf_links:
+        raise SystemExit(
+            f"error: selected source '{source_name}' has no URDF mount_frame"
+        )
+    camera = source_definitions.get(source_name)
+    if not isinstance(camera, dict):
+        raise SystemExit(
+            f"error: selected source '{source_name}' requires a matching "
+            "bringup.realsense_cameras entry"
+        )
+    camera_name = camera_value(source_name, camera, "name")
+    camera_namespace = camera_value(source_name, camera, "namespace")
+    camera_port = camera_value(source_name, camera, "usb_port_id")
+    camera_driver_frame = camera_value(source_name, camera, "driver_base_frame_id")
+    camera_profile = camera_value(source_name, camera, "depth_profile")
+    if camera_name != source_name:
+        raise SystemExit(
+            f"error: bringup.realsense_cameras.{source_name}.name must equal '{source_name}'"
+        )
+    if not isinstance(camera_driver_frame, str) or not camera_driver_frame.strip():
+        raise SystemExit(
+            f"error: selected camera '{source_name}' driver_base_frame_id must be a non-empty string"
+        )
+    camera_driver_frame = camera_driver_frame.strip()
+    expected_raw_topic = f"/{str(camera_namespace).strip('/')}/{camera_name}/depth/color/points"
+    if source_parameter(source_name, "raw_topic") != expected_raw_topic:
+        raise SystemExit(
+            f"error: source '{source_name}' raw_topic must be '{expected_raw_topic}' to match its driver"
+        )
+    expected_mapped_topic = f"/autonomy_light/camera_observations/{source_name}_map"
+    if source_parameter(source_name, "topic") != expected_mapped_topic:
+        raise SystemExit(
+            f"error: source '{source_name}' topic must be '{expected_mapped_topic}'"
+        )
+    if source_parameter(source_name, "frame_override") != "map":
+        raise SystemExit(
+            f"error: source '{source_name}' must use frame_override: map after camera mapping"
+        )
+    if source_parameter(source_name, "validate_mount_tf") is not False:
+        raise SystemExit(
+            f"error: source '{source_name}' must set validate_mount_tf: false after camera mapping"
+        )
+    for parameter in ("noise_stddev", "min_range", "max_points"):
+        if source_parameter(source_name, parameter) in (None, ""):
+            raise SystemExit(f"error: source '{source_name}' requires {parameter}")
+    source_to_mount_xyz = numeric_vector(
+        source_parameter(source_name, "source_to_mount_xyz"),
+        f"source '{source_name}' source_to_mount_xyz")
+    source_to_mount_rpy = numeric_vector(
+        source_parameter(source_name, "source_to_mount_rpy"),
+        f"source '{source_name}' source_to_mount_rpy")
+    camera_names.append(camera_name)
+    camera_namespaces.append(camera_namespace)
+    camera_ports.append(camera_port)
+    camera_driver_frames.append(camera_driver_frame)
+    camera_profiles.append(camera_profile)
+    camera_raw_topics.append(expected_raw_topic)
+    camera_mapped_topics.append(expected_mapped_topic)
+    camera_mount_frames.append(mount_frame)
+    camera_source_to_mount_xyzs.append(source_to_mount_xyz)
+    camera_source_to_mount_rpys.append(source_to_mount_rpy)
+    camera_noise_stddevs.append(source_parameter(source_name, "noise_stddev"))
+    camera_min_ranges.append(source_parameter(source_name, "min_range"))
+    camera_max_points.append(source_parameter(source_name, "max_points"))
+    append_static_transform(base_frame, mount_frame)
+
+values = {
+    "INTERNAL_ROS_DOMAIN_ID": bringup.get("internal_ros_domain_id", 10),
+    "EXTERNAL_ROS_DOMAIN_ID": bringup.get("external_ros_domain_id", 0),
+}
+for key, value in values.items():
+    print(f"{key}={shlex.quote(str(value))}")
+shell_array("CAMERA_SOURCES", source_names)
+shell_array("CAMERA_NAMES", camera_names)
+shell_array("CAMERA_NAMESPACES", camera_namespaces)
+shell_array("CAMERA_USB_PORTS", camera_ports)
+shell_array("CAMERA_DRIVER_BASE_FRAMES", camera_driver_frames)
+shell_array("CAMERA_DEPTH_PROFILES", camera_profiles)
+shell_array("CAMERA_RAW_TOPICS", camera_raw_topics)
+shell_array("CAMERA_MAPPED_TOPICS", camera_mapped_topics)
+shell_array("CAMERA_MOUNT_FRAMES", camera_mount_frames)
+shell_array("CAMERA_SOURCE_TO_MOUNT_XYZS", camera_source_to_mount_xyzs)
+shell_array("CAMERA_SOURCE_TO_MOUNT_RPYS", camera_source_to_mount_rpys)
+shell_array("CAMERA_NOISE_STDDEVS", camera_noise_stddevs)
+shell_array("CAMERA_MIN_RANGES", camera_min_ranges)
+shell_array("CAMERA_MAX_POINTS", camera_max_points)
+shell_array("STATIC_TF_PARENTS", static_tf_parents)
+shell_array("STATIC_TF_CHILDREN", static_tf_children)
+shell_array("STATIC_TF_XYZS", static_tf_xyzs)
+shell_array("STATIC_TF_RPYS", static_tf_rpys)
+PY
+)
+
+# The Livox SDK accepts only a JSON device description, while the deployable
+# source of truth is this project's Super-LIO YAML.  Read the YAML here and
+# produce a small runtime JSON only when the physical driver is started.
+source <(/usr/bin/python3 - "${LIO_CONFIG}" "${LIDAR_TYPE_OVERRIDE}" \
+    "${LIDAR_IP_OVERRIDE}" "${JETSON_IP_OVERRIDE}" <<'PY'
+import ipaddress
+import shlex
 import sys
 import yaml
 
-(source_path, lio_default, elevation_source, lio_target, elevation_target, tf_target,
- runtime_target, mode, map_file, mapping_output, lidar_override, imu_override, sim_prefix,
- map_topic, bridge_target, no_camera) = sys.argv[1:17]
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream) or {}
+params = (config.get("bringup") or {}).get("ros__parameters") or {}
+livox = params.get("livox") or {}
+if not isinstance(livox, dict):
+    raise SystemExit("error: bringup.ros__parameters.livox must be a mapping")
 
-def read_yaml(path):
-    with open(path, encoding="utf-8") as stream:
-        return yaml.safe_load(stream) or {}
-
-def params(document, node):
-    return document.setdefault(node, {}).setdefault("ros__parameters", {})
-
-def vector(values, name):
-    if not isinstance(values, list) or len(values) != 3:
-        raise SystemExit(f"error: {name} must contain exactly three numeric values")
-    return [float(value) for value in values]
-
-def boolean(value, name):
-    if isinstance(value, bool):
-        return value
-    if str(value).strip().lower() in ("true", "1", "yes", "on"):
-        return True
-    if str(value).strip().lower() in ("false", "0", "no", "off"):
-        return False
-    raise SystemExit(f"error: {name} must be a boolean")
-
-def text(value, name, default=""):
-    result = str(value if value is not None else default).strip()
-    if not result:
-        return default
-    if any(character.isspace() for character in result):
-        raise SystemExit(f"error: {name} must not contain whitespace")
-    return result
-
-def positive_integer(value, name, default):
+model = str(sys.argv[2] or livox.get("model", "")).strip().upper()
+lidar_ip = str(sys.argv[3] or livox.get("lidar_ip", "")).strip()
+jetson_ip = str(sys.argv[4] or livox.get("jetson_ip", "")).strip()
+if model not in {"MID360", "MID360S"}:
+    raise SystemExit("error: bringup.livox.model must be MID360 or MID360S")
+for label, value in (("lidar_ip", lidar_ip), ("jetson_ip", jetson_ip)):
     try:
-        result = int(value if value is not None else default)
-    except (TypeError, ValueError) as error:
-        raise SystemExit(f"error: {name} must be a positive integer") from error
-    if result < 1 or result > 8:
-        raise SystemExit(f"error: {name} must be in [1, 8]")
-    return result
+        parsed = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise SystemExit(f"error: bringup.livox.{label} must be an IPv4 address") from error
+    if parsed.version != 4 or parsed.is_unspecified or parsed.is_multicast:
+        raise SystemExit(f"error: bringup.livox.{label} must be a unicast IPv4 address")
+try:
+    publish_frequency_hz = float(livox.get("publish_frequency_hz", 60.0))
+except (TypeError, ValueError) as error:
+    raise SystemExit("error: bringup.livox.publish_frequency_hz must be numeric") from error
+if not 0.5 <= publish_frequency_hz <= 100.0:
+    raise SystemExit("error: bringup.livox.publish_frequency_hz must be in [0.5, 100.0]")
+frame_id = str(livox.get("frame_id", "lidar_link")).strip()
+if not frame_id:
+    raise SystemExit("error: bringup.livox.frame_id is required")
 
-def quaternion_from_rpy(roll, pitch, yaw):
-    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
-    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
-    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
-    return (sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy)
-
-def multiply(first, second):
-    ax, ay, az, aw = first
-    bx, by, bz, bw = second
-    return (aw * bx + ax * bw + ay * bz - az * by,
-            aw * by - ax * bz + ay * bw + az * bx,
-            aw * bz + ax * by - ay * bx + az * bw,
-            aw * bw - ax * bx - ay * by - az * bz)
-
-def inverse(quaternion):
-    x, y, z, w = quaternion
-    return (-x, -y, -z, w)
-
-def rotate(quaternion, point):
-    qpoint = (point[0], point[1], point[2], 0.0)
-    result = multiply(multiply(quaternion, qpoint), inverse(quaternion))
-    return result[:3]
-
-def matrix_from_quaternion(x, y, z, w):
-    return [
-        1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w),
-        2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w),
-        2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y),
-    ]
-
-root = params(read_yaml(source_path), "autonomy_light")
-lidar_topic = lidar_override or root.get("raw_lidar_topic", "/livox/lidar")
-imu_topic = imu_override or root.get("raw_imu_topic", "/livox/imu")
-if mode == "sim":
-    prefix = sim_prefix.rstrip("/")
-    lidar_topic = lidar_override or f"{prefix}/livox/lidar"
-    imu_topic = imu_override or f"{prefix}/livox/imu"
-
-base_to_lidar = vector(root.get("target_to_lidar_xyz"), "target_to_lidar_xyz")
-base_to_lidar_q = quaternion_from_rpy(*vector(root.get("target_to_lidar_rpy"), "target_to_lidar_rpy"))
-base_to_camera = vector(root.get("target_to_camera_xyz"), "target_to_camera_xyz")
-base_to_camera_q = quaternion_from_rpy(*vector(root.get("target_to_camera_rpy"), "target_to_camera_rpy"))
-imu_from_lidar = vector(root.get("imu_from_lidar_xyz"), "imu_from_lidar_xyz")
-imu_from_lidar_q = quaternion_from_rpy(*vector(root.get("imu_from_lidar_rpy"), "imu_from_lidar_rpy"))
-realsense = root.get("realsense") or {}
-if not isinstance(realsense, dict):
-    raise SystemExit("error: realsense must be a mapping")
-realsense_enabled = boolean(realsense.get("enabled", True), "realsense.enabled")
-# Camera streaming and using camera points in the elevation filter are
-# deliberately separate.  The LiDAR map must remain usable before a camera
-# calibration/point-cloud pipeline has been validated.
-realsense_for_elevation = boolean(
-    realsense.get("use_for_elevation_mapping", False),
-    "realsense.use_for_elevation_mapping")
-if no_camera == "true":
-    realsense_enabled = False
-    realsense_for_elevation = False
-realsense_camera_name = text(realsense.get("camera_name"), "realsense.camera_name", "camera")
-realsense_camera_namespace = text(
-    realsense.get("camera_namespace"), "realsense.camera_namespace", realsense_camera_name)
-realsense_usb_port = text(realsense.get("usb_port_id"), "realsense.usb_port_id")
-realsense_depth_profile = text(realsense.get("depth_profile"), "realsense.depth_profile")
-realsense_color_profile = text(realsense.get("color_profile"), "realsense.color_profile")
-realsense_depth_decimation = positive_integer(
-    realsense.get("depth_decimation"), "realsense.depth_decimation", 1)
-realsense_enable_imu = boolean(realsense.get("enable_imu", False), "realsense.enable_imu")
-realsense_enable_color = boolean(realsense.get("enable_color", True), "realsense.enable_color")
-realsense_topic = text(
-    realsense.get("pointcloud_topic"), "realsense.pointcloud_topic",
-    f"/{realsense_camera_name}/{realsense_camera_name}/depth/color/points")
-if not realsense_topic.startswith("/"):
-    raise SystemExit("error: realsense.pointcloud_topic must be absolute")
-
-# T_base_imu = T_base_lidar * inverse(T_imu_lidar); publish its inverse.
-lidar_from_imu_q = inverse(imu_from_lidar_q)
-lidar_from_imu_t = rotate(lidar_from_imu_q, [-value for value in imu_from_lidar])
-base_from_imu_q = multiply(base_to_lidar_q, lidar_from_imu_q)
-base_from_imu_t = [base_to_lidar[index] + rotate(base_to_lidar_q, lidar_from_imu_t)[index] for index in range(3)]
-imu_to_base_q = inverse(base_from_imu_q)
-imu_to_base_t = rotate(imu_to_base_q, [-value for value in base_from_imu_t])
-
-lio_source = root.get("super_lio_config_file") or lio_default
-if not os.path.isfile(lio_source):
-    raise SystemExit(f"error: Super-LIO config not found: {lio_source}")
-lio = read_yaml(lio_source)
-lio_params = params(lio, "/**")
-lio_params["lio.ros.lidar_topic"] = lidar_topic
-lio_params["lio.ros.imu_topic"] = imu_topic
-lio_params["lio.ros.global_frame"] = root.get("map_frame", "map")
-lio_params["lio.ros.odom_frame"] = root.get("odom_frame", "odom")
-lio_params["lio.extrinsic.lidar_imu"] = imu_from_lidar + matrix_from_quaternion(*imu_from_lidar_q)
-lio_params["lio.map.save_map"] = bool(mapping_output)
-lio_params["lio.slam.enable"] = bool(mapping_output)
-lio_params["use_sim_time"] = mode == "sim"
-if map_file or mapping_output:
-    output = map_file or mapping_output
-    lio_params["lio.map.save_map_dir"] = os.path.dirname(output)
-    lio_params["lio.map.map_name"] = os.path.basename(output)
-
-mapper = read_yaml(elevation_source)
-mapper_params = params(mapper, "elevation_mapping")
-mapper_params["use_sim_time"] = mode == "sim"
-# The TF contract is platform-wide; keep its names in one canonical config.
-mapper_params["map_frame_id"] = root.get("map_frame", "map")
-mapper_params["robot_base_frame_id"] = root.get("target_frame", "base_link")
-mapper_params["track_point_frame_id"] = root.get("target_frame", "base_link")
-mapper_inputs = mapper_params.get("inputs", [])
-if not isinstance(mapper_inputs, list) or not all(isinstance(value, str) for value in mapper_inputs):
-    raise SystemExit("error: elevation_mapping.inputs must be a list of strings")
-if realsense_enabled and realsense_for_elevation:
-    if "d435" not in mapper_inputs:
-        mapper_inputs.append("d435")
-    d435 = mapper_params.setdefault("d435", {})
-    if not isinstance(d435, dict):
-        raise SystemExit("error: elevation_mapping.d435 must be a mapping")
-    d435["topic"] = realsense_topic
-else:
-    mapper_inputs = [value for value in mapper_inputs if value != "d435"]
-mapper_params["inputs"] = mapper_inputs
-
-height_output = root.get("height_map_output", {})
-distance = height_output.get("distance", {})
-floor = height_output.get("floor", {})
-dds = height_output.get("cyclone_dds", {})
-sampling = height_output.get("sampling", {})
-transport = str(height_output.get("transport", "both")).strip().lower()
-if transport not in ("ros2", "cyclone_dds", "both"):
-    raise SystemExit("error: height_map_output.transport must be ros2, cyclone_dds, or both")
-if not isinstance(sampling, dict):
-    raise SystemExit("error: height_map_output.sampling must be a mapping")
-native_x_length = float(mapper_params.get("length_in_x", 1.80))
-native_y_length = float(mapper_params.get("length_in_y", 0.80))
-sample_x_length = float(sampling.get("x_length", 1.80))
-sample_y_length = float(sampling.get("y_length", 0.80))
-sample_resolution = float(sampling.get("resolution", 0.10))
-if native_x_length <= 0.0 or native_y_length <= 0.0:
-    raise SystemExit("error: elevation_mapping native ROI lengths must be positive")
-if sample_resolution <= 0.0 or sample_x_length <= 0.0 or sample_y_length <= 0.0:
-    raise SystemExit("error: height_map_output.sampling geometry must be positive")
-if sample_x_length > native_x_length or sample_y_length > native_y_length:
-    raise SystemExit("error: height_map_output.sampling ROI must fit inside the native elevation-map ROI")
-bridge = {"height_map_bridge": {"ros__parameters": {
-    "input_topic": map_topic,
-    "base_frame": root.get("target_frame", "base_link"),
-    "publish_rate_hz": float(mapper_params.get("fused_map_publishing_rate", 50.0)),
-    "fallback.resolution": float(mapper_params.get("resolution", 0.10)),
-    "fallback.x_length": float(mapper_params.get("length_in_x", 1.80)),
-    "fallback.y_length": float(mapper_params.get("length_in_y", 0.80)),
-    "output.resolution": sample_resolution,
-    "output.x_length": sample_x_length,
-    "output.y_length": sample_y_length,
-    "transport": transport,
-    "ros2_topic": height_output.get("ros2_topic", "/autonomy_light/height_map_data"),
-    "pointcloud_topic": height_output.get("pointcloud_topic", "/autonomy_light/height_map"),
-    "distance.reference_height": float(distance.get("reference_height", 0.48)),
-    "distance.min": float(distance.get("min", 0.0)),
-    "distance.max": float(distance.get("max", 0.75)),
-    "distance.unknown": float(distance.get("unknown", 0.48)),
-    "floor.radius_m": float(floor.get("radius_m", 0.60)),
-    "floor.percentile": float(floor.get("percentile", 0.20)),
-    "dds.domain_id": int(dds.get("domain_id", 1)),
-    "dds.topic": dds.get("topic", "height_map"),
-    "dds.type": dds.get("type", "core_dds::HeightMap"),
-    "dds.history_depth": int(dds.get("history_depth", 128)),
-    "use_sim_time": mode == "sim",
-}}}
-
-with open(lio_target, "w", encoding="utf-8") as stream:
-    yaml.safe_dump(lio, stream, default_flow_style=False, sort_keys=False)
-with open(elevation_target, "w", encoding="utf-8") as stream:
-    yaml.safe_dump(mapper, stream, default_flow_style=False, sort_keys=False)
-with open(bridge_target, "w", encoding="utf-8") as stream:
-    yaml.safe_dump(bridge, stream, default_flow_style=False, sort_keys=False)
-with open(tf_target, "w", encoding="utf-8") as stream:
-    stream.write(" ".join(str(value) for value in (*imu_to_base_t, *imu_to_base_q)) + "\n")
-    stream.write(" ".join(str(value) for value in (*base_to_lidar, *base_to_lidar_q)) + "\n")
-    stream.write(" ".join(str(value) for value in (*base_to_camera, *base_to_camera_q)) + "\n")
-with open(runtime_target, "w", encoding="utf-8") as stream:
-    stream.write(f"{int(root.get('ros_domain_id', 0))}\n")
-    stream.write(f"{root.get('imu_frame', 'imu')}\n")
-    stream.write(f"{root.get('target_frame', 'base_link')}\n")
-    stream.write(f"{root.get('lidar_frame', 'lidar_link')}\n")
-    stream.write(f"{root.get('camera_frame', 'camera_link')}\n")
-    stream.write(f"{'true' if realsense_enabled else 'false'}\n")
-    stream.write(f"{'true' if realsense_for_elevation else 'false'}\n")
-    stream.write(f"{realsense_camera_name}\n")
-    stream.write(f"{realsense_camera_namespace}\n")
-    stream.write(f"{realsense_usb_port}\n")
-    stream.write(f"{realsense_topic}\n")
-    stream.write(f"{realsense_depth_profile}\n")
-    stream.write(f"{realsense_color_profile}\n")
-    stream.write(f"{'true' if realsense_enable_imu else 'false'}\n")
-    stream.write(f"{'true' if realsense_enable_color else 'false'}\n")
-    stream.write(f"{realsense_depth_decimation}\n")
-    stream.write(f"{mapper_params.get('robot_pose_with_covariance_topic', '/lio/odom')}\n")
-    stream.write(f"{height_output.get('ros2_topic', '/autonomy_light/height_map_data')}\n")
+for key, value in {
+    "LIVOX_MODEL": model,
+    "LIVOX_LIDAR_IP": lidar_ip,
+    "LIVOX_JETSON_IP": jetson_ip,
+    "LIVOX_PUBLISH_FREQUENCY_HZ": publish_frequency_hz,
+    "LIVOX_FRAME_ID": frame_id,
+}.items():
+    print(f"{key}={shlex.quote(str(value))}")
 PY
-
-/usr/bin/python3 "${SCRIPT_DIR}/scripts/dds_network.py" --config "${CONFIG_FILE}" \
-  --cyclonedds-config "${CYCLONEDDS_CONFIG}" --runtime-env "${DDS_RUNTIME_ENV}"
-# This file is generated from validated values and contains shell-quoted assignments only.
-# shellcheck source=/dev/null
-source "${DDS_RUNTIME_ENV}"
-
-mapfile -t RUNTIME_VALUES < "${RUNTIME_INFO}"
-ROS_DOMAIN_ID="${RUNTIME_VALUES[0]}"
-IMU_FRAME="${RUNTIME_VALUES[1]}"
-BASE_FRAME="${RUNTIME_VALUES[2]}"
-LIDAR_FRAME="${RUNTIME_VALUES[3]}"
-CAMERA_FRAME="${RUNTIME_VALUES[4]}"
-REALSENSE_ENABLED="${RUNTIME_VALUES[5]}"
-REALSENSE_FOR_ELEVATION="${RUNTIME_VALUES[6]}"
-REALSENSE_CAMERA_NAME="${RUNTIME_VALUES[7]}"
-REALSENSE_CAMERA_NAMESPACE="${RUNTIME_VALUES[8]}"
-REALSENSE_USB_PORT="${RUNTIME_VALUES[9]}"
-REALSENSE_POINTCLOUD_TOPIC="${RUNTIME_VALUES[10]}"
-REALSENSE_DEPTH_PROFILE="${RUNTIME_VALUES[11]}"
-REALSENSE_COLOR_PROFILE="${RUNTIME_VALUES[12]}"
-REALSENSE_ENABLE_IMU="${RUNTIME_VALUES[13]}"
-REALSENSE_ENABLE_COLOR="${RUNTIME_VALUES[14]}"
-REALSENSE_DEPTH_DECIMATION="${RUNTIME_VALUES[15]}"
-ODOM_TOPIC="${RUNTIME_VALUES[16]}"
-HEIGHT_MAP_DATA_TOPIC="${RUNTIME_VALUES[17]}"
+)
+[[ "${INTERNAL_ROS_DOMAIN_ID}" =~ ^[0-9]+$ && "${EXTERNAL_ROS_DOMAIN_ID}" =~ ^[0-9]+$ ]] || {
+  echo "error: internal_ros_domain_id and external_ros_domain_id must be non-negative integers" >&2
+  exit 1
+}
+(( INTERNAL_ROS_DOMAIN_ID <= 232 && EXTERNAL_ROS_DOMAIN_ID <= 232 )) || {
+  echo "error: ROS domain IDs must be in [0, 232]" >&2
+  exit 1
+}
+(( INTERNAL_ROS_DOMAIN_ID != EXTERNAL_ROS_DOMAIN_ID )) || {
+  echo "error: internal_ros_domain_id and external_ros_domain_id must differ" >&2
+  exit 1
+}
+ROS_DOMAIN_ID="${INTERNAL_ROS_DOMAIN_ID}"
 export ROS_DOMAIN_ID
-read -r IMU_BASE_X IMU_BASE_Y IMU_BASE_Z IMU_BASE_QX IMU_BASE_QY IMU_BASE_QZ IMU_BASE_QW < "${STATIC_TF}"
-read -r BASE_LIDAR_X BASE_LIDAR_Y BASE_LIDAR_Z BASE_LIDAR_QX BASE_LIDAR_QY BASE_LIDAR_QZ BASE_LIDAR_QW < <(sed -n '2p' "${STATIC_TF}")
-read -r BASE_CAMERA_X BASE_CAMERA_Y BASE_CAMERA_Z BASE_CAMERA_QX BASE_CAMERA_QY BASE_CAMERA_QZ BASE_CAMERA_QW < <(sed -n '3p' "${STATIC_TF}")
+
+if [[ "${CHECK_ONLY}" == "true" ]]; then
+  /usr/bin/python3 - "${ELEVATION_CONFIG}" "${LIO_CONFIG}" "${NAV2_CONFIG}" <<'PY'
+import sys
+import yaml
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as stream:
+        yaml.safe_load(stream)
+print("autonomy-light: elevation, Super-LIO, and Nav2 configs are valid")
+PY
+  echo "autonomy-light: Livox ${LIVOX_MODEL}, lidar ${LIVOX_LIDAR_IP}, Jetson ${LIVOX_JETSON_IP}"
+  exit 0
+fi
+
+if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
+  if ! ip -o -4 addr show | awk '{split($4, address, "/"); print address[1]}' | \
+      grep -Fqx "${LIVOX_JETSON_IP}"; then
+    echo "error: configured bringup.livox.jetson_ip ${LIVOX_JETSON_IP} is not assigned locally" >&2
+    echo "       update config/super_lio_mid360.yaml or use --jetson-ip IPV4" >&2
+    exit 1
+  fi
+fi
 
 declare -a PIDS=()
-declare -A PID_LABELS=()
-CLEANUP_RUNNING="false"
-VIS_LOG_DIR=""
-if [[ "${VIS}" == "true" ]]; then
-  VIS_LOG_DIR="${AUTONOMY_LIGHT_VIS_LOG_DIR:-${HOME}/.ros/log/autonomy_light_telemetry_$(date +%Y%m%d_%H%M%S)}"
-  mkdir -p "${VIS_LOG_DIR}"
-  echo "--vis: node logs are redirected to ${VIS_LOG_DIR}"
-fi
+declare -A LABELS=()
+LAST_PID=""
+LOG_SEQUENCE=0
+RUNTIME_LOG_DIR="${ROOT}/log/runtime_$(date +%Y%m%d_%H%M%S)_$$"
+mkdir -p -- "${RUNTIME_LOG_DIR}"
 
 start() {
   local label="$1"
-  local log_name
-  echo "autonomy-light: starting ${label}"
   shift
-  if [[ -n "${VIS_LOG_DIR}" ]]; then
-    log_name="${label//[^[:alnum:]._-]/_}"
-    # A ros2 CLI process may spawn the actual node and then exit.  Give every
-    # branch its own session so cleanup always reaches that real node too.
-    setsid "$@" >"${VIS_LOG_DIR}/${log_name}.log" 2>&1 &
-  else
-    setsid "$@" &
-  fi
-  local pid="$!"
+  local safe_label log_file
+  LOG_SEQUENCE=$((LOG_SEQUENCE + 1))
+  safe_label="${label//[^a-zA-Z0-9._-]/_}"
+  printf -v log_file "%s/%02d_%s.log" "${RUNTIME_LOG_DIR}" "${LOG_SEQUENCE}" "${safe_label}"
+  echo "autonomy-light: starting ${label} (log: $(basename -- "${log_file}"))"
+  setsid "$@" >"${log_file}" 2>&1 &
+  local pid=$!
   PIDS+=("${pid}")
-  PID_LABELS["${pid}"]="${label}"
+  LABELS["${pid}"]="${label}"
+  LAST_PID="${pid}"
 }
 
-start_telemetry() {
-  start "50 Hz telemetry viewer" /usr/bin/python3 "${SCRIPT_DIR}/scripts/telemetry_vis.py" \
-    --odom-topic "${ODOM_TOPIC}" --height-map-topic "${HEIGHT_MAP_DATA_TOPIC}" \
-    --fps "${VIS_FPS}"
-}
-
-start_status_monitor() {
-  local slam_mode="Super-LIO odometry"
-  local status_script="${SCRIPT_DIR}/scripts/monitor_elevation_state.py"
-  local -a camera_args=()
-  # Support both source-tree ./launch.sh and the installed launch script.
-  [[ -f "${status_script}" ]] || status_script="${SCRIPT_DIR}/monitor_elevation_state.py"
-  [[ -f "${status_script}" ]] || {
-    echo "error: elevation-map status monitor is missing" >&2
-    return 1
-  }
-  if [[ -n "${MAPPING_OUTPUT}" ]]; then
-    slam_mode="Super-LIO full SLAM"
-  elif [[ -n "${MAP_FILE}" ]]; then
-    slam_mode="Super-LIO relocalization"
-  elif [[ "${NO_DRIVERS}" == "true" ]]; then
-    slam_mode="external Super-LIO"
-  fi
-  if [[ "${REALSENSE_ENABLED}" == "true" ]]; then
-    camera_args=(--camera-topic "${REALSENSE_POINTCLOUD_TOPIC}")
-  fi
-  start "elevation-map status monitor (${STATUS_RATE} Hz)" \
-    /usr/bin/python3 "${status_script}" \
-    --rate "${STATUS_RATE}" --cloud-topic "/lio/cloud_world" --odom-topic "${ODOM_TOPIC}" \
-    --map-topic "${MAP_TOPIC}" --height-map-topic "${HEIGHT_MAP_DATA_TOPIC}" \
-    --slam-mode "${slam_mode}" "${camera_args[@]}"
-}
-
-realsense_pointcloud_argument() {
-  local launch_arguments
-  launch_arguments="$(ros2 launch realsense2_camera rs_launch.py --show-args 2>&1)" || {
-    echo "error: could not inspect realsense2_camera launch arguments" >&2
-    return 1
-  }
-  if grep -Fq "pointcloud.enable" <<<"${launch_arguments}"; then
-    printf '%s\n' "pointcloud.enable:=true"
-  elif grep -Fq "enable_pointcloud" <<<"${launch_arguments}"; then
-    printf '%s\n' "enable_pointcloud:=true"
-  else
-    echo "error: this realsense2_camera version exposes no point-cloud launch argument" >&2
-    return 1
-  fi
-}
-
-start_realsense_camera() {
-  [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" &&
-     "${REALSENSE_ENABLED}" == "true" ]] || return 0
-
-  ros2 pkg prefix realsense2_camera >/dev/null 2>&1 || {
-    echo "error: realsense2_camera is required; run ./build.sh or install ros-${ROS_DISTRO_NAME}-realsense2-camera" >&2
-    return 1
-  }
-  REALSENSE_POINTCLOUD_ARGUMENT="$(realsense_pointcloud_argument)" || return 1
-  local -a realsense_args=(
-    "camera_name:=${REALSENSE_CAMERA_NAME}"
-    "camera_namespace:=${REALSENSE_CAMERA_NAMESPACE}"
-    "enable_depth:=true"
-    "enable_color:=${REALSENSE_ENABLE_COLOR}"
-    "${REALSENSE_POINTCLOUD_ARGUMENT}"
-    # Elevation fusion uses XYZ only.  Keep publishing depth points even if
-    # the optional RGB texture transport briefly drops on the Jetson USB bus.
-    "pointcloud.allow_no_texture_points:=true"
-  )
-  [[ -n "${REALSENSE_USB_PORT}" ]] && realsense_args+=("usb_port_id:=${REALSENSE_USB_PORT}")
-  [[ -n "${REALSENSE_DEPTH_PROFILE}" ]] && realsense_args+=("depth_module.depth_profile:=${REALSENSE_DEPTH_PROFILE}")
-  if [[ "${REALSENSE_DEPTH_DECIMATION}" -gt 1 ]]; then
-    realsense_args+=("decimation_filter.enable:=true" "decimation_filter.filter_magnitude:=${REALSENSE_DEPTH_DECIMATION}")
-  fi
-  [[ "${REALSENSE_ENABLE_COLOR}" == "true" && -n "${REALSENSE_COLOR_PROFILE}" ]] && realsense_args+=("rgb_camera.color_profile:=${REALSENSE_COLOR_PROFILE}")
-  if [[ "${REALSENSE_ENABLE_IMU}" == "true" ]]; then
-    realsense_args+=("enable_gyro:=true" "enable_accel:=true" "enable_motion:=true" "unite_imu_method:=2")
-  fi
-  start "RealSense D435 driver" ros2 launch realsense2_camera rs_launch.py "${realsense_args[@]}"
-}
-
-interface_has_cidr() {
-  local interface="$1"
-  local cidr="$2"
-  ip -o -4 addr show dev "${interface}" | awk '{print $4}' | grep -Fxq "${cidr}"
-}
-
-interface_has_ip() {
-  local interface="$1"
-  local address="$2"
-  ip -o -4 addr show dev "${interface}" | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "${address}"
-}
-
-ip_exists_on_another_interface() {
-  local interface="$1"
-  local address="$2"
-  ip -o -4 addr show | awk -v interface="${interface}" -v address="${address}" \
-    '$2 != interface && $4 ~ ("^" address "/") { found = 1 } END { exit !found }'
-}
-
-configure_dds_network() {
-  [[ "${DDS_OUTPUT_ENABLED}" == "true" ]] || return 0
-  command -v ip >/dev/null || { echo "error: iproute2 is required for DDS networking" >&2; exit 1; }
-  [[ -d "/sys/class/net/${DDS_INTERFACE}" ]] || {
-    echo "error: dds_network.interface does not exist: ${DDS_INTERFACE}" >&2
-    exit 1
-  }
-  if ! interface_has_cidr "${DDS_INTERFACE}" "${DDS_LOCAL_CIDR}"; then
-    if interface_has_ip "${DDS_INTERFACE}" "${DDS_LOCAL_IP}"; then
-      echo "error: ${DDS_INTERFACE} already has ${DDS_LOCAL_IP} with a different subnet mask" >&2
-      exit 1
-    fi
-    if ip_exists_on_another_interface "${DDS_INTERFACE}" "${DDS_LOCAL_IP}"; then
-      echo "error: DDS local IP ${DDS_LOCAL_IP} already belongs to another interface" >&2
-      exit 1
-    fi
-    command -v sudo >/dev/null || { echo "error: sudo is required to configure DDS fixed IP" >&2; exit 1; }
-    echo "Configuring DDS ${DDS_MODE} network: ${DDS_INTERFACE} ${DDS_LOCAL_CIDR} peer=${DDS_PEER_IP} multicast=${DDS_ALLOW_MULTICAST}"
-    sudo ip link set "${DDS_INTERFACE}" up
-    sudo ip addr add "${DDS_LOCAL_CIDR}" dev "${DDS_INTERFACE}"
-  else
-    echo "DDS ${DDS_MODE} network already configured: ${DDS_INTERFACE} ${DDS_LOCAL_CIDR} peer=${DDS_PEER_IP} multicast=${DDS_ALLOW_MULTICAST}"
-  fi
-  CYCLONEDDS_HEIGHT_MAP_URI="file://${CYCLONEDDS_CONFIG}"
-  echo "Cyclone DDS height-map writer: ${CYCLONEDDS_HEIGHT_MAP_URI}"
-}
-
-process_group_running() {
-  local pid="$1"
-  # start() makes the recorded PID the session/process-group leader.  Test
-  # the whole group because a ros2 CLI wrapper may exit before its node does.
-  pgrep -g "${pid}" >/dev/null 2>&1
-}
-
-signal_process_group() {
-  local signal_name="$1"
-  local pid="$2"
-  # A ROS node's normal Ctrl-C path is SIGINT.  Use it for launcher cleanup;
-  # SIGTERM was not handled by every vendored Super-LIO executable.
-  kill "-${signal_name}" -- "-${pid}" 2>/dev/null || \
-    kill "-${signal_name}" "${pid}" 2>/dev/null || true
+start_terminal() {
+  local label="$1"
+  shift
+  echo "autonomy-light: starting ${label}"
+  setsid "$@" &
+  local pid=$!
+  PIDS+=("${pid}")
+  LABELS["${pid}"]="${label}"
+  LAST_PID="${pid}"
 }
 
 cleanup() {
   trap - EXIT INT TERM
-  if [[ "${CLEANUP_RUNNING}" == "true" ]]; then
-    return 0
-  fi
-  CLEANUP_RUNNING="true"
-
-  # Stop every sensor/mapper branch at once.  The previous serial teardown
-  # could take more than half a minute and made Ctrl-C look ignored while the
-  # terminal monitor kept redrawing.  All branches have independent sessions,
-  # so this does not signal the invoking shell.
-  local -a remaining=()
-  local pid
+  local index pid
+  for ((index = ${#PIDS[@]} - 1; index >= 0; --index)); do
+    pid="${PIDS[${index}]}"
+    kill -INT -- "-${pid}" 2>/dev/null || true
+  done
+  sleep 0.5
   for pid in "${PIDS[@]}"; do
-    if process_group_running "${pid}"; then
-      echo "autonomy-light: stopping ${PID_LABELS[${pid}]:-process ${pid}}"
-      signal_process_group INT "${pid}"
-      remaining+=("${pid}")
-    fi
-  done
-
-  # Give each ROS node the same 4 s graceful window, in parallel.
-  for _ in {1..40}; do
-    remaining=()
-    for pid in "${PIDS[@]}"; do
-      process_group_running "${pid}" && remaining+=("${pid}")
-    done
-    ((${#remaining[@]} == 0)) && break
-    sleep 0.1
-  done
-
-  # A third-party node that does not install a SIGINT handler must not leave
-  # a second LiDAR/TF stack behind for the next launch.
-  for pid in "${remaining[@]}"; do
-    echo "warning: ${PID_LABELS[${pid}]:-process ${pid}} did not stop after 4 s; forcing shutdown" >&2
-    signal_process_group KILL "${pid}"
-  done
-  for pid in "${PIDS[@]}"; do
+    kill -TERM -- "-${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
   done
-  find "${RUNTIME_DIR}" -depth -delete 2>/dev/null || true
-}
-
-handle_signal() {
-  local status="$1"
-  cleanup
-  exit "${status}"
-}
-
-verify_running() {
-  local pid="$1"
-  local label="${PID_LABELS[${pid}]:-process ${pid}}"
-  sleep 2
-  if kill -0 "${pid}" 2>/dev/null; then
-    return 0
+  if [[ -n "${LIVOX_RUNTIME_CONFIG}" ]]; then
+    rm -f -- "${LIVOX_RUNTIME_CONFIG}"
   fi
-  local status=1
-  if wait "${pid}"; then
-    status=0
-  else
-    status="$?"
-  fi
-  echo "error: ${label} exited during startup (exit status ${status})." >&2
-  exit "${status}"
 }
 
 trap cleanup EXIT
-trap 'handle_signal 130' INT
-trap 'handle_signal 143' TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-echo "autonomy-light: mode=${MODE} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} config=${CONFIG_FILE}"
-echo "elevation mapping: native GridMap ${MAP_TOPIC}"
-echo "height-map data: ${MAP_TOPIC} -> ${HEIGHT_MAP_BRIDGE_CONFIG}"
-if [[ "${REALSENSE_ENABLED}" == "true" ]]; then
-  if [[ "${REALSENSE_FOR_ELEVATION}" == "true" ]]; then
-    echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC} (elevation fusion enabled)"
-  else
-    echo "RealSense: ${REALSENSE_CAMERA_NAME} -> ${REALSENSE_POINTCLOUD_TOPIC} (streaming; LiDAR elevation only)"
+echo "autonomy-light: SLAM + camera elevation + Nav2"
+echo "  ROS domains: internal ${INTERNAL_ROS_DOMAIN_ID}; external ${EXTERNAL_ROS_DOMAIN_ID}"
+echo "  LiDAR: Super-LIO -> Nav2 occupancy"
+echo "  camera: observation_merge -> elevation map"
+echo "  command: /nav2/cmd_vel -> internal CommandCore -> external /control_command/autopilot"
+echo "  TF: static sensor extrinsics only"
+if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
+  echo "  Livox: ${LIVOX_MODEL} ${LIVOX_LIDAR_IP} -> ${LIVOX_JETSON_IP}"
+fi
+echo "  raw node logs: ${RUNTIME_LOG_DIR}"
+
+declare -a LIO_ARGS=(--ros-args --params-file "${LIO_CONFIG}")
+if [[ "${MODE}" == "sim" ]]; then
+  LIO_ARGS+=(
+    -p use_sim_time:=true
+    -p lio.ros.lidar_topic:=/f4/lidar/points
+    -p lio.ros.imu_topic:=/f4/lidar/imu
+    -p lio.sensor.lidar_type:=3
+  )
+fi
+if [[ -n "${MAPPING_OUTPUT}" ]]; then
+  MAPPING_OUTPUT="$(realpath -m -- "${MAPPING_OUTPUT}")"
+  mkdir -p -- "$(dirname -- "${MAPPING_OUTPUT}")"
+  if [[ -e "${MAPPING_OUTPUT}" ]]; then
+    MAPPING_TIMESTAMP="${MAPPING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
+    MAPPING_BACKUP="${MAPPING_OUTPUT}.bak.${MAPPING_TIMESTAMP}"
+    mv -- "${MAPPING_OUTPUT}" "${MAPPING_BACKUP}"
+    echo "autonomy-light: previous map moved to ${MAPPING_BACKUP}"
   fi
-else
-  echo "sensor mode: LiDAR-only (RealSense launch path remains configured)"
+  echo "autonomy-light: full-SLAM map will be saved to ${MAPPING_OUTPUT} on shutdown"
+  LIO_ARGS+=(
+    -p lio.map.save_map:=true
+    -p "lio.map.save_map_dir:=$(dirname -- "${MAPPING_OUTPUT}")"
+    -p "lio.map.map_name:=$(basename -- "${MAPPING_OUTPUT}")"
+  )
 fi
-[[ -n "${MAP_FILE}" ]] && echo "relocalization: Super-LIO map=${MAP_FILE}"
-[[ -n "${MAPPING_OUTPUT}" ]] && echo "full SLAM: Super-LIO map=${MAPPING_OUTPUT}"
-configure_dds_network
+if [[ -n "${MAP_FILE}" ]]; then
+  MAP_FILE="$(realpath -- "${MAP_FILE}")"
+  LIO_ARGS+=(
+    -p lio.slam.enable:=false
+    -p "lio.map.save_map_dir:=$(dirname -- "${MAP_FILE}")"
+    -p "lio.map.map_name:=$(basename -- "${MAP_FILE}")"
+  )
+fi
 
-if [[ "${MODE}" == "real" && "${NO_DRIVERS}" != "true" ]]; then
-  LIVOX_FREQ="$(/usr/bin/python3 - "${CONFIG_FILE}" <<'PY'
+if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
+  LIVOX_RUNTIME_CONFIG="$(mktemp "${TMPDIR:-/tmp}/autonomy_light_livox.XXXXXX.json")"
+  /usr/bin/python3 - "${LIVOX_RUNTIME_CONFIG}" "${LIVOX_MODEL}" "${LIVOX_LIDAR_IP}" \
+      "${LIVOX_JETSON_IP}" <<'PY'
+import json
 import sys
-import yaml
-with open(sys.argv[1], encoding="utf-8") as stream:
-    params = (yaml.safe_load(stream) or {}).get("autonomy_light", {}).get("ros__parameters", {})
-print(float(params.get("livox_publish_freq", 50.0)))
+
+path, model, lidar_ip, jetson_ip = sys.argv[1:]
+lidar_ports = {
+    "cmd_data_port": 56100,
+    "push_msg_port": 56200,
+    "point_data_port": 56300,
+    "imu_data_port": 56400,
+    "log_data_port": 56500,
+}
+host_ports = {
+    "cmd_data_port": 56101,
+    "push_msg_port": 56201,
+    "point_data_port": 56301,
+    "imu_data_port": 56401,
+    "log_data_port": 56501,
+}
+if model == "MID360":
+    host = {
+        "cmd_data_ip": jetson_ip,
+        "push_msg_ip": jetson_ip,
+        "point_data_ip": jetson_ip,
+        "imu_data_ip": jetson_ip,
+        "log_data_ip": "",
+        **host_ports,
+    }
+    device = {"MID360": {"lidar_net_info": lidar_ports, "host_net_info": host}}
+else:
+    host = {"host_ip": jetson_ip, **host_ports}
+    device = {"Mid360s": {"lidar_net_info": lidar_ports, "host_net_info": [host]}}
+payload = {
+    "lidar_summary_info": {"lidar_type": 8},
+    **device,
+    "lidar_configs": [{
+        "ip": lidar_ip,
+        "pcl_data_type": 1,
+        "pattern_mode": 0,
+        "extrinsic_parameter": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+                                "x": 0, "y": 0, "z": 0},
+    }],
+}
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, indent=2)
+    stream.write("\n")
 PY
-)"
-  start "Livox driver" ros2 launch livox_ros_driver2 "${LIVOX_LAUNCH}" "publish_freq:=${LIVOX_FREQ}"
-  verify_running "${PIDS[$((${#PIDS[@]} - 1))]}"
+  start "Livox driver (${LIVOX_MODEL})" ros2 run livox_ros_driver2 livox_ros_driver2_node \
+    --ros-args \
+    -p xfer_format:=1 \
+    -p multi_topic:=0 \
+    -p data_src:=0 \
+    -p "publish_freq:=${LIVOX_PUBLISH_FREQUENCY_HZ}" \
+    -p output_data_type:=0 \
+    -p "frame_id:=${LIVOX_FRAME_ID}" \
+    -p "user_config_path:=${LIVOX_RUNTIME_CONFIG}" \
+    -p cmdline_input_bd_code:=livox0000000001
 fi
-if [[ "${NO_DRIVERS}" != "true" ]]; then
+if [[ "${NO_DRIVERS}" == "false" ]]; then
   LIO_EXECUTABLE="super_lio_node"
   [[ -n "${MAP_FILE}" ]] && LIO_EXECUTABLE="relocation_node"
-  start "Super-LIO" ros2 run super_lio "${LIO_EXECUTABLE}" --ros-args --params-file "${LIO_CONFIG}"
-  verify_running "${PIDS[$((${#PIDS[@]} - 1))]}"
-fi
-if [[ "${NO_STATIC_TF}" != "true" ]]; then
-  start "static imu -> base_link TF" ros2 run tf2_ros static_transform_publisher \
-    --x "${IMU_BASE_X}" --y "${IMU_BASE_Y}" --z "${IMU_BASE_Z}" \
-    --qx "${IMU_BASE_QX}" --qy "${IMU_BASE_QY}" --qz "${IMU_BASE_QZ}" --qw "${IMU_BASE_QW}" \
-    --frame-id "${IMU_FRAME}" --child-frame-id "${BASE_FRAME}"
-  start "static base_link -> lidar_link TF" ros2 run tf2_ros static_transform_publisher \
-    --x "${BASE_LIDAR_X}" --y "${BASE_LIDAR_Y}" --z "${BASE_LIDAR_Z}" \
-    --qx "${BASE_LIDAR_QX}" --qy "${BASE_LIDAR_QY}" --qz "${BASE_LIDAR_QZ}" --qw "${BASE_LIDAR_QW}" \
-    --frame-id "${BASE_FRAME}" --child-frame-id "${LIDAR_FRAME}"
-fi
-
-# The camera TF is static platform calibration.  It is available regardless
-# of whether the optional D435 driver is currently connected.
-if [[ "${NO_STATIC_TF}" != "true" && "${REALSENSE_ENABLED}" == "true" ]]; then
-  start "static base_link -> camera_link TF" ros2 run tf2_ros static_transform_publisher \
-    --x "${BASE_CAMERA_X}" --y "${BASE_CAMERA_Y}" --z "${BASE_CAMERA_Z}" \
-    --qx "${BASE_CAMERA_QX}" --qy "${BASE_CAMERA_QY}" --qz "${BASE_CAMERA_QZ}" --qw "${BASE_CAMERA_QW}" \
-    --frame-id "${BASE_FRAME}" --child-frame-id "${CAMERA_FRAME}"
-fi
-
-# Establish the lightweight rclpy DDS participant before the C++ GridMap
-# process. On this target it prevents mapper discovery from stalling; it is a
-# monitor only and has no control-path dependency on either sensor branch.
-if [[ "${VIS}" != "true" && "${STATUS}" == "true" ]]; then
-  start_status_monitor
-fi
-start "ETH elevation mapping" ros2 run elevation_mapping elevation_mapping --ros-args \
-  --params-file "${ELEVATION_CONFIG}" -r "elevation_map:=${MAP_TOPIC}" "${EXTRA_ELEVATION_ARGS[@]}"
-MAPPER_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
-verify_running "${MAPPER_PID}"
-
-# This branch has exactly one input: native elevation GridMap.  It must never
-# depend on RealSense discovery, camera TF availability, or DDS direct output.
-if [[ "${DDS_OUTPUT_ENABLED}" == "true" ]]; then
-  start "height-map output bridge" env "CYCLONEDDS_URI=${CYCLONEDDS_HEIGHT_MAP_URI}" \
-    ros2 run autonomy_light height_map_bridge --ros-args --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
+  start "Super-LIO" ros2 run super_lio "${LIO_EXECUTABLE}" "${LIO_ARGS[@]}"
+  LIO_PID="${LAST_PID}"
 else
-  start "height-map output bridge" ros2 run autonomy_light height_map_bridge --ros-args \
-    --params-file "${HEIGHT_MAP_BRIDGE_CONFIG}"
-fi
-BRIDGE_PID="${PIDS[$((${#PIDS[@]} - 1))]}"
-verify_running "${BRIDGE_PID}"
-
-# Optional camera branch: independent process group, no readiness wait and no
-# launch-time parameter mutation. If it is absent or reconnecting, the LiDAR
-# elevation map and height-map output continue normally.
-if ! start_realsense_camera; then
-  echo "warning: RealSense branch was not started; continuing LiDAR-only" >&2
+  LIO_PID=""
 fi
 
-if [[ "${VIS}" == "true" ]]; then
-  start_telemetry
-fi
-if [[ "${RVIZ}" == "true" ]]; then
-  RVIZ_CONFIG="${SCRIPT_DIR}/config/elevation_mapping.rviz"
-  [[ -f "${RVIZ_CONFIG}" ]] || { echo "error: RViz config missing" >&2; exit 1; }
-  start "RViz" rviz2 -d "${RVIZ_CONFIG}"
+declare -a STATIC_TF_PIDS=()
+for transform_index in "${!STATIC_TF_PARENTS[@]}"; do
+  read -r static_x static_y static_z <<<"${STATIC_TF_XYZS[transform_index]}"
+  read -r static_roll static_pitch static_yaw <<<"${STATIC_TF_RPYS[transform_index]}"
+  start "static TF ${STATIC_TF_PARENTS[transform_index]} -> ${STATIC_TF_CHILDREN[transform_index]}" \
+    ros2 run tf2_ros static_transform_publisher \
+    --x "${static_x}" --y "${static_y}" --z "${static_z}" \
+    --roll "${static_roll}" --pitch "${static_pitch}" --yaw "${static_yaw}" \
+    --frame-id "${STATIC_TF_PARENTS[transform_index]}" \
+    --child-frame-id "${STATIC_TF_CHILDREN[transform_index]}"
+  STATIC_TF_PIDS+=("${LAST_PID}")
+done
+
+if [[ "${ENABLE_RVIZ}" == "true" ]]; then
+  echo "  RViz2: internal ROS domain ${INTERNAL_ROS_DOMAIN_ID} (Nav2 costmaps stay private)"
+  start "RViz2" rviz2 -d "${ROOT}/config/elevation_mapping.rviz"
 fi
 
-wait "${MAPPER_PID}"
+declare -a CAMERA_PIDS=()
+if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
+  for camera_index in "${!CAMERA_SOURCES[@]}"; do
+    start "RealSense ${CAMERA_SOURCES[camera_index]}" ros2 launch realsense2_camera rs_launch.py \
+      "camera_name:=${CAMERA_NAMES[camera_index]}" \
+      "camera_namespace:=${CAMERA_NAMESPACES[camera_index]}" \
+      "usb_port_id:=${CAMERA_USB_PORTS[camera_index]}" \
+      "base_frame_id:=${CAMERA_DRIVER_BASE_FRAMES[camera_index]}" \
+      "publish_tf:=false" \
+      "enable_depth:=true" "enable_color:=false" \
+      "depth_module.depth_profile:=${CAMERA_DEPTH_PROFILES[camera_index]}" \
+      "pointcloud.enable:=true" "pointcloud.allow_no_texture_points:=true" \
+      "pointcloud.stream_filter:=1" "decimation_filter.enable:=true" \
+      "decimation_filter.filter_magnitude:=4"
+    CAMERA_PIDS+=("${LAST_PID}")
+  done
+fi
+
+ELEVATION_ARGS=(--ros-args --params-file "${ELEVATION_CONFIG}")
+[[ "${MODE}" == "sim" ]] && ELEVATION_ARGS+=(-p use_sim_time:=true)
+start "gravity-frame broadcaster" ros2 run autonomy_light gravity_frame_broadcaster "${ELEVATION_ARGS[@]}"
+GRAVITY_PID="${LAST_PID}"
+declare -a CAMERA_MAPPER_PIDS=()
+for camera_index in "${!CAMERA_SOURCES[@]}"; do
+  start "camera mapper ${CAMERA_SOURCES[camera_index]}" \
+    ros2 run autonomy_light camera_frame_mapper "${ELEVATION_ARGS[@]}" \
+    -r "__node:=camera_frame_mapper_${CAMERA_SOURCES[camera_index]}" \
+    -p "input_topic:=${CAMERA_RAW_TOPICS[camera_index]}" \
+    -p "output_topic:=${CAMERA_MAPPED_TOPICS[camera_index]}" \
+    -p "mount_frame:=${CAMERA_MOUNT_FRAMES[camera_index]}" \
+    -p "source_to_mount_xyz:=${CAMERA_SOURCE_TO_MOUNT_XYZS[camera_index]}" \
+    -p "source_to_mount_rpy:=${CAMERA_SOURCE_TO_MOUNT_RPYS[camera_index]}" \
+    -p "noise_stddev:=${CAMERA_NOISE_STDDEVS[camera_index]}" \
+    -p "min_range:=${CAMERA_MIN_RANGES[camera_index]}" \
+    -p "max_points:=${CAMERA_MAX_POINTS[camera_index]}" \
+    -p tf_timeout_sec:=0.020
+  CAMERA_MAPPER_PIDS+=("${LAST_PID}")
+done
+start "camera observation merge" ros2 run autonomy_light observation_merge "${ELEVATION_ARGS[@]}"
+MERGE_PID="${LAST_PID}"
+start "elevation mapper" ros2 run autonomy_light precise_elevation_mapping "${ELEVATION_ARGS[@]}"
+MAPPER_PID="${LAST_PID}"
+start "height-map bridge" ros2 run autonomy_light height_map_bridge "${ELEVATION_ARGS[@]}"
+BRIDGE_PID="${LAST_PID}"
+
+NAV2_PID=""
+OUTBOUND_COMMAND_BRIDGE_PID=""
+start "network boundary bridge" ros2 run autonomy_light outbound_command_bridge \
+  --internal-domain "${INTERNAL_ROS_DOMAIN_ID}" \
+  --external-domain "${EXTERNAL_ROS_DOMAIN_ID}" \
+  --input-topic /autonomy_light/command_out \
+  --output-topic /control_command/autopilot
+OUTBOUND_COMMAND_BRIDGE_PID="${LAST_PID}"
+if [[ "${ENABLE_NAV2}" == "true" ]]; then
+  ros2 pkg prefix nav2_controller >/dev/null 2>&1 || {
+    echo "error: Nav2 is unavailable; run ./build.sh" >&2
+    exit 1
+  }
+  USE_SIM_TIME="false"
+  [[ "${MODE}" == "sim" ]] && USE_SIM_TIME="true"
+  start "Nav2 and autopilot bridge" bash "${ROOT}/scripts/nav2_wait_and_launch.sh" \
+    "${NAV2_CONFIG}" "${USE_SIM_TIME}" /lio/odom 120
+  NAV2_PID="${LAST_PID}"
+fi
+
+STATUS_PID=""
+if [[ "${ENABLE_STATUS}" == "true" ]]; then
+  start_terminal "terminal status monitor (${VIS_RATE} Hz)" \
+    /usr/bin/python3 "${STATUS_SCRIPT}" --rate "${VIS_RATE}" --log-dir "${RUNTIME_LOG_DIR}"
+  STATUS_PID="${LAST_PID}"
+fi
+
+declare -a CRITICAL_PIDS=("${STATIC_TF_PIDS[@]}" "${GRAVITY_PID}" "${CAMERA_MAPPER_PIDS[@]}" "${MERGE_PID}" "${MAPPER_PID}" "${BRIDGE_PID}")
+[[ -n "${LIO_PID}" ]] && CRITICAL_PIDS+=("${LIO_PID}")
+CRITICAL_PIDS+=("${CAMERA_PIDS[@]}")
+[[ -n "${OUTBOUND_COMMAND_BRIDGE_PID}" ]] && CRITICAL_PIDS+=("${OUTBOUND_COMMAND_BRIDGE_PID}")
+# Nav2 waits for the first /lio/odom before lifecycle activation.  A missing
+# LiDAR packet must not take down the independent SLAM/elevation diagnostics;
+# its timeout is reported by nav2_wait_and_launch.sh while the core pipeline
+# remains alive for inspection.
+wait -n "${CRITICAL_PIDS[@]}"

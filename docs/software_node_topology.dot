@@ -1,28 +1,32 @@
 digraph autonomy_light {
   rankdir=LR;
   graph [fontname="Arial", bgcolor="white", pad="0.25"];
-  node [fontname="Arial", shape=box, style="rounded,filled", color="#24527a",
-        fillcolor="#edf5fb", margin="0.16,0.10"];
-  edge [fontname="Arial", color="#4d6b82", arrowsize="0.7"];
+  node [fontname="Arial", shape=box, style="rounded,filled", fillcolor="#edf5fb"];
 
-  livox [label="Livox driver\n(external ROS node)", fillcolor="#f5f7fa"];
-  lio [label="Super-LIO\nLIO | full SLAM | relocation\nmap -> odom -> imu", fillcolor="#e9f6ee", color="#32734d"];
-  d435 [label="D435 / D435i\nPointCloud2 + camera-internal TF", fillcolor="#f5f7fa"];
-  mapper [label="elevation_mapping\nvendored ETH/ANYbotics node\nrobot-centric circular GridMap\nvariance + visibility cleanup",
-          fillcolor="#fff4df", color="#a65e00", penwidth="2"];
-  bridge [label="height_map_bridge\nautonomy_light compatibility output\nbase-yaw grid + floor-relative data\n50 Hz", fillcolor="#e9f6ee", color="#32734d"];
-  dds_network [label="dds_network (autonomy_light config)\nseparate fixed-IP subnet + peer\nCyclone DDS bridge process only", fillcolor="#e9f6ee", color="#32734d"];
-  control [label="Controller / Isaac Lab\nHeightMap consumer", fillcolor="#f5f7fa"];
-  rviz [label="GridMap viewer / RViz", fillcolor="#f5f7fa"];
-  prior [label="Optional prebuilt terrain\nGridMap elevation layer", fillcolor="#f5f7fa"];
+  livox [label="Livox"];
+  lio [label="Super-LIO\nfull SLAM 50 Hz\nmap -> odom -> lidar_link", fillcolor="#e9f6ee"];
+  occupancy [label="live_occupancy_mapper\n/map + obstacle clouds", fillcolor="#e9f6ee"];
+  nav2 [label="Nav2\nplanner + controller", fillcolor="#e9f6ee"];
+  command [label="command_user_bridge\ncore/msg/CommandCore", fillcolor="#e9f6ee"];
+  tf [label="static sensor TF + gravity frame\nlidar_link -> base_link -> F_camera_link\nbase_link -> base_link_gravity", fillcolor="#fff4df"];
+  camera [label="F4 front D435\nUSB 2-1.3"];
+  mapper [label="camera_frame_mapper\nraw cloud -> map", fillcolor="#fff4df"];
+  merge [label="observation_merge\nmap -> base_link_gravity", fillcolor="#fff4df"];
+  elevation [label="precise_elevation_mapping\nlatest grid @ 50 Hz", fillcolor="#fff4df"];
+  height [label="height_map_bridge", fillcolor="#fff4df"];
+  height_consumer [label="DDS height-map consumer", fillcolor="#fff4df"];
 
-  livox -> lio [label="Livox CustomMsg + IMU"];
-  lio -> mapper [label="/lio/odom covariance\n/lio/cloud_world\nmap -> odom -> imu TF"];
-  d435 -> mapper [label="depth/color/points\nbase_link -> camera_link TF"];
-  prior -> mapper [label="underlying_map_topic", style=dashed];
-  mapper -> bridge [label="/autonomy_light/elevation_map\ngrid_map_msgs/GridMap @ 50 Hz"];
-  bridge -> dds_network [label="height_map / core_dds::HeightMap"];
-  dds_network -> control [label="configured DDS peer\n(default: both)"];
-  bridge -> control [label="ROS 2 /height_map_data"];
-  mapper -> rviz [label="same native GridMap"];
+  livox -> lio [label="LiDAR + IMU"];
+  lio -> occupancy [label="/lio/cloud_world"];
+  occupancy -> nav2 [label="/map + obstacle clouds"];
+  nav2 -> command [label="/nav2/cmd_vel\ngeometry_msgs/Twist"];
+  command -> consumer [label="/control_command/autopilot\ncore/msg/CommandCore"];
+  lio -> tf [label="map/base attitude TF"];
+  tf -> mapper [label="static sensor TF"];
+  tf -> merge [label="base_link_gravity TF"];
+  camera -> mapper [label="PointCloud2"];
+  mapper -> merge [label="map cloud"];
+  merge -> elevation [label="camera observation"];
+  elevation -> height [label="GridMap"];
+  height -> height_consumer [label="DDS domain 1 / height_map\ncore_dds::HeightMap"];
 }

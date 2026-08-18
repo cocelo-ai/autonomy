@@ -7,9 +7,9 @@
 namespace autonomy_light {
 
 class DdsHeightMapPublisher final {
-public:
+ public:
   DdsHeightMapPublisher(std::uint32_t domain_id, std::string topic_name,
-                        std::string type_name, std::uint32_t history_depth);
+                        std::uint32_t history_depth);
   ~DdsHeightMapPublisher();
 
   DdsHeightMapPublisher(const DdsHeightMapPublisher &) = delete;
@@ -19,13 +19,12 @@ public:
   [[nodiscard]] const std::string &error() const;
   [[nodiscard]] bool publish(const std::vector<float> &data);
 
-private:
+ private:
   void initialize();
   void cleanup();
 
   std::uint32_t domain_id_;
   std::string topic_name_;
-  std::string type_name_;
   std::uint32_t history_depth_;
   std::string error_;
   int participant_{0};
@@ -33,4 +32,4 @@ private:
   int writer_{0};
 };
 
-} // namespace autonomy_light
+}  // namespace autonomy_light

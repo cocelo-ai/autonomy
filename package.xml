@@ -2,7 +2,7 @@
 <package format="3">
   <name>autonomy_light</name>
   <version>0.6.0</version>
-  <description>Bringup for Livox, Super-LIO, and vendored robot-centric elevation mapping.</description>
+  <description>Livox/Super-LIO SLAM, live Nav2 occupancy mapping, and camera-only elevation mapping bringup.</description>
   <maintainer email="todo@example.com">autonomy_light maintainer</maintainer>
   <license>Apache-2.0</license>
 
@@ -10,8 +10,9 @@
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>grid_map_msgs</depend>
+  <depend>core</depend>
   <depend>geometry_msgs</depend>
-  <exec_depend>nav_msgs</exec_depend>
+  <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
@@ -22,9 +23,21 @@
   <exec_depend>cyclonedds</exec_depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
-  <exec_depend>elevation_mapping</exec_depend>
   <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>super_lio</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_navfn_planner</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+  <exec_depend>nav2_rviz_plugins</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
 
   <member_of_group>rosidl_interface_packages</member_of_group>
 

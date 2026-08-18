@@ -54,6 +54,11 @@ void LoadParamFromRos(rclcpp::Node& node)
   if (g_odom_frame.empty()) {
     g_odom_frame = "odom";
   }
+  node.declare_parameter<std::string>("lio.ros.body_frame", "imu");
+  node.get_parameter("lio.ros.body_frame", g_body_frame);
+  if (g_body_frame.empty()) {
+    g_body_frame = "imu";
+  }
 
   const auto load_float = [&node](const std::string& name, const double default_value,
                                   float& target) {
