@@ -39,6 +39,10 @@ ament_target_dependencies(height_map_bridge
   tf2_geometry_msgs
   tf2_ros
 )
+rosidl_get_typesupport_target(height_map_bridge_typesupport
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+target_link_libraries(height_map_bridge ${height_map_bridge_typesupport})
 target_include_directories(height_map_bridge PRIVATE include)
 idlc_generate(
   TARGET autonomy_light_dds_types
@@ -172,6 +176,8 @@ install(PROGRAMS
   scripts/nav2_wait_and_launch.sh
   scripts/setup_livox_driver.sh
   scripts/monitor_autonomy_state.py
+  scripts/visualize_height_map.py
+  scripts/generate_height_fov_mask.py
   scripts/show_realsense_usb_ports.py
   DESTINATION lib/${PROJECT_NAME}
 )

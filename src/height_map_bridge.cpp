@@ -1,5 +1,7 @@
 #include "autonomy_light/height_map_bridge.hpp"
 #include "autonomy_light/dds_height_map_publisher.hpp"
+#include "autonomy_light/fov_mask.hpp"
+#include "autonomy_light/msg/height_map.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -124,6 +126,8 @@ struct HeightMapBridge::Impl {
         node.declare_parameter<double>("output.x_length", 1.8);
     output_y_length =
         node.declare_parameter<double>("output.y_length", 0.8);
+    fov_mask_file = node.declare_parameter<std::string>("fov.mask_file", "");
+    fov_outside_value = node.declare_parameter<double>("fov.outside_value", 0.0);
     floor_radius = node.declare_parameter<double>("floor.radius_m", 0.6);
     floor_percentile = std::clamp(
         node.declare_parameter<double>("floor.percentile", 0.20), 0.0, 1.0);
@@ -136,6 +140,12 @@ struct HeightMapBridge::Impl {
     const auto dds_topic =
         node.declare_parameter<std::string>("dds.topic", "height_map");
     const int dds_history = node.declare_parameter<int>("dds.history_depth", 128);
+    const auto dds_network_interface = node.declare_parameter<std::string>(
+        "dds.network_interface", "");
+    const auto dds_peer_address = node.declare_parameter<std::string>(
+        "dds.peer_address", "");
+    visualization_topic = node.declare_parameter<std::string>(
+        "visualization.topic", "");
     if (rate_hz <= 0.0 || fallback_resolution <= 0.0 ||
         fallback_x_length <= 0.0 || fallback_y_length <= 0.0) {
       throw std::invalid_argument(
@@ -145,10 +155,19 @@ struct HeightMapBridge::Impl {
         output_y_length <= 0.0) {
       throw std::invalid_argument("height-map output geometry must be positive");
     }
+    if (!std::isfinite(fov_outside_value)) {
+      throw std::invalid_argument("height-map FOV outside value must be finite");
+    }
     if (clipping_min > clipping_max) {
       std::swap(clipping_min, clipping_max);
     }
     unknown_value = std::clamp(unknown_value, clipping_min, clipping_max);
+    const auto output_width = static_cast<std::uint32_t>(
+        std::max(1, static_cast<int>(std::round(output_x_length / output_resolution))));
+    const auto output_height = static_cast<std::uint32_t>(
+        std::max(1, static_cast<int>(std::round(output_y_length / output_resolution))));
+    fov_mask = loadFovMask(fov_mask_file, output_width, output_height, output_resolution,
+                           output_x_length, output_y_length);
 
     subscriber = node.create_subscription<grid_map_msgs::msg::GridMap>(
         input_topic, rclcpp::QoS(1).reliable(),
@@ -157,20 +176,31 @@ struct HeightMapBridge::Impl {
         });
     dds_publisher = std::make_unique<DdsHeightMapPublisher>(
         static_cast<std::uint32_t>(std::max(0, dds_domain)), dds_topic,
-        static_cast<std::uint32_t>(std::max(1, dds_history)));
+        static_cast<std::uint32_t>(std::max(1, dds_history)),
+        dds_network_interface, dds_peer_address);
     if (!dds_publisher->ready()) {
       throw std::runtime_error("DDS height-map writer failed: " +
                                dds_publisher->error());
+    }
+    if (!visualization_topic.empty()) {
+      visualization_publisher =
+          node.create_publisher<autonomy_light::msg::HeightMap>(
+              visualization_topic, rclcpp::QoS(1).reliable());
     }
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / rate_hz));
     timer = node.create_wall_timer(period, [this]() { publish(); });
     RCLCPP_INFO(node.get_logger(),
-                "HeightMap DDS: input=%s topic=%s output=%.3fm (%dx%d) rate=%.1fHz",
-                input_topic.c_str(), dds_topic.c_str(), output_resolution,
+                "HeightMap DDS: input=%s topic=%s interface=%s peer=%s output=%.3fm (%dx%d) rate=%.1fHz, FOV mask=%s%s",
+                input_topic.c_str(), dds_topic.c_str(),
+                dds_network_interface.empty() ? "auto" : dds_network_interface.c_str(),
+                dds_peer_address.empty() ? "multicast-only" : dds_peer_address.c_str(),
+                output_resolution,
                 static_cast<int>(std::round(output_x_length / output_resolution)),
                 static_cast<int>(std::round(output_y_length / output_resolution)),
-                rate_hz);
+                rate_hz,
+                fov_mask.enabled ? fov_mask_file.c_str() : "disabled",
+                visualization_topic.empty() ? "" : " (private visualization mirror enabled)");
   }
 
   void onMap(const grid_map_msgs::msg::GridMap::SharedPtr &message) {
@@ -262,6 +292,10 @@ struct HeightMapBridge::Impl {
         std::vector<float> floor_samples;
         for (int row = 0; row < height; ++row) {
           for (int column = 0; column < width; ++column) {
+            const auto sample_index = static_cast<std::size_t>(row) * width + column;
+            if (!fov_mask.inside(sample_index)) {
+              continue;
+            }
             const double x = -length_x / 2.0 + (column + 0.5) * resolution;
             const double y = -length_y / 2.0 + (row + 0.5) * resolution;
             const float elevation = current->sample(
@@ -281,6 +315,10 @@ struct HeightMapBridge::Impl {
           const float floor = floor_samples[index];
           for (int row = 0; row < height; ++row) {
             for (int column = 0; column < width; ++column) {
+              const auto sample_index = static_cast<std::size_t>(row) * width + column;
+              if (!fov_mask.inside(sample_index)) {
+                continue;
+              }
               const double x = -length_x / 2.0 + (column + 0.5) * resolution;
               const double y = -length_y / 2.0 + (row + 0.5) * resolution;
               const float elevation =
@@ -288,7 +326,6 @@ struct HeightMapBridge::Impl {
                                   base_y + sine * x + cosine * y);
               if (std::isfinite(elevation)) {
                 const float relative_height = elevation - floor;
-                const auto sample_index = static_cast<std::size_t>(row) * width + column;
                 data[sample_index] =
                     static_cast<float>(
                         std::clamp(reference_height - static_cast<double>(relative_height),
@@ -303,6 +340,27 @@ struct HeightMapBridge::Impl {
                              current->header.frame_id.c_str(),
                              base_frame.c_str());
       }
+    }
+
+    // Applied after all sampling and fallback logic, so direct DDS and the
+    // optional visualization mirror always receive identical zeroed cells.
+    if (fov_mask.enabled) {
+      for (std::size_t sample_index = 0; sample_index < data.size(); ++sample_index) {
+        if (!fov_mask.inside(sample_index)) {
+          data[sample_index] = static_cast<float>(fov_outside_value);
+        }
+      }
+    }
+
+    if (visualization_publisher) {
+      autonomy_light::msg::HeightMap visualization;
+      visualization.header.stamp = node.now();
+      visualization.header.frame_id = base_frame;
+      visualization.data = data;
+      visualization.resolution = static_cast<float>(resolution);
+      visualization.x_length = static_cast<float>(length_x);
+      visualization.y_length = static_cast<float>(length_y);
+      visualization_publisher->publish(std::move(visualization));
     }
 
     if (!dds_publisher->publish(data)) {
@@ -328,9 +386,15 @@ struct HeightMapBridge::Impl {
   double clipping_min{0.0};
   double clipping_max{0.75};
   double unknown_value{0.48};
+  std::string fov_mask_file;
+  double fov_outside_value{0.0};
+  FovMask fov_mask;
+  std::string visualization_topic;
   std::mutex snapshot_mutex;
   std::shared_ptr<Snapshot> snapshot;
   std::unique_ptr<DdsHeightMapPublisher> dds_publisher;
+  rclcpp::Publisher<autonomy_light::msg::HeightMap>::SharedPtr
+      visualization_publisher;
   rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr subscriber;
   rclcpp::TimerBase::SharedPtr timer;
   tf2_ros::Buffer tf_buffer;

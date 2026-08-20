@@ -3,9 +3,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./launch.sh [--real|--sim] [--no-drivers] [--no-nav2] [--rviz] [--map FILE] [--mapping [FILE]]
+Usage: ./launch.sh [--real|--sim] [--no-drivers] [--no-nav2] [--rviz] [--map DIRECTORY] [--mapping [DIRECTORY]]
                    [--lidar-type mid360|mid360s] [--lidar-ip IPV4] [--jetson-ip IPV4]
-                   [--vis-rate HZ] [--no-status]
+                   [--vis-rate HZ] [--vis-height] [--no-status]
 
 Starts full Super-LIO SLAM, camera-only elevation mapping, and Nav2.
 
@@ -14,14 +14,16 @@ Starts full Super-LIO SLAM, camera-only elevation mapping, and Nav2.
   --no-drivers            Use externally running drivers and Super-LIO.
   --no-nav2               Do not start Nav2 or autopilot command output.
   --rviz                  Start RViz2.
-  --map FILE              Start Super-LIO relocation with a saved PCD.
-  --mapping [FILE]        Save the full-SLAM PCD on shutdown. Without FILE,
-                          writes maps/super_lio_map_<timestamp>.pcd.
+  --map DIRECTORY         Relocalize from a map bundle: localization.pcd + map.pgm/map.yaml.
+  --mapping [DIRECTORY]   Save a map bundle on shutdown. Without DIRECTORY,
+                          writes maps/map_<timestamp>/.
   --lidar-type TYPE       Override YAML Livox model: mid360 or mid360s.
   --lidar-ip IPV4         Override bringup.livox.lidar_ip for this run.
   --jetson-ip IPV4        Override bringup.livox.jetson_ip for this run.
   --mid360|--mid360s      Backward-compatible aliases for --lidar-type.
   --vis-rate HZ           Terminal status-table refresh rate (default: 2.0 Hz).
+  --vis-height            Open a 2D color height-map window at
+                          elevation_mapping.publish_rate_hz.
   --no-status             Do not start the terminal status table.
   --check                 Validate the three configuration files and exit.
 EOF
@@ -42,6 +44,7 @@ JETSON_IP_OVERRIDE=""
 LIVOX_RUNTIME_CONFIG=""
 VIS_RATE="2.0"
 ENABLE_STATUS="true"
+ENABLE_HEIGHT_VISUALIZATION="false"
 RUNTIME_LOG_DIR=""
 MAP_FILE=""
 MAPPING_OUTPUT=""
@@ -66,15 +69,16 @@ while [[ $# -gt 0 ]]; do
     --mid360s) LIDAR_TYPE_OVERRIDE="MID360S" ;;
     --vis-rate) VIS_RATE="${2:?--vis-rate requires a positive frequency}"; shift ;;
     --vis-rate=*) VIS_RATE="${1#*=}" ;;
+    --vis-height) ENABLE_HEIGHT_VISUALIZATION="true" ;;
     --no-status) ENABLE_STATUS="false" ;;
-    --map) MAP_FILE="${2:?--map requires a PCD file}"; shift ;;
+    --map) MAP_FILE="${2:?--map requires a map-bundle directory}"; shift ;;
     --mapping)
       if [[ $# -gt 1 && "${2}" != --* ]]; then
         MAPPING_OUTPUT="$2"
         shift
       else
         MAPPING_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-        MAPPING_OUTPUT="${PWD}/maps/super_lio_map_${MAPPING_TIMESTAMP}.pcd"
+        MAPPING_OUTPUT="${PWD}/maps/map_${MAPPING_TIMESTAMP}"
       fi
       ;;
     --mapping=*) MAPPING_OUTPUT="${1#*=}" ;;
@@ -93,7 +97,17 @@ STATUS_SCRIPT="${ROOT}/scripts/monitor_autonomy_state.py"
   echo "error: --map and --mapping cannot be used together" >&2
   exit 2
 }
-[[ -z "${MAP_FILE}" || -f "${MAP_FILE}" ]] || { echo "error: map not found: ${MAP_FILE}" >&2; exit 1; }
+[[ -z "${MAPPING_OUTPUT}" || "${ENABLE_NAV2}" == "true" ]] || {
+  echo "error: --mapping requires Nav2 so the occupancy map can be saved" >&2
+  exit 2
+}
+if [[ -n "${MAP_FILE}" ]]; then
+  [[ -d "${MAP_FILE}" ]] || { echo "error: map bundle directory not found: ${MAP_FILE}" >&2; exit 1; }
+  [[ -f "${MAP_FILE}/localization.pcd" && -f "${MAP_FILE}/map.yaml" && -f "${MAP_FILE}/map.pgm" ]] || {
+    echo "error: map bundle requires localization.pcd, map.yaml, and map.pgm: ${MAP_FILE}" >&2
+    exit 1
+  }
+fi
 
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
@@ -395,9 +409,79 @@ for source_name in source_names:
     camera_max_points.append(source_parameter(source_name, "max_points"))
     append_static_transform(base_frame, mount_frame)
 
+elevation_mapping = config.get("elevation_mapping", {})
+elevation_mapping = elevation_mapping.get("ros__parameters", {})
+try:
+    elevation_publish_rate_hz = float(elevation_mapping.get("publish_rate_hz", 50.0))
+except (TypeError, ValueError) as error:
+    raise SystemExit("error: elevation_mapping.publish_rate_hz must be numeric") from error
+if not math.isfinite(elevation_publish_rate_hz) or elevation_publish_rate_hz <= 0.0:
+    raise SystemExit("error: elevation_mapping.publish_rate_hz must be a positive finite number")
+
+height_map_fov = config.get("height_map_fov", {})
+height_map_fov = height_map_fov.get("ros__parameters", {})
+if not isinstance(height_map_fov, dict):
+    raise SystemExit("error: height_map_fov.ros__parameters must be a mapping")
+height_map_fov_enabled = height_map_fov.get("enabled", True)
+if not isinstance(height_map_fov_enabled, bool):
+    raise SystemExit("error: height_map_fov.enabled must be boolean")
+height_map_fov_camera_frames = height_map_fov.get("camera_frames", [])
+if height_map_fov_enabled:
+    if not isinstance(height_map_fov_camera_frames, list) or not height_map_fov_camera_frames or \
+            not all(isinstance(frame, str) and frame in urdf_links for frame in height_map_fov_camera_frames):
+        raise SystemExit("error: height_map_fov.camera_frames must be non-empty URDF link names")
+    height_map_fov_camera_type = height_map_fov.get("camera_type")
+    if not isinstance(height_map_fov_camera_type, str) or not height_map_fov_camera_type:
+        raise SystemExit("error: height_map_fov.camera_type must be a non-empty string")
+    normalized_camera_type = height_map_fov_camera_type.strip().lower().replace("-", "").replace("_", "")
+    if normalized_camera_type not in {"d435", "d435i", "d455"}:
+        raise SystemExit("error: height_map_fov.camera_type must be d435, d435i, or d455")
+    height_map_fov_camera_type = normalized_camera_type
+    if len(camera_profiles) != 1:
+        raise SystemExit(
+            "error: height_map_fov currently requires one selected camera so its driver depth profile is unambiguous")
+    height_map_fov_depth_profile = camera_profiles[0]
+    try:
+        height_map_fov_reference_z = float(height_map_fov["reference_z"])
+        height_map_fov_outside_value = float(height_map_fov.get("outside_value", 0.0))
+        height_map_fov_resolution = float(elevation_mapping["grid.resolution"])
+        height_map_fov_x_min = float(elevation_mapping["grid.x_min"])
+        height_map_fov_x_max = float(elevation_mapping["grid.x_max"])
+        height_map_fov_y_min = float(elevation_mapping["grid.y_min"])
+        height_map_fov_y_max = float(elevation_mapping["grid.y_max"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise SystemExit("error: height_map_fov and elevation grid parameters must be numeric") from error
+    numeric_fov_values = (height_map_fov_reference_z, height_map_fov_outside_value,
+                          height_map_fov_resolution, height_map_fov_x_min,
+                          height_map_fov_x_max, height_map_fov_y_min, height_map_fov_y_max)
+    if not all(math.isfinite(value) for value in numeric_fov_values) or \
+            height_map_fov_resolution <= 0.0 or height_map_fov_x_max <= height_map_fov_x_min or \
+            height_map_fov_y_max <= height_map_fov_y_min or \
+            not math.isclose(height_map_fov_x_min, -height_map_fov_x_max, abs_tol=1.0e-6) or \
+            not math.isclose(height_map_fov_y_min, -height_map_fov_y_max, abs_tol=1.0e-6):
+        raise SystemExit("error: height_map_fov requires a centered, valid elevation grid")
+else:
+    height_map_fov_camera_frames = []
+    height_map_fov_camera_type = ""
+    height_map_fov_depth_profile = ""
+    height_map_fov_reference_z = height_map_fov_outside_value = 0.0
+    height_map_fov_resolution = height_map_fov_x_min = height_map_fov_x_max = 0.0
+    height_map_fov_y_min = height_map_fov_y_max = 0.0
+
 values = {
     "INTERNAL_ROS_DOMAIN_ID": bringup.get("internal_ros_domain_id", 10),
     "EXTERNAL_ROS_DOMAIN_ID": bringup.get("external_ros_domain_id", 0),
+    "ELEVATION_MAPPING_PUBLISH_RATE_HZ": elevation_publish_rate_hz,
+    "HEIGHT_MAP_FOV_ENABLED": str(height_map_fov_enabled).lower(),
+    "HEIGHT_MAP_FOV_URDF": urdf_file,
+    "HEIGHT_MAP_FOV_BASE_FRAME": height_map_fov.get("base_frame", base_frame),
+    "HEIGHT_MAP_FOV_CAMERA_TYPE": height_map_fov_camera_type,
+    "HEIGHT_MAP_FOV_DEPTH_PROFILE": height_map_fov_depth_profile,
+    "HEIGHT_MAP_FOV_REFERENCE_Z": height_map_fov_reference_z,
+    "HEIGHT_MAP_FOV_OUTSIDE_VALUE": height_map_fov_outside_value,
+    "HEIGHT_MAP_FOV_RESOLUTION": height_map_fov_resolution,
+    "HEIGHT_MAP_FOV_X_LENGTH": height_map_fov_x_max - height_map_fov_x_min,
+    "HEIGHT_MAP_FOV_Y_LENGTH": height_map_fov_y_max - height_map_fov_y_min,
 }
 for key, value in values.items():
     print(f"{key}={shlex.quote(str(value))}")
@@ -415,6 +499,7 @@ shell_array("CAMERA_SOURCE_TO_MOUNT_RPYS", camera_source_to_mount_rpys)
 shell_array("CAMERA_NOISE_STDDEVS", camera_noise_stddevs)
 shell_array("CAMERA_MIN_RANGES", camera_min_ranges)
 shell_array("CAMERA_MAX_POINTS", camera_max_points)
+shell_array("HEIGHT_MAP_FOV_CAMERA_FRAMES", height_map_fov_camera_frames)
 shell_array("STATIC_TF_PARENTS", static_tf_parents)
 shell_array("STATIC_TF_CHILDREN", static_tf_children)
 shell_array("STATIC_TF_XYZS", static_tf_xyzs)
@@ -515,6 +600,63 @@ LOG_SEQUENCE=0
 RUNTIME_LOG_DIR="${ROOT}/log/runtime_$(date +%Y%m%d_%H%M%S)_$$"
 mkdir -p -- "${RUNTIME_LOG_DIR}"
 
+NAV2_CONFIG_ACTIVE="${NAV2_CONFIG}"
+declare -a NAV2_LAUNCH_ARGS=()
+if [[ -n "${MAPPING_OUTPUT}" ]]; then
+  MAPPING_OUTPUT="$(realpath -m -- "${MAPPING_OUTPUT}")"
+  if [[ -e "${MAPPING_OUTPUT}" && ! -d "${MAPPING_OUTPUT}" ]]; then
+    echo "error: map bundle path is not a directory: ${MAPPING_OUTPUT}" >&2
+    exit 1
+  fi
+  if [[ -d "${MAPPING_OUTPUT}" && -n "$(find "${MAPPING_OUTPUT}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "error: map bundle directory must be new or empty: ${MAPPING_OUTPUT}" >&2
+    exit 1
+  fi
+  mkdir -p -- "${MAPPING_OUTPUT}"
+  echo "autonomy-light: map bundle will be saved to ${MAPPING_OUTPUT} on shutdown"
+elif [[ -n "${MAP_FILE}" ]]; then
+  MAP_FILE="$(realpath -- "${MAP_FILE}")"
+  NAV2_STATIC_CONFIG="${RUNTIME_LOG_DIR}/nav2_static_map.yaml"
+  /usr/bin/python3 - "${NAV2_CONFIG}" "${NAV2_STATIC_CONFIG}" <<'PY'
+import sys
+import yaml
+
+source, output = sys.argv[1:]
+with open(source, encoding="utf-8") as stream:
+    config = yaml.safe_load(stream) or {}
+parameters = config["global_costmap"]["global_costmap"]["ros__parameters"]
+# The saved PGM is the permanent global map. Dynamic LiDAR obstacles remain
+# in the rolling local costmap only.
+parameters["plugins"] = ["static_layer", "inflation_layer"]
+with open(output, "w", encoding="utf-8") as stream:
+    yaml.safe_dump(config, stream, sort_keys=False)
+PY
+  NAV2_CONFIG_ACTIVE="${NAV2_STATIC_CONFIG}"
+  NAV2_LAUNCH_ARGS=(
+    "static_map:=true"
+    "map_yaml:=${MAP_FILE}/map.yaml"
+    "occupancy_map_topic:=/live_map"
+  )
+fi
+
+HEIGHT_MAP_FOV_MASK_FILE=""
+if [[ "${HEIGHT_MAP_FOV_ENABLED}" == "true" ]]; then
+  HEIGHT_MAP_FOV_MASK_FILE="${RUNTIME_LOG_DIR}/height_fov_mask.txt"
+  printf -v HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV '%s,' "${HEIGHT_MAP_FOV_CAMERA_FRAMES[@]}"
+  HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV="${HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV%,}"
+  /usr/bin/python3 "${ROOT}/scripts/generate_height_fov_mask.py" \
+    --urdf "${HEIGHT_MAP_FOV_URDF}" \
+    --base-frame "${HEIGHT_MAP_FOV_BASE_FRAME}" \
+    --camera-frames "${HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV}" \
+    --resolution "${HEIGHT_MAP_FOV_RESOLUTION}" \
+    --x-length "${HEIGHT_MAP_FOV_X_LENGTH}" \
+    --y-length "${HEIGHT_MAP_FOV_Y_LENGTH}" \
+    --reference-z "${HEIGHT_MAP_FOV_REFERENCE_Z}" \
+    --camera-type "${HEIGHT_MAP_FOV_CAMERA_TYPE}" \
+    --depth-profile "${HEIGHT_MAP_FOV_DEPTH_PROFILE}" \
+    --output "${HEIGHT_MAP_FOV_MASK_FILE}"
+fi
+
 start() {
   local label="$1"
   shift
@@ -583,27 +725,22 @@ if [[ "${MODE}" == "sim" ]]; then
   )
 fi
 if [[ -n "${MAPPING_OUTPUT}" ]]; then
-  MAPPING_OUTPUT="$(realpath -m -- "${MAPPING_OUTPUT}")"
-  mkdir -p -- "$(dirname -- "${MAPPING_OUTPUT}")"
-  if [[ -e "${MAPPING_OUTPUT}" ]]; then
-    MAPPING_TIMESTAMP="${MAPPING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
-    MAPPING_BACKUP="${MAPPING_OUTPUT}.bak.${MAPPING_TIMESTAMP}"
-    mv -- "${MAPPING_OUTPUT}" "${MAPPING_BACKUP}"
-    echo "autonomy-light: previous map moved to ${MAPPING_BACKUP}"
-  fi
-  echo "autonomy-light: full-SLAM map will be saved to ${MAPPING_OUTPUT} on shutdown"
   LIO_ARGS+=(
     -p lio.map.save_map:=true
-    -p "lio.map.save_map_dir:=$(dirname -- "${MAPPING_OUTPUT}")"
-    -p "lio.map.map_name:=$(basename -- "${MAPPING_OUTPUT}")"
+    -p "lio.map.save_map_dir:=${MAPPING_OUTPUT}"
+    -p "lio.map.map_name:=localization.pcd"
+  )
+  NAV2_LAUNCH_ARGS+=(
+    "occupancy_save:=true"
+    "occupancy_save_directory:=${MAPPING_OUTPUT}"
+    "occupancy_save_name:=map"
   )
 fi
 if [[ -n "${MAP_FILE}" ]]; then
-  MAP_FILE="$(realpath -- "${MAP_FILE}")"
   LIO_ARGS+=(
     -p lio.slam.enable:=false
-    -p "lio.map.save_map_dir:=$(dirname -- "${MAP_FILE}")"
-    -p "lio.map.map_name:=$(basename -- "${MAP_FILE}")"
+    -p "lio.map.save_map_dir:=${MAP_FILE}"
+    -p "lio.map.map_name:=localization.pcd"
   )
 fi
 
@@ -715,6 +852,13 @@ fi
 
 ELEVATION_ARGS=(--ros-args --params-file "${ELEVATION_CONFIG}")
 [[ "${MODE}" == "sim" ]] && ELEVATION_ARGS+=(-p use_sim_time:=true)
+MAPPER_ARGS=("${ELEVATION_ARGS[@]}")
+if [[ -n "${HEIGHT_MAP_FOV_MASK_FILE}" ]]; then
+  MAPPER_ARGS+=(
+    -p "fov.mask_file:=${HEIGHT_MAP_FOV_MASK_FILE}"
+    -p "fov.outside_value:=${HEIGHT_MAP_FOV_OUTSIDE_VALUE}"
+  )
+fi
 start "gravity-frame broadcaster" ros2 run autonomy_light gravity_frame_broadcaster "${ELEVATION_ARGS[@]}"
 GRAVITY_PID="${LAST_PID}"
 declare -a CAMERA_MAPPER_PIDS=()
@@ -735,9 +879,24 @@ for camera_index in "${!CAMERA_SOURCES[@]}"; do
 done
 start "camera observation merge" ros2 run autonomy_light observation_merge "${ELEVATION_ARGS[@]}"
 MERGE_PID="${LAST_PID}"
-start "elevation mapper" ros2 run autonomy_light precise_elevation_mapping "${ELEVATION_ARGS[@]}"
+start "elevation mapper" ros2 run autonomy_light precise_elevation_mapping "${MAPPER_ARGS[@]}"
 MAPPER_PID="${LAST_PID}"
-start "height-map bridge" ros2 run autonomy_light height_map_bridge "${ELEVATION_ARGS[@]}"
+HEIGHT_MAP_BRIDGE_ARGS=("${ELEVATION_ARGS[@]}")
+if [[ -n "${HEIGHT_MAP_FOV_MASK_FILE}" ]]; then
+  HEIGHT_MAP_BRIDGE_ARGS+=(
+    -p "fov.mask_file:=${HEIGHT_MAP_FOV_MASK_FILE}"
+    -p "fov.outside_value:=${HEIGHT_MAP_FOV_OUTSIDE_VALUE}"
+  )
+fi
+HEIGHT_VISUALIZATION_TOPIC="/autonomy_light/height_map_visualization"
+if [[ "${ENABLE_HEIGHT_VISUALIZATION}" == "true" ]]; then
+  # This private ROS mirror exists only while the local visualization is
+  # requested. The externally consumed map remains the direct DDS sample.
+  HEIGHT_MAP_BRIDGE_ARGS+=(
+    -p "visualization.topic:=${HEIGHT_VISUALIZATION_TOPIC}"
+  )
+fi
+start "height-map bridge" ros2 run autonomy_light height_map_bridge "${HEIGHT_MAP_BRIDGE_ARGS[@]}"
 BRIDGE_PID="${LAST_PID}"
 
 NAV2_PID=""
@@ -756,7 +915,7 @@ if [[ "${ENABLE_NAV2}" == "true" ]]; then
   USE_SIM_TIME="false"
   [[ "${MODE}" == "sim" ]] && USE_SIM_TIME="true"
   start "Nav2 and autopilot bridge" bash "${ROOT}/scripts/nav2_wait_and_launch.sh" \
-    "${NAV2_CONFIG}" "${USE_SIM_TIME}" /lio/odom 120
+    "${NAV2_CONFIG_ACTIVE}" "${USE_SIM_TIME}" /lio/odom 120 "${NAV2_LAUNCH_ARGS[@]}"
   NAV2_PID="${LAST_PID}"
 fi
 
@@ -765,6 +924,12 @@ if [[ "${ENABLE_STATUS}" == "true" ]]; then
   start_terminal "terminal status monitor (${VIS_RATE} Hz)" \
     /usr/bin/python3 "${STATUS_SCRIPT}" --rate "${VIS_RATE}" --log-dir "${RUNTIME_LOG_DIR}"
   STATUS_PID="${LAST_PID}"
+fi
+
+if [[ "${ENABLE_HEIGHT_VISUALIZATION}" == "true" ]]; then
+  start "height-map 2D visualizer (${ELEVATION_MAPPING_PUBLISH_RATE_HZ} Hz)" \
+    /usr/bin/python3 "${ROOT}/scripts/visualize_height_map.py" \
+    --rate "${ELEVATION_MAPPING_PUBLISH_RATE_HZ}" --topic "${HEIGHT_VISUALIZATION_TOPIC}"
 fi
 
 declare -a CRITICAL_PIDS=("${STATIC_TF_PIDS[@]}" "${GRAVITY_PID}" "${CAMERA_MAPPER_PIDS[@]}" "${MERGE_PID}" "${MAPPER_PID}" "${BRIDGE_PID}")

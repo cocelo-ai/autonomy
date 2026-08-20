@@ -33,6 +33,14 @@ immediately—there is no time-cohort wait or cross-camera drop.  The elevation
 grid processes every merged frame and emits its latest completed grid at 50 Hz.
 The final height map is published only through DDS as `core_dds::HeightMap`
 on DDS domain `1`, topic `height_map`.
+`height_map_bridge.dds.network_interface` pins that direct Cyclone DDS
+participant to a NIC/IP; it is set to `192.168.20.2` for the F16 receiver at
+`192.168.20.1`. `height_map_bridge.dds.peer_address` adds that F16 IP as a
+static Cyclone DDS discovery peer. Both must be changed if that network is
+changed.
+When `--vis-height` is selected, the bridge additionally creates a private,
+local ROS mirror solely for its viewer; it does not alter the DDS payload or
+publish an additional external interface.
 
 All ROS processing runs on the private `internal_ros_domain_id` (default
 `10`) in `config/elevation_mapping.yaml`. `outbound_command_bridge` relays
@@ -99,11 +107,12 @@ Useful options:
 ```bash
 ./launch.sh --check
 ./launch.sh --vis-rate 2.0       # clean SLAM/elevation terminal dashboard
+./launch.sh --vis-height         # 18x8 (144-cell) map at elevation_mapping.publish_rate_hz; +x up, +y right
 ./launch.sh --no-status          # raw node output remains in log/runtime_*/
 ./launch.sh --rviz
 ./launch.sh --no-nav2
-./launch.sh --map maps/example.pcd
-./launch.sh --mapping maps/new_map.pcd
+./launch.sh --map maps/example_map
+./launch.sh --mapping maps/new_map
 ./launch.sh --mapping
 ./launch.sh --lidar-type mid360s --lidar-ip 192.168.1.190 --jetson-ip 192.168.1.50
 ```
@@ -116,3 +125,10 @@ their global/local paths. Inflation appears in the composed costmap displays,
 because Nav2 does not publish an independent inflation-layer topic.
 Global and local `published_footprint` polygons are overlaid in sky blue and
 red respectively, so the footprint remains clear over the costmap gradients.
+
+`--mapping DIRECTORY` writes one map bundle on clean shutdown:
+`map.pgm` and `map.yaml` are the fixed Nav2 global map, while
+`localization.pcd` is retained only because Super-LIO relocation requires a
+3D PCD. Start autonomous navigation with `--map DIRECTORY`; it relocalizes
+against that PCD, plans against the saved PGM, and keeps LiDAR obstacles in
+the rolling local costmap rather than altering the fixed global map.

@@ -93,6 +93,8 @@ install_apt_dependencies() {
     libgoogle-glog-dev \
     libapr1-dev \
     libpcl-dev \
+    python3-numpy \
+    python3-opencv \
     libtbb-dev \
     python3-catkin-pkg-modules \
     "ros-${ROS_DISTRO_NAME}-ament-cmake-auto" \

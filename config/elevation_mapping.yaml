@@ -19,7 +19,7 @@ bringup:
         name: front_d435
         namespace: front_d435
         # Observed by show_realsense_usb_ports.py (D435i, serial 243522073112).
-        usb_port_id: 2-1.3
+        usb_port_id: 2-1.2
         # This name is private to realsense2_camera. Its TF publishing is
         # disabled: elevation uses the static F_camera_link TF plus the fixed
         # source_to_mount_* conversion below, so no driver-specific frames
@@ -154,6 +154,23 @@ elevation_mapping:
     debug.enabled: true
     debug.pointcloud_topic: /autonomy_light/elevation_map/debug_points
 
+# A single static mask is generated from the selected camera's fixed URDF
+# transform before launch. It is injected into both elevation_mapping and
+# height_map_bridge, so FOV-outside cells are exactly 0.0 in GridMap, DDS, and
+# the optional --vis-height ROS mirror.
+height_map_fov:
+  ros__parameters:
+    enabled: true
+    base_frame: base_link
+    camera_frames: [F_camera_link]
+    # Supported: d435, d435i, d455. FOV and depth bounds are selected from
+    # this model; depth_profile is inherited from the selected driver camera.
+    camera_type: d435i
+    # Mirrors generate_height_filter_from_urdf.py / real mapper semantics:
+    # test grid-cell centers on the ground plane measured from base_link.
+    reference_z: -0.48
+    outside_value: 0.0
+
 height_map_bridge:
   ros__parameters:
     input_topic: /autonomy_light/elevation_map
@@ -168,6 +185,12 @@ height_map_bridge:
     dds.domain_id: 1
     dds.topic: height_map
     dds.history_depth: 128
+    # The F16 DDS consumer is on USB Ethernet (192.168.20.1).  Pin Cyclone
+    # DDS to this local NIC instead of letting multi-NIC auto-selection choose
+    # the unrelated 192.168.1.50 Ethernet interface.
+    dds.network_interface: 192.168.20.2
+    # Send Cyclone DDS discovery directly to the F16 as well as multicast.
+    dds.peer_address: 192.168.20.1
     distance.reference_height: 0.48
     distance.min: 0.0
     distance.max: 0.75

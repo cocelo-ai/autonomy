@@ -1,19 +1,55 @@
 #include "autonomy_light/dds_height_map_publisher.hpp"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "HeightMap.h"
 #include <dds/dds.h>
 
 namespace autonomy_light {
+namespace {
+
+std::string escapeXml(const std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const char character : value) {
+    switch (character) {
+    case '&':
+      escaped += "&amp;";
+      break;
+    case '<':
+      escaped += "&lt;";
+      break;
+    case '>':
+      escaped += "&gt;";
+      break;
+    case '\"':
+      escaped += "&quot;";
+      break;
+    case '\'':
+      escaped += "&apos;";
+      break;
+    default:
+      escaped += character;
+      break;
+    }
+  }
+  return escaped;
+}
+
+}  // namespace
 
 DdsHeightMapPublisher::DdsHeightMapPublisher(const std::uint32_t domain_id,
                                              std::string topic_name,
-                                             const std::uint32_t history_depth)
+                                             const std::uint32_t history_depth,
+                                             std::string network_interface,
+                                             std::string peer_address)
     : domain_id_(domain_id),
       topic_name_(std::move(topic_name)),
-      history_depth_(history_depth) {
+      history_depth_(history_depth),
+      network_interface_(std::move(network_interface)),
+      peer_address_(std::move(peer_address)) {
   initialize();
 }
 
@@ -45,6 +81,31 @@ void DdsHeightMapPublisher::initialize() {
   if (topic_name_.empty()) {
     error_ = "DDS height map topic must not be empty";
     return;
+  }
+
+  if (!network_interface_.empty() || !peer_address_.empty()) {
+    std::string configuration{"<CycloneDDS><Domain>"};
+    if (!network_interface_.empty()) {
+      configuration +=
+          "<General><Interfaces><NetworkInterface address=\"" +
+          escapeXml(network_interface_) +
+          "\"/></Interfaces></General>";
+    }
+    if (!peer_address_.empty()) {
+      configuration += "<Discovery><Peers><Peer Address=\"" +
+                       escapeXml(peer_address_) +
+                       "\"/></Peers></Discovery>";
+    }
+    configuration += "</Domain></CycloneDDS>";
+    domain_ = dds_create_domain(static_cast<dds_domainid_t>(domain_id_),
+                                configuration.c_str());
+    if (domain_ < 0) {
+      error_ = "DDS domain creation failed for interface '" +
+               network_interface_ + "' and peer '" + peer_address_ + "': " +
+               std::string(dds_strretcode(-domain_));
+      domain_ = 0;
+      return;
+    }
   }
 
   participant_ = dds_create_participant(static_cast<dds_domainid_t>(domain_id_),
@@ -94,7 +155,10 @@ void DdsHeightMapPublisher::cleanup() {
   if (participant_ > 0) {
     dds_delete(participant_);
   }
-  writer_ = topic_ = participant_ = 0;
+  if (domain_ > 0) {
+    dds_delete(domain_);
+  }
+  writer_ = topic_ = participant_ = domain_ = 0;
 }
 
 }  // namespace autonomy_light

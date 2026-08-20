@@ -1,4 +1,5 @@
 #include "autonomy_light/precise_elevation_mapping.hpp"
+#include "autonomy_light/fov_mask.hpp"
 
 #include <algorithm>
 #include <array>
@@ -451,6 +452,8 @@ struct PreciseElevationMapping::Impl {
     debug_enabled = node.declare_parameter<bool>("debug.enabled", false);
     debug_pointcloud_topic = node.declare_parameter<std::string>(
         "debug.pointcloud_topic", "/autonomy_light/elevation_map/debug_points");
+    fov_mask_file = node.declare_parameter<std::string>("fov.mask_file", "");
+    fov_outside_value = node.declare_parameter<double>("fov.outside_value", 0.0);
 
     if (input_topic.empty() || output_topic.empty() || output_frame.empty() || map_frame.empty() ||
         publish_rate_hz <= 0.0 || grid.resolution <= 0.0 ||
@@ -461,10 +464,13 @@ struct PreciseElevationMapping::Impl {
         edge_mix_height_difference <= 0.0 || smooth_blend < 0.0 || smooth_blend > 1.0 ||
         temporal_tf_timeout_sec < 0.0 || temporal_variance_rate < 0.0 ||
         temporal_mahalanobis_threshold <= 0.0 || temporal_dynamic_reset_delta < 0.0 ||
-        temporal_dynamic_variance_bump < 0.0 ||
+        temporal_dynamic_variance_bump < 0.0 || !std::isfinite(fov_outside_value) ||
         (debug_enabled && debug_pointcloud_topic.empty())) {
       throw std::invalid_argument("precise_elevation_mapping parameters are invalid");
     }
+    fov_mask = loadFovMask(fov_mask_file, grid.width(), grid.height(), grid.resolution,
+                           static_cast<double>(grid.width()) * grid.resolution,
+                           static_cast<double>(grid.height()) * grid.resolution);
   }
 
   void createIo() {
@@ -497,10 +503,11 @@ struct PreciseElevationMapping::Impl {
         std::chrono::milliseconds(500), [this]() { publishHeartbeat(); }, output_callback_group);
     RCLCPP_INFO(node.get_logger(),
                 "Precise elevation map: %s -> %s @ %.1f Hz, %ux%u @ %.3fm, "
-                "%s edge-aware filtering (SLAM-reprojected temporal fusion: %s)",
+                "%s edge-aware filtering (SLAM-reprojected temporal fusion: %s, FOV mask: %s)",
                 input_topic.c_str(), output_topic.c_str(), publish_rate_hz, grid.width(), grid.height(),
                 grid.resolution, temporal_enabled ? "temporal" : "single-frame",
-                temporal_enabled ? "enabled" : "disabled");
+                temporal_enabled ? "enabled" : "disabled",
+                fov_mask.enabled ? fov_mask_file.c_str() : "disabled");
     if (debug_enabled) {
       RCLCPP_INFO(node.get_logger(), "Elevation debug PointCloud2: %s",
                   debug_pointcloud_topic.c_str());
@@ -805,7 +812,7 @@ struct PreciseElevationMapping::Impl {
                                         static_cast<float>(maximum_cell_variance));
     }
 
-    const auto raw_elevation = elevation;
+    auto raw_elevation = elevation;
     if (temporal_enabled && temporal_ready) {
       fuseTemporalObservation(raw_elevation, variance, elevation, variance);
     }
@@ -830,6 +837,22 @@ struct PreciseElevationMapping::Impl {
       commitTemporalState(cloud_stamp, elevation, variance);
     }
 
+    // Preserve temporal state, but never expose terrain outside the
+    // URDF-derived camera FOV. The DDS bridge repeats this at its final output.
+    std::vector<float> fov_mask_layer(cells, 1.0F);
+    if (fov_mask.enabled) {
+      for (std::size_t cell_index = 0; cell_index < cells; ++cell_index) {
+        if (fov_mask.inside(cell_index)) {
+          continue;
+        }
+        elevation[cell_index] = static_cast<float>(fov_outside_value);
+        raw_elevation[cell_index] = static_cast<float>(fov_outside_value);
+        variance[cell_index] = 0.0F;
+        filter_filled[cell_index] = 0U;
+        fov_mask_layer[cell_index] = 0.0F;
+      }
+    }
+
     std::vector<float> lower(cells, kNan);
     std::vector<float> upper(cells, kNan);
     std::vector<float> uncertainty(cells, kNan);
@@ -839,7 +862,11 @@ struct PreciseElevationMapping::Impl {
     std::size_t raw_observed = 0;
     std::size_t filled = 0;
     for (std::size_t cell_index = 0; cell_index < cells; ++cell_index) {
-      if (finite(raw_elevation[cell_index])) {
+      if (fov_mask.enabled && !fov_mask.inside(cell_index)) {
+        // Debug layers must not retain pre-mask terrain samples either.
+        current_observation[cell_index] = 0.0F;
+        filter_filled_layer[cell_index] = 0.0F;
+      } else if (finite(raw_elevation[cell_index])) {
         current_observation[cell_index] = 1.0F;
         ++raw_observed;
       }
@@ -871,6 +898,9 @@ struct PreciseElevationMapping::Impl {
     message.info.pose.position.z = 0.0;
     message.info.pose.orientation.w = 1.0;
     message.layers = {"elevation", "lower_bound", "upper_bound", "uncertainty_range"};
+    if (fov_mask.enabled) {
+      message.layers.push_back("fov_mask");
+    }
     if (debug_enabled) {
       // raw_elevation and current_observation contain only this cloud's
       // measurements. The final elevation may additionally contain a
@@ -884,6 +914,9 @@ struct PreciseElevationMapping::Impl {
     message.data.push_back(layer(lower, width, height));
     message.data.push_back(layer(upper, width, height));
     message.data.push_back(layer(uncertainty, width, height));
+    if (fov_mask.enabled) {
+      message.data.push_back(layer(fov_mask_layer, width, height));
+    }
     if (debug_enabled) {
       message.data.push_back(layer(raw_elevation, width, height));
       message.data.push_back(layer(current_observation, width, height));
@@ -946,6 +979,9 @@ struct PreciseElevationMapping::Impl {
   double temporal_dynamic_variance_bump{0.0225};
   bool debug_enabled{false};
   std::string debug_pointcloud_topic;
+  std::string fov_mask_file;
+  double fov_outside_value{0.0};
+  FovMask fov_mask;
   std::atomic<std::uint64_t> frame_count{0};
   tf2_ros::Buffer tf_buffer;
   tf2_ros::TransformListener tf_listener;

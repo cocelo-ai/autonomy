@@ -25,6 +25,7 @@ READY_MARKER="${LOCAL_ROS_PREFIX}/.autonomy_light_nav2_ready"
 required_files=(
   "lib/nav2_bt_navigator/bt_navigator"
   "lib/nav2_controller/controller_server"
+  "lib/nav2_map_server/map_server"
   "lib/nav2_planner/planner_server"
   "lib/nav2_velocity_smoother/velocity_smoother"
   "lib/libnav2_regulated_pure_pursuit_controller.so"
@@ -55,6 +56,7 @@ roots=(
   "ros-${ROS_DISTRO_NAME}-nav2-bt-navigator"
   "ros-${ROS_DISTRO_NAME}-nav2-controller"
   "ros-${ROS_DISTRO_NAME}-nav2-lifecycle-manager"
+  "ros-${ROS_DISTRO_NAME}-nav2-map-server"
   "ros-${ROS_DISTRO_NAME}-nav2-navfn-planner"
   "ros-${ROS_DISTRO_NAME}-nav2-planner"
   "ros-${ROS_DISTRO_NAME}-nav2-regulated-pure-pursuit-controller"
@@ -113,4 +115,3 @@ done
 
 touch "${READY_MARKER}"
 echo "Nav2 runtime installed locally at ${LOCAL_ROS_PREFIX}."
-

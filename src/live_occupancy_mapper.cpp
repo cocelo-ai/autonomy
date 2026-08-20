@@ -3,10 +3,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -89,9 +93,15 @@ class LiveOccupancyMapper : public rclcpp::Node {
     min_score_ = declare_parameter<int>("min_score", -10);
     max_score_ = declare_parameter<int>("max_score", 20);
     max_cells_ = declare_parameter<int>("max_cells", 4000000);
+    save_map_ = declare_parameter<bool>("save_map", false);
+    save_map_directory_ = declare_parameter<std::string>("save_map_directory", "");
+    save_map_name_ = declare_parameter<std::string>("save_map_name", "map");
 
     if (resolution_ <= 0.0 || publish_frequency_ <= 0.0 || max_range_ <= min_range_) {
       throw std::runtime_error("Invalid live occupancy mapper geometry/rate parameters");
+    }
+    if (save_map_ && (save_map_directory_.empty() || save_map_name_.empty())) {
+      throw std::runtime_error("Occupancy-map save directory and name are required when save_map is enabled");
     }
 
     auto map_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
@@ -112,6 +122,12 @@ class LiveOccupancyMapper : public rclcpp::Node {
                 "Dynamic occupancy mapper: %s -> %s, frame=%s, resolution=%.3fm, max_range=%.1fm",
                 input_topic_.c_str(), map_topic_.c_str(), map_frame_.c_str(), resolution_,
                 max_range_);
+  }
+
+  ~LiveOccupancyMapper() override {
+    if (save_map_) {
+      saveMap();
+    }
   }
 
  private:
@@ -469,68 +485,122 @@ class LiveOccupancyMapper : public rclcpp::Node {
     last_stamp_ = cloud->header.stamp;
   }
 
-  void publishMap() {
+  std::optional<nav_msgs::msg::OccupancyGrid> snapshotMap() {
     nav_msgs::msg::OccupancyGrid map;
-    {
-      std::lock_guard<std::mutex> lock(map_mutex_);
-      if (cells_.empty()) {
-        return;
-      }
-
-      const auto padding_cells = static_cast<std::int32_t>(std::ceil(padding_ / resolution_));
-      const auto chunk_cells = static_cast<std::int32_t>(
-          std::max(1.0, std::ceil(expansion_chunk_size_ / resolution_)));
-      const auto raw_min_x = min_x_ - padding_cells;
-      const auto raw_min_y = min_y_ - padding_cells;
-      const auto raw_max_x = max_x_ + padding_cells;
-      const auto raw_max_y = max_y_ + padding_cells;
-      // Snap dynamic bounds outward so Nav2's StaticLayer is not resized on
-      // every single new ray. This preserves expansion while keeping ongoing
-      // planning stable.
-      const auto out_min_x = static_cast<std::int32_t>(
-          std::floor(static_cast<double>(raw_min_x) / chunk_cells) * chunk_cells);
-      const auto out_min_y = static_cast<std::int32_t>(
-          std::floor(static_cast<double>(raw_min_y) / chunk_cells) * chunk_cells);
-      const auto out_max_x = static_cast<std::int32_t>(
-          std::ceil(static_cast<double>(raw_max_x + 1) / chunk_cells) * chunk_cells - 1);
-      const auto out_max_y = static_cast<std::int32_t>(
-          std::ceil(static_cast<double>(raw_max_y + 1) / chunk_cells) * chunk_cells - 1);
-      const auto width = static_cast<std::uint64_t>(out_max_x - out_min_x + 1);
-      const auto height = static_cast<std::uint64_t>(out_max_y - out_min_y + 1);
-      if (width == 0U || height == 0U || width * height > static_cast<std::uint64_t>(max_cells_)) {
-        RCLCPP_ERROR_THROTTLE(
-            get_logger(), *get_clock(), 5000,
-            "Dynamic map bounds are invalid or exceed max_cells (%lux%lu > %d); not publishing",
-            width, height, max_cells_);
-        return;
-      }
-
-      map.header.stamp = last_stamp_;
-      map.header.frame_id = map_frame_;
-      map.info.map_load_time = first_map_stamp_.nanoseconds() == 0 ? last_stamp_ : first_map_stamp_;
-      if (first_map_stamp_.nanoseconds() == 0) {
-        first_map_stamp_ = last_stamp_;
-        map.info.map_load_time = first_map_stamp_;
-      }
-      map.info.resolution = static_cast<float>(resolution_);
-      map.info.width = static_cast<std::uint32_t>(width);
-      map.info.height = static_cast<std::uint32_t>(height);
-      map.info.origin.position.x = static_cast<double>(out_min_x) * resolution_;
-      map.info.origin.position.y = static_cast<double>(out_min_y) * resolution_;
-      map.info.origin.orientation.w = 1.0;
-      map.data.assign(width * height, -1);
-
-      for (const auto &[key, score] : cells_) {
-        const auto [x, y] = decodeCell(key);
-        const auto column = static_cast<std::uint64_t>(x - out_min_x);
-        const auto row = static_cast<std::uint64_t>(y - out_min_y);
-        if (column >= width || row >= height) {
-          continue;
-        }
-        map.data[row * width + column] = score >= occupied_threshold_ ? 100 : 0;
-      }
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    if (cells_.empty()) {
+      return std::nullopt;
     }
-    map_publisher_->publish(map);
+
+    const auto padding_cells = static_cast<std::int32_t>(std::ceil(padding_ / resolution_));
+    const auto chunk_cells = static_cast<std::int32_t>(
+        std::max(1.0, std::ceil(expansion_chunk_size_ / resolution_)));
+    const auto raw_min_x = min_x_ - padding_cells;
+    const auto raw_min_y = min_y_ - padding_cells;
+    const auto raw_max_x = max_x_ + padding_cells;
+    const auto raw_max_y = max_y_ + padding_cells;
+    // Snap dynamic bounds outward so Nav2's StaticLayer is not resized on
+    // every single new ray. This preserves expansion while keeping ongoing
+    // planning stable.
+    const auto out_min_x = static_cast<std::int32_t>(
+        std::floor(static_cast<double>(raw_min_x) / chunk_cells) * chunk_cells);
+    const auto out_min_y = static_cast<std::int32_t>(
+        std::floor(static_cast<double>(raw_min_y) / chunk_cells) * chunk_cells);
+    const auto out_max_x = static_cast<std::int32_t>(
+        std::ceil(static_cast<double>(raw_max_x + 1) / chunk_cells) * chunk_cells - 1);
+    const auto out_max_y = static_cast<std::int32_t>(
+        std::ceil(static_cast<double>(raw_max_y + 1) / chunk_cells) * chunk_cells - 1);
+    const auto width = static_cast<std::uint64_t>(out_max_x - out_min_x + 1);
+    const auto height = static_cast<std::uint64_t>(out_max_y - out_min_y + 1);
+    if (width == 0U || height == 0U || width * height > static_cast<std::uint64_t>(max_cells_)) {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "Dynamic map bounds are invalid or exceed max_cells (%lux%lu > %d); not publishing",
+          width, height, max_cells_);
+      return std::nullopt;
+    }
+
+    map.header.stamp = last_stamp_;
+    map.header.frame_id = map_frame_;
+    map.info.map_load_time = first_map_stamp_.nanoseconds() == 0 ? last_stamp_ : first_map_stamp_;
+    if (first_map_stamp_.nanoseconds() == 0) {
+      first_map_stamp_ = last_stamp_;
+      map.info.map_load_time = first_map_stamp_;
+    }
+    map.info.resolution = static_cast<float>(resolution_);
+    map.info.width = static_cast<std::uint32_t>(width);
+    map.info.height = static_cast<std::uint32_t>(height);
+    map.info.origin.position.x = static_cast<double>(out_min_x) * resolution_;
+    map.info.origin.position.y = static_cast<double>(out_min_y) * resolution_;
+    map.info.origin.orientation.w = 1.0;
+    map.data.assign(width * height, -1);
+
+    for (const auto &[key, score] : cells_) {
+      const auto [x, y] = decodeCell(key);
+      const auto column = static_cast<std::uint64_t>(x - out_min_x);
+      const auto row = static_cast<std::uint64_t>(y - out_min_y);
+      if (column >= width || row >= height) {
+        continue;
+      }
+      map.data[row * width + column] = score >= occupied_threshold_ ? 100 : 0;
+    }
+    return map;
+  }
+
+  void publishMap() {
+    const auto map = snapshotMap();
+    if (map) {
+      map_publisher_->publish(*map);
+    }
+  }
+
+  void saveMap() {
+    const auto map = snapshotMap();
+    if (!map) {
+      RCLCPP_WARN(get_logger(), "No occupancy data was received; not saving a navigation map");
+      return;
+    }
+    const std::filesystem::path directory(save_map_directory_);
+    const auto pgm_path = directory / (save_map_name_ + ".pgm");
+    const auto yaml_path = directory / (save_map_name_ + ".yaml");
+    try {
+      std::filesystem::create_directories(directory);
+      std::ofstream pgm(pgm_path, std::ios::binary | std::ios::trunc);
+      if (!pgm) {
+        throw std::runtime_error("cannot open PGM file");
+      }
+      pgm << "P5\n# autonomy_light occupancy map\n" << map->info.width << " "
+          << map->info.height << "\n255\n";
+      for (std::int64_t row = static_cast<std::int64_t>(map->info.height) - 1; row >= 0; --row) {
+        for (std::uint32_t column = 0; column < map->info.width; ++column) {
+          const auto cell = map->data[static_cast<std::size_t>(row) * map->info.width + column];
+          const unsigned char pixel = cell < 0 ? 205U : (cell >= 65 ? 0U : 254U);
+          pgm.write(reinterpret_cast<const char *>(&pixel), 1);
+        }
+      }
+      if (!pgm) {
+        throw std::runtime_error("cannot write PGM data");
+      }
+      std::ofstream yaml(yaml_path, std::ios::trunc);
+      if (!yaml) {
+        throw std::runtime_error("cannot open YAML file");
+      }
+      yaml << "image: " << pgm_path.filename().string() << "\n"
+           << "mode: trinary\n"
+           << "resolution: " << std::setprecision(10) << map->info.resolution << "\n"
+           << "origin: [" << map->info.origin.position.x << ", "
+           << map->info.origin.position.y << ", 0.0]\n"
+           << "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n";
+      if (!yaml) {
+        throw std::runtime_error("cannot write YAML metadata");
+      }
+    } catch (const std::exception &error) {
+      RCLCPP_ERROR(get_logger(), "Failed to save navigation map in '%s': %s",
+                   directory.c_str(), error.what());
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "Saved navigation map: %s and %s", pgm_path.c_str(),
+                yaml_path.c_str());
   }
 
   std::string input_topic_;
@@ -557,6 +627,9 @@ class LiveOccupancyMapper : public rclcpp::Node {
   int min_score_{-10};
   int max_score_{20};
   int max_cells_{4000000};
+  bool save_map_{false};
+  std::string save_map_directory_;
+  std::string save_map_name_{"map"};
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;

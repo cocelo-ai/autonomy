@@ -1,254 +1,693 @@
 live_occupancy_mapper:
   ros__parameters:
+
     input_topic: /lio/cloud_world
+    # LIO에서 출력하는 월드 좌표계 기준 포인트클라우드.
+    # Occupancy map 생성의 기본 입력.
+
     map_topic: /map
+    # 생성된 2D occupancy grid map publish topic.
+
     sensor_cloud_topic: /lio/cloud_sensor
+    # lidar_link 기준 원본 포인트클라우드.
+    # Nav2 clearing(ray tracing)에 사용.
+
     obstacle_cloud_topic: /lio/cloud_sensor_obstacles
+    # RANSAC ground plane 기준 높이 필터를 통과한 장애물 포인트만 출력.
+
     map_frame: map
+    # Occupancy grid 기준 frame.
+
     sensor_frame: lidar_link
+    # LiDAR 센서 frame.
+
     resolution: 0.10
+    # Global occupancy map 해상도.
+    # 0.10 = 10 cm/cell.
+
     publish_frequency: 2.0
-    # Heights are measured above the per-scan RANSAC ground plane, not from
-    # the pitched lidar origin. This keeps floor returns out of obstacle cells.
-    min_obstacle_height: -0.4
-    max_obstacle_height: 1.20
-    ground_distance_threshold: 0.055
+    # /map publish 주파수 [Hz].
+
+    # launch.sh --mapping DIRECTORY가 이 값을 실행 시점에 켜면, 종료 시
+    # DIRECTORY/map.pgm와 DIRECTORY/map.yaml을 함께 저장한다.
+    save_map: false
+    save_map_directory: ""
+    save_map_name: map
+
+    min_obstacle_height: 0.30
+    # ★ 가장 중요.
+    # RANSAC으로 추정한 지면으로부터 30 cm 이상인 점만 장애물로 판단.
+    #
+    # lidar_link 기준 z=0.30이 아님.
+    # 지면 plane에 대한 상대 높이 0.30 m임.
+    #
+    # 따라서 LiDAR가 지면에서 0.6 m 높이에 있어도
+    # 이 값은 그대로 0.30 사용.
+
+    max_obstacle_height: 1.50
+    # RANSAC ground plane 기준으로 지면에서 1.5 m까지 장애물로 사용.
+    # 그보다 높은 천장/상부 구조물은 2D navigation에서는 제외.
+
+    ground_distance_threshold: 0.04
+    # 추정된 ground plane에서 ±4 cm 정도 범위를 지면으로 간주.
+    # 너무 크게 하면 낮은 구조물까지 ground로 제거될 가능성이 있음.
+
     max_ground_tilt_deg: 35.0
+    # ground plane으로 인정할 최대 경사각.
+    # 사륜사족이 경사면을 주행할 수 있기 때문에 어느 정도 크게 허용.
+
     min_ground_points: 100
-    ground_ransac_iterations: 100
+    # ground plane으로 인정하기 위해 필요한 최소 포인트 수.
+
+    ground_ransac_iterations: 120
+    # RANSAC ground plane 추정 반복 횟수.
+    # 높을수록 안정적이지만 계산량 증가.
+
     min_range: 0.50
+    # LiDAR 기준 0.5 m 이내 포인트는 mapper에서 사용하지 않음.
+    # 자기 차체/다리 등이 잡히는 것을 완화.
+
     max_range: 12.0
+    # Mapping에 사용할 최대 센서 거리 [m].
+
     padding: 2.0
-    # Grow in coarse blocks so Nav2 StaticLayer does not resize every scan.
+    # 현재 관측 범위 외곽에 추가로 확보할 map margin [m].
+
     expansion_chunk_size: 5.0
+    # map 확장 시 한 번에 5 m 단위로 증가.
+    # Nav2 StaticLayer가 scan마다 resize되는 것을 방지.
+
     occupied_increment: 3
+    # 장애물이 관측될 때 occupancy score 증가량.
+
     free_decrement: 1
-    occupied_threshold: 2
+    # free space가 관측될 때 occupancy score 감소량.
+
+    occupied_threshold: 3
+    # score가 3 이상이면 occupied cell로 판단.
+
     min_score: -10
+    # occupancy evidence score 최소값.
+
     max_score: 20
+    # occupancy evidence score 최대값.
+
     max_cells: 4000000
+    # 전체 occupancy grid 최대 cell 수.
+    # 메모리 폭증 방지.
+
 
 command_user_bridge:
   ros__parameters:
+
     input_topic: /nav2/cmd_vel
-    # The domain bridge is the only process that republishes this command on
-    # the external robot-control domain.
+    # Nav2 controller가 출력하는 velocity command.
+
     output_topic: /autonomy_light/command_out
+    # 실제 robot control domain으로 전달하는 command topic.
+
     publish_rate_hz: 20.0
+    # command publish 주파수.
+
     command_timeout_sec: 0.5
+    # 0.5초 동안 command가 들어오지 않으면 timeout.
+
     custom_drive_id: 2
+    # 로봇 제어 시스템에서 사용하는 drive command ID.
+
 
 controller_server:
   ros__parameters:
+
     controller_frequency: 20.0
+    # Local controller 실행 주파수 [Hz].
+
     costmap_update_timeout: 0.30
+    # 최신 costmap을 기다리는 최대 시간 [s].
+
     min_x_velocity_threshold: 0.001
+    # 이 값보다 작은 전후 속도는 0으로 간주.
+
     min_y_velocity_threshold: 0.001
+    # lateral velocity threshold.
+    # 현재 로봇은 lateral 이동을 사용하지 않으므로 실질적인 영향은 작음.
+
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.5                                                                                                                                                                    
+    # 이보다 작은 yaw velocity는 0으로 간주.
+
+    failure_tolerance: 0.5
+    # Controller가 일시적으로 command 계산에 실패해도 허용할 시간.
+
     odom_topic: /lio/odom
+    # 현재 로봇 odometry / velocity 정보.
+
     progress_checker_plugins: ["progress_checker"]
+    # 로봇이 실제로 이동하고 있는지 판단하는 plugin.
+
     goal_checker_plugins: ["goal_checker"]
+    # 목표 도착 여부 판단 plugin.
+
     controller_plugins: ["FollowPath"]
+    # Path following controller 목록.
+
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.20
-      movement_time_allowance: 12.0
+
+      required_movement_radius: 0.25
+      # 지정 시간 동안 최소 25 cm 이동해야 progress로 판단.
+
+      movement_time_allowance: 15.0
+      # 15초 동안 25 cm를 못 움직이면 stuck로 판단.
+
     goal_checker:
       stateful: true
+      # Goal tolerance 안에 들어온 상태를 유지하면서 최종 자세 확인.
+
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.18
-      yaw_goal_tolerance: 0.18
+
+      xy_goal_tolerance: 0.20
+      # 목표 위치에서 20 cm 이내면 도착한 것으로 판단.
+
+      yaw_goal_tolerance: 0.20
+      # 목표 yaw에서 ±0.20 rad, 약 ±11.5도 허용.
+
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.45
-      lookahead_dist: 0.60
-      min_lookahead_dist: 0.30
-      max_lookahead_dist: 0.90
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.70
-      transform_tolerance: 0.30
+
+      desired_linear_vel: 0.40
+      # 정상 path following 목표 선속도 [m/s].
+
+      lookahead_dist: 0.80
+      # Pure Pursuit이 기본적으로 바라보는 경로 앞 거리.
+      # 길이 1 m 정도 로봇에는 기존 0.6보다 조금 길게 사용.
+
+      min_lookahead_dist: 0.45
+      # 저속에서도 lookahead가 45 cm보다 작아지지 않음.
+
+      max_lookahead_dist: 1.20
+      # 고속에서 최대 lookahead 1.2 m.
+
+      lookahead_time: 1.8
+      # 속도 기반 lookahead 계산 시 사용하는 시간 계수.
+
       use_velocity_scaled_lookahead_dist: true
+      # 속도가 빠르면 lookahead를 길게 함.
+
+      rotate_to_heading_angular_vel: 0.50
+      # Path 방향과 로봇 heading 차이가 클 때 제자리 회전 속도 [rad/s].
+
+      rotate_to_heading_min_angle: 0.55
+      # 약 31.5도 이상 방향 차이가 나면 rotate-to-heading 사용.
+
+      transform_tolerance: 0.30
+      # TF timestamp 허용 오차 [s].
+
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.70
+      # Goal 근처 감속 시 최소 선속도.
+
+      approach_velocity_scaling_dist: 0.80
+      # Goal 약 0.8 m 전부터 감속 시작.
+
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.2
+      # RPP가 미래 trajectory의 collision을 검사.
+
+      max_allowed_time_to_collision_up_to_carrot: 1.5
+      # 최대 1.5초 앞까지 collision prediction.
+
       use_regulated_linear_velocity_scaling: true
+      # 곡률이 큰 경로에서 자동으로 속도를 감소.
+
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.70
+      # 높은 cost 영역에 가까워지면 속도를 감소.
+
+      regulated_linear_scaling_min_radius: 1.00
+      # 회전반경이 1 m보다 작아지면 속도 감소를 강하게 적용.
+
       regulated_linear_scaling_min_speed: 0.08
+      # Regulation에 의해 감속되더라도 최소 속도.
+
       use_rotate_to_heading: true
+      # Path heading과 현재 heading 차이가 크면 우선 회전.
+
       allow_reversing: false
-      rotate_to_heading_min_angle: 0.50
-      # The learned locomotion policy has a small-command dead zone. Do not
-      # let RPP clamp forever against zero measured yaw rate during rotate-in-place.
-      max_angular_accel: 20.0
+      # RPP의 reverse path following 비활성화.
+
+      max_angular_accel: 8.0
+      # RPP 내부 최대 angular acceleration [rad/s²].
+
       max_robot_pose_search_dist: 10.0
+      # 현재 robot pose에 대응하는 path point를 찾는 최대 탐색 거리.
+
       use_interpolation: true
+      # Path point 사이를 보간해서 부드럽게 추종.
+
 
 local_costmap:
   local_costmap:
     ros__parameters:
+
       update_frequency: 10.0
+      # Local costmap 계산 주파수.
+
       publish_frequency: 5.0
+      # Local costmap publish 주파수.
+
       global_frame: odom
+      # Local costmap 기준 frame.
+      # 연속성이 중요한 local navigation에서는 odom 사용.
+
       robot_base_frame: base_link
+      # 로봇 기준 frame.
+
       rolling_window: true
+      # 로봇 중심으로 costmap window 이동.
+
       width: 8
+      # Local costmap x/y 전체 크기 8 m.
+
       height: 8
-      resolution: 0.10
-      robot_radius: 0.15
-      footprint_padding: 0.03
+
+      resolution: 0.05
+      # Local costmap은 5 cm/cell.
+      #
+      # 로봇 폭이 약 45 cm이므로
+      # 10 cm resolution보다 collision boundary 표현이 훨씬 정확함.
+
+      footprint: "[[0.50, 0.225], [0.50, -0.225], [-0.50, -0.225], [-0.50, 0.225]]"
+      # ★ 실제 로봇 footprint.
+      #
+      # 전후 길이 = 1.0 m
+      # 좌우 폭   = 0.45 m
+      #
+      # base_link가 로봇 정중앙이라고 가정:
+      # 전방 +0.50 m
+      # 후방 -0.50 m
+      # 좌측 +0.225 m
+      # 우측 -0.225 m
+
+      footprint_padding: 0.05
+      # 실제 차체 바깥으로 추가 안전거리 5 cm.
+      #
+      # collision 관점에서 약
+      # 1.10 m × 0.55 m 영역으로 사용.
+
       transform_tolerance: 0.30
+
       always_send_full_costmap: true
+
       plugins: ["obstacle_layer", "inflation_layer"]
+      # Local에서는 실시간 obstacle + inflation만 사용.
+
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
+
         enabled: true
+
         footprint_clearing_enabled: true
-        max_obstacle_height: 5.0
+        # 현재 footprint 내부 obstacle cell 제거.
+        # 로봇 자기 몸체가 obstacle로 남는 현상 방지.
+
+        max_obstacle_height: 2.0
+        # Layer 전체에서 사용할 z 상한.
+        # 실제 obstacle 판정 높이는 mapper에서 이미 수행.
+
         combination_method: 1
+        # 기존 costmap과 obstacle cost를 MAX 방식으로 결합.
+
         observation_sources: lio_marking lio_clearing
+
         lio_marking:
           topic: /lio/cloud_sensor_obstacles
+          # ★ mapper가 이미 지면 기준 0.30 m 이상으로 필터한 obstacle cloud.
+
           data_type: "PointCloud2"
+
           marking: true
+          # 해당 point 위치를 obstacle로 표시.
+
           clearing: false
-          min_obstacle_height: -5.0
-          max_obstacle_height: 5.0
+          # obstacle-only cloud는 clearing에는 사용하지 않음.
+
+          min_obstacle_height: -1.0
+          # ★ 매우 중요.
+          #
+          # /lio/cloud_sensor_obstacles는 lidar_link 기준 좌표.
+          #
+          # LiDAR가 지면으로부터 약 0.6 m라면:
+          #
+          # lidar_link       z =  0.0
+          # 30 cm 장애물     z ≈ -0.3
+          # ground           z ≈ -0.6
+          #
+          # 따라서 여기에서 0.30을 사용하면
+          # "지면에서 30 cm"가 아니라
+          # "LiDAR보다 30 cm 위"만 남게 됨.
+          #
+          # mapper가 이미 높이 필터링했으므로
+          # Nav2에서는 충분히 넓게 -1.0으로 허용.
+
+          max_obstacle_height: 2.0
+          # lidar_link보다 위쪽 포인트도 충분히 허용.
+          # 실제 사용할 obstacle은 이미 mapper에서 결정됨.
+
           obstacle_min_range: 0.10
+          # LiDAR로부터 10 cm 이내 marking point 무시.
+
           obstacle_max_range: 7.0
+          # Local collision avoidance에는 7 m 이내 obstacle 사용.
+
           expected_update_rate: 0.0
-          observation_persistence: 0.25
+          # Sensor rate timeout 검사 사용 안 함.
+
+          observation_persistence: 0.20
+          # Observation을 0.2초 유지.
+          # 오래 유지하면 움직인 장애물이 ghost obstacle로 남을 수 있음.
+
         lio_clearing:
           topic: /lio/cloud_sensor
+          # lidar_link 기준 원본 cloud.
+          # Ray tracing clearing 용도.
+
           data_type: "PointCloud2"
+
           marking: false
+
           clearing: true
-          min_obstacle_height: -5.0
-          max_obstacle_height: 5.0
+          # Sensor와 point 사이를 free space로 clearing.
+
+          min_obstacle_height: -1.0
+          # ★ LiDAR가 지면 0.6 m 위에 있으므로
+          # ground z≈-0.6까지 clearing에 포함하도록 -1.0 사용.
+
+          max_obstacle_height: 2.0
+          # LiDAR 위쪽도 clearing에 충분히 포함.
+
           raytrace_min_range: 0.10
+          # 10 cm 이내 ray tracing 무시.
+
           raytrace_max_range: 8.0
+          # 최대 8 m까지 clearing.
+
           expected_update_rate: 0.0
-          observation_persistence: 0.25
+
+          observation_persistence: 0.20
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.1
-        cost_scaling_factor: 3.0
+
+        inflation_radius: 0.25
+        # 장애물 주변 25 cm 범위에 추가 cost 생성.
+        #
+        # 실제 로봇 크기는 이미 footprint가 담당하므로
+        # inflation_radius를 robot radius처럼 크게 줄 필요 없음.
+
+        cost_scaling_factor: 5.0
+        # 장애물에서 멀어질수록 cost가 감소하는 정도.
+        #
+        # 값 ↑ → cost가 더 빠르게 떨어짐.
+        # 값 ↓ → 장애물에서 멀리까지 높은 cost가 유지됨.
+        #
+        # 5.0은 좁은 공간을 어느 정도 활용하면서도
+        # 장애물에 너무 붙지 않도록 하는 시작값.
+
 
 planner_server:
   ros__parameters:
-    expected_planneri_frequency: 5.0
+
+    expected_planner_frequency: 5.0
+    # Global planner 기대 실행 주파수.
+    # 기존 expected_planneri_frequency 오타 수정.
+
     planner_plugins: ["GridBased"]
+
     GridBased:
-      # Humble exports Navfn with the pluginlib slash identifier.
       plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.30
+
+      tolerance: 0.20
+      # Goal 정확한 cell에 도달할 수 없을 경우
+      # 20 cm 이내의 도달 가능한 위치 허용.
+
       use_astar: true
+      # A* 기반 path planning 사용.
+
       allow_unknown: true
+      # Unknown 영역을 global path 후보로 허용.
+
 
 global_costmap:
   global_costmap:
     ros__parameters:
+
       update_frequency: 5.0
+      # Global costmap 업데이트 주파수.
+
       publish_frequency: 2.0
+      # RViz 등으로 publish하는 주파수.
+
       global_frame: map
+      # Global navigation 기준 frame.
+
       robot_base_frame: base_link
+
       rolling_window: false
+      # 전체 global map 유지.
+
       resolution: 0.10
-      robot_radius: 0.15
-      footprint_padding: 0.03
+      # 10 cm/cell.
+      # 넓은 global map이므로 local보다 낮은 해상도 사용.
+
+      footprint: "[[0.50, 0.225], [0.50, -0.225], [-0.50, -0.225], [-0.50, 0.225]]"
+      # Local costmap과 동일한 실제 footprint.
+      # 1.0 m × 0.45 m.
+
+      footprint_padding: 0.05
+      # footprint 외부 5 cm safety margin.
+
       transform_tolerance: 0.30
+
       track_unknown_space: true
+      # 아직 관측되지 않은 영역을 unknown으로 유지.
+
       always_send_full_costmap: true
-      plugins: ["static_layer"]
+
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # ★ 기존에는 static_layer만 등록되어 있었음.
+      #
+      # obstacle_layer / inflation_layer 설정이 존재하더라도
+      # plugins 배열에 없으면 실제로 로딩되지 않음.
+
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
+
         map_topic: /map
+        # live_occupancy_mapper의 occupancy map 사용.
+
         map_subscribe_transient_local: true
+        # Nav2가 나중에 실행되어도 마지막 /map을 받을 수 있음.
+
         subscribe_to_updates: false
+        # /map_updates 형태 incremental update는 사용하지 않음.
+
         transform_tolerance: 0.30
+
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
+
         enabled: true
+
         footprint_clearing_enabled: true
-        max_obstacle_height: 5.0
+
+        max_obstacle_height: 2.0
+        # Layer 자체 z 범위.
+        # 실제 지면 기준 obstacle filtering은 mapper가 담당.
+
         combination_method: 1
+
         observation_sources: lio_marking lio_clearing
+
         lio_marking:
           topic: /lio/cloud_sensor_obstacles
+
           data_type: "PointCloud2"
+
           marking: true
+
           clearing: false
-          min_obstacle_height: -5.0
-          max_obstacle_height: 5.0
+
+          min_obstacle_height: -1.0
+          # ★ lidar_link 기준.
+          #
+          # obstacle cloud는 이미 mapper에서
+          # 지면 기준 30 cm 이상의 점만 남겼으므로
+          # 여기서 다시 0.30 m threshold를 걸지 않음.
+
+          max_obstacle_height: 2.0
+          # lidar_link 기준 충분히 넓게 허용.
+
           obstacle_min_range: 0.10
+
           obstacle_max_range: 10.0
+          # Global obstacle marking 최대 거리 10 m.
+
           expected_update_rate: 0.0
-          observation_persistence: 1.0
+
+          observation_persistence: 0.50
+          # Global obstacle observation을 0.5초 유지.
+
         lio_clearing:
           topic: /lio/cloud_sensor
+          # 원본 lidar_link 기준 PointCloud.
+
           data_type: "PointCloud2"
+
           marking: false
+
           clearing: true
-          min_obstacle_height: -5.0
-          max_obstacle_height: 5.0
+
+          min_obstacle_height: -1.0
+          # 지면 z≈-0.6을 포함하도록 -1 m까지 허용.
+
+          max_obstacle_height: 2.0
+
           raytrace_min_range: 0.10
+
           raytrace_max_range: 12.0
+          # Global에서는 최대 12 m까지 free-space clearing.
+
           expected_update_rate: 0.0
-          observation_persistence: 1.0
+
+          observation_persistence: 0.50
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.1
-        cost_scaling_factor: 3.0
+
+        inflation_radius: 0.15
+        # 장애물 외곽으로 25 cm cost 영역 형성.
+
+        cost_scaling_factor: 5.0
+        # 장애물에서 멀어질수록 cost가 비교적 빠르게 감소.
+
 
 velocity_smoother:
   ros__parameters:
-    smoothing_frequency: 20.0
+
+    smoothing_frequency: 30.0
+    # Velocity smoothing 실행 주파수.
+
     scale_velocities: false
+    # 각 velocity component를 독립적으로 limit.
+
     feedback: "OPEN_LOOP"
-    max_velocity: [0.55, 0.0, 0.90]
-    min_velocity: [-0.20, 0.0, -0.90]
-    max_accel: [0.40, 0.0, 4.00]
-    max_decel: [-0.55, 0.0, -6.00]
+    # 실제 odometry feedback 대신 이전 command를 기준으로 smoothing.
+
+    max_velocity: [0.50, 0.0, 0.5]
+    # [linear_x, linear_y, angular_z]
+    #
+    # 최대 전진       : 0.50 m/s
+    # lateral         : 사용 안 함
+    # 최대 yaw 회전   : 0.75 rad/s
+
+    min_velocity: [-0.20, 0.0, -0.75]
+    # 최대 후진       : 0.20 m/s
+    # 최대 반대 yaw   : -0.75 rad/s
+
+    max_accel: [0.2, 0.0, 0.2]
+    # 최대 가속도:
+    # x   = 0.40 m/s²
+    # yaw = 3.0 rad/s²
+
+    max_decel: [-0.2, 0.0, -0.2]
+    # 최대 감속도:
+    # x   = -0.55 m/s²
+    # yaw = -4.0 rad/s²
+
     odom_topic: /lio/odom
+
     odom_duration: 0.10
+    # Odom velocity 계산 시간 window.
+
     deadband_velocity: [0.01, 0.0, 0.01]
+    # 이보다 작은 command는 0으로 처리.
+
     velocity_timeout: 0.50
+    # 0.5초 동안 새 command가 없으면 정지.
+
 
 behavior_server:
   ros__parameters:
+
     local_costmap_topic: local_costmap/costmap_raw
+    # Recovery behavior collision check에 사용할 local costmap.
+
     global_costmap_topic: global_costmap/costmap_raw
+
     local_footprint_topic: local_costmap/published_footprint
+
     global_footprint_topic: global_costmap/published_footprint
+
     cycle_frequency: 10.0
+    # Behavior 실행 주파수.
+
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+
     spin:
       plugin: "nav2_behaviors/Spin"
+      # 제자리 회전 recovery.
+
     backup:
       plugin: "nav2_behaviors/BackUp"
+      # 후진 recovery.
+
     drive_on_heading:
       plugin: "nav2_behaviors/DriveOnHeading"
+      # 지정 heading 방향으로 이동.
+
     wait:
       plugin: "nav2_behaviors/Wait"
+      # 일정 시간 대기.
+
     local_frame: odom
+
     global_frame: map
+
     robot_base_frame: base_link
+
     transform_tolerance: 0.30
-    simulate_ahead_time: 2.0
-    max_rotational_vel: 0.80
+
+    simulate_ahead_time: 2.5
+    # Recovery command를 실행했을 때
+    # 최대 2.5초 앞의 collision을 미리 검사.
+
+    max_rotational_vel: 0.65
+    # Recovery spin 최대 yaw velocity.
+
     min_rotational_vel: 0.15
-    rotational_acc_lim: 20.0
+    # 너무 작은 회전 command 방지.
+
+    rotational_acc_lim: 4.0
+    # Recovery 회전 가속도 제한.
+
 
 bt_navigator:
   ros__parameters:
+
     global_frame: map
+    # Navigation 전체 global frame.
+
     robot_base_frame: base_link
+
     odom_topic: /lio/odom
+
     bt_loop_duration: 10
+    # Behavior Tree 반복 주기 [ms].
+
     default_server_timeout: 20
+    # BT action/service 기본 timeout [ms].
+
     wait_for_service_timeout: 1000
+    # 필요한 server/service 대기 timeout [ms].
+
     navigators: ["navigate_to_pose"]
+
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
