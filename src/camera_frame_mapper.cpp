@@ -190,8 +190,13 @@ struct CameraFrameMapper::Impl {
     const float default_variance = static_cast<float>(noise_stddev * noise_stddev);
     std::vector<PointXYZVariance> mapped;
     mapped.reserve(std::min(point_count, static_cast<std::size_t>(max_points)));
-    for (std::size_t index = 0; index < point_count &&
-                                mapped.size() < static_cast<std::size_t>(max_points); ++index) {
+    // Preserve the whole camera FOV when a source has more points than the
+    // configured budget.  Stopping at max_points scans only the first raster
+    // rows of an organised depth cloud, which can omit low/front obstacles.
+    const auto sample_stride = std::max<std::size_t>(
+        1U, (point_count + static_cast<std::size_t>(max_points) - 1U) /
+                static_cast<std::size_t>(max_points));
+    for (std::size_t index = 0; index < point_count; index += sample_stride) {
       const auto *point = cloud->data.data() + index * cloud->point_step;
       const float x = readFloat(point, offsets.x);
       const float y = readFloat(point, offsets.y);

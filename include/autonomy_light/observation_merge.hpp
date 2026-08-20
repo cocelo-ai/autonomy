@@ -6,10 +6,9 @@
 
 namespace autonomy_light {
 
-// Merges the latest usable camera observations into one robot-centric,
-// gravity-levelled PointCloud2.  It deliberately performs no temporal map
-// accumulation: each published cloud is one observation epoch.  LiDAR stays
-// on the independent Super-LIO/Nav2 path.
+// Merges camera observations and deskewed raw Livox points into one
+// robot-centric, gravity-levelled PointCloud2.  Each camera epoch is expressed
+// in target_frame; raw LiDAR points are transformed at their offset_time.
 class ObservationMerge final : public rclcpp::Node {
 public:
   explicit ObservationMerge(

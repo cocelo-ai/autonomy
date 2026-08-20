@@ -836,6 +836,8 @@ fi
 
 declare -a CAMERA_PIDS=()
 if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
+  # Fourfold decimation turns 640x480 depth into only 160x120 points and
+  # makes small foreground obstacles disappear before elevation mapping.
   for camera_index in "${!CAMERA_SOURCES[@]}"; do
     CAMERA_DRIVER_ARGS=(
       "camera_name:=${CAMERA_NAMES[camera_index]}" \
@@ -846,7 +848,7 @@ if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
       "depth_module.depth_profile:=${CAMERA_DEPTH_PROFILES[camera_index]}" \
       "pointcloud.enable:=true" "pointcloud.allow_no_texture_points:=true" \
       "pointcloud.stream_filter:=1" "decimation_filter.enable:=true" \
-      "decimation_filter.filter_magnitude:=4"
+      "decimation_filter.filter_magnitude:=2"
     )
     if [[ "${TEMPORAL_FUSION_ENABLED}" == "false" ]]; then
       CAMERA_DRIVER_ARGS+=(

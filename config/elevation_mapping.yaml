@@ -35,7 +35,9 @@ camera_frame_mapper:
     noise_stddev: 0.025
     min_range: 0.30
     max_range: 3.00
-    max_points: 60000
+    # Preserve enough samples for 2.5 cm cells while retaining the complete
+    # depth raster when a higher-resolution stream is selected.
+    max_points: 100000
     tf_timeout_sec: 0.020
     # launch.sh switches this on only when temporal fusion is disabled.
     local_gravity_mode: false
@@ -103,7 +105,7 @@ observation_merge:
     sources.front_d435.validate_mount_tf: false
     sources.front_d435.noise_stddev: 0.025
     sources.front_d435.min_range: 0.30
-    sources.front_d435.max_points: 60000
+    sources.front_d435.max_points: 100000
 
 elevation_mapping:
   ros__parameters:
@@ -121,7 +123,7 @@ elevation_mapping:
     # true: SLAM pose reprojects/fuses history. false: a D435i IMU-levelled,
     # direct camera -> base_link_gravity single-frame pipeline is used.
     slam.map_frame: map
-    grid.resolution: 0.025
+    grid.resolution: 0.1
     grid.x_min: -0.90
     grid.x_max: 0.90
     grid.y_min: -0.40
@@ -166,6 +168,12 @@ elevation_mapping:
     algorithm.surface_smoothing.min_support_neighbors: 3
     algorithm.surface_smoothing.blend: 0.60
     algorithm.surface_smoothing.passes: 2
+    # Applied only with algorithm.temporal.enabled: false.  Keep the nearest
+    # coherent depth return in each XY cell (obstacle face before ground) and
+    # do not erase narrow foreground obstacles as isolated terrain noise.
+    algorithm.single_frame.obstacle_preserving: true
+    algorithm.single_frame.ray_range_gate: 0.06
+    algorithm.single_frame.min_ray_support: 2
     # Final filtered/temporal height map for RViz PointCloud2 inspection.
     # PointCloud2 is the only ROS debugging output for the elevation result;
     # it is separate from the DDS height-map delivery path.

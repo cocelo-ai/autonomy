@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(CycloneDDS REQUIRED CONFIG)
 find_package(core REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -53,6 +54,7 @@ add_executable(observation_merge
 )
 ament_target_dependencies(observation_merge
   geometry_msgs
+  livox_ros_driver2
   rclcpp
   sensor_msgs
   std_msgs

@@ -350,6 +350,134 @@ void smoothObservedSurfacesEdgeAware(std::vector<float> &height,
   variance.swap(source_variance);
 }
 
+// This is the reference implementation's bilateral stage: it fills only
+// missing cells and never averages an already observed obstacle/edge into its
+// neighbours.  It is deliberately different from the temporal-path smoother.
+void fillReferenceBilateralHoles(std::vector<float> &height,
+                                 const std::uint32_t rows,
+                                 const std::uint32_t columns,
+                                 const int radius,
+                                 const float sigma_spatial,
+                                 const float sigma_height,
+                                 const float maximum_height_difference,
+                                 const int passes) {
+  if (radius <= 0 || sigma_spatial <= 0.0F || sigma_height <= 0.0F ||
+      maximum_height_difference <= 0.0F || passes <= 0) {
+    return;
+  }
+  const float inverse_spatial = 1.0F / (2.0F * sigma_spatial * sigma_spatial);
+  const float inverse_height = 1.0F / (2.0F * sigma_height * sigma_height);
+  auto source = height;
+  auto destination = height;
+  std::vector<float> neighbours;
+  neighbours.reserve(static_cast<std::size_t>((2 * radius + 1) * (2 * radius + 1)));
+  for (int pass = 0; pass < passes; ++pass) {
+    destination = source;
+    for (std::uint32_t row = 0; row < rows; ++row) {
+      for (std::uint32_t column = 0; column < columns; ++column) {
+        const auto index = indexOf(row, column, columns);
+        if (finite(source[index])) {
+          continue;
+        }
+        neighbours.clear();
+        float minimum = std::numeric_limits<float>::infinity();
+        float maximum = -std::numeric_limits<float>::infinity();
+        for (int delta_row = -radius; delta_row <= radius; ++delta_row) {
+          const int next_row = static_cast<int>(row) + delta_row;
+          if (next_row < 0 || next_row >= static_cast<int>(rows)) {
+            continue;
+          }
+          for (int delta_column = -radius; delta_column <= radius; ++delta_column) {
+            const int next_column = static_cast<int>(column) + delta_column;
+            if (next_column < 0 || next_column >= static_cast<int>(columns) ||
+                (delta_row == 0 && delta_column == 0)) {
+              continue;
+            }
+            const float neighbour = source[indexOf(static_cast<std::uint32_t>(next_row),
+                                                    static_cast<std::uint32_t>(next_column), columns)];
+            if (!finite(neighbour)) {
+              continue;
+            }
+            neighbours.push_back(neighbour);
+            minimum = std::min(minimum, neighbour);
+            maximum = std::max(maximum, neighbour);
+          }
+        }
+        if (neighbours.empty() || maximum - minimum > maximum_height_difference) {
+          continue;
+        }
+        const auto middle = neighbours.begin() +
+            static_cast<std::ptrdiff_t>(neighbours.size() / 2U);
+        std::nth_element(neighbours.begin(), middle, neighbours.end());
+        const float reference_height = *middle;
+        float weighted_sum = 0.0F;
+        float weight_sum = 0.0F;
+        for (int delta_row = -radius; delta_row <= radius; ++delta_row) {
+          const int next_row = static_cast<int>(row) + delta_row;
+          if (next_row < 0 || next_row >= static_cast<int>(rows)) {
+            continue;
+          }
+          for (int delta_column = -radius; delta_column <= radius; ++delta_column) {
+            const int next_column = static_cast<int>(column) + delta_column;
+            if (next_column < 0 || next_column >= static_cast<int>(columns) ||
+                (delta_row == 0 && delta_column == 0)) {
+              continue;
+            }
+            const float neighbour = source[indexOf(static_cast<std::uint32_t>(next_row),
+                                                    static_cast<std::uint32_t>(next_column), columns)];
+            if (!finite(neighbour) ||
+                std::fabs(neighbour - reference_height) > maximum_height_difference) {
+              continue;
+            }
+            const float distance_squared = static_cast<float>(
+                delta_row * delta_row + delta_column * delta_column);
+            const float delta = neighbour - reference_height;
+            const float weight = std::exp(-distance_squared * inverse_spatial) *
+                std::exp(-(delta * delta) * inverse_height);
+            weighted_sum += weight * neighbour;
+            weight_sum += weight;
+          }
+        }
+        if (weight_sum > 1.0e-6F) {
+          destination[index] = weighted_sum / weight_sum;
+        }
+      }
+    }
+    source.swap(destination);
+  }
+  height.swap(source);
+}
+
+void updateReferenceCell(const float measurement,
+                         const float measurement_variance,
+                         float &state,
+                         float &state_variance,
+                         const float mahalanobis_threshold_squared,
+                         const float dynamic_reset_delta,
+                         const float dynamic_variance_bump,
+                         const float minimum_variance,
+                         const float maximum_variance) {
+  if (!finite(state)) {
+    state = measurement;
+    state_variance = measurement_variance;
+    return;
+  }
+  const float delta = measurement - state;
+  const float combined_variance = std::max(state_variance + measurement_variance, 1.0e-6F);
+  if (delta * delta / combined_variance > mahalanobis_threshold_squared &&
+      std::fabs(delta) > dynamic_reset_delta) {
+    const float blend = measurement < state ? 0.8F : 0.5F;
+    state = blend * measurement + (1.0F - blend) * state;
+    state_variance = std::clamp(state_variance + dynamic_variance_bump,
+                                minimum_variance, maximum_variance);
+    return;
+  }
+  const float gain = std::clamp(state_variance / combined_variance, 0.2F, 0.8F);
+  state += gain * delta;
+  state_variance = std::clamp((1.0F - gain) * state_variance,
+                              minimum_variance, maximum_variance);
+}
+
 // NaN is useful as an internal "not observed" sentinel while filtering, but
 // it is not a valid value on the DDS height-map interface.  Propagate nearby
 // terrain into each hole first; if an entire map has no observation, use the
@@ -523,6 +651,14 @@ struct PreciseElevationMapping::Impl {
         "algorithm.surface_smoothing.min_support_neighbors", 3);
     smooth_blend = node.declare_parameter<double>("algorithm.surface_smoothing.blend", 0.45);
     smooth_passes = node.declare_parameter<int>("algorithm.surface_smoothing.passes", 1);
+    single_frame_reference_enabled = node.declare_parameter<bool>(
+        "algorithm.single_frame.reference.enabled", true);
+    single_frame_reference_isolated_every = node.declare_parameter<int>(
+        "algorithm.single_frame.reference.isolated_filter_every_n_frames", 2);
+    single_frame_reference_bilateral_every = node.declare_parameter<int>(
+        "algorithm.single_frame.reference.bilateral_every_n_frames", 2);
+    single_frame_reference_min_runtime_fps = node.declare_parameter<int>(
+        "algorithm.single_frame.reference.minimum_runtime_fps", 60);
     debug_enabled = node.declare_parameter<bool>("debug.enabled", false);
     diagnostics_enabled = node.declare_parameter<bool>("diagnostics.enabled", false);
     debug_pointcloud_topic = node.declare_parameter<std::string>(
@@ -538,6 +674,8 @@ struct PreciseElevationMapping::Impl {
         minimum_measurement_variance <= 0.0 || maximum_cell_variance < minimum_measurement_variance ||
         lower_support_gap <= 0.0 || robust_height_gate <= 0.0 ||
         edge_mix_height_difference <= 0.0 || smooth_blend < 0.0 || smooth_blend > 1.0 ||
+        single_frame_reference_isolated_every <= 0 || single_frame_reference_bilateral_every <= 0 ||
+        single_frame_reference_min_runtime_fps <= 0 ||
         temporal_tf_timeout_sec < 0.0 || temporal_variance_rate < 0.0 ||
         temporal_mahalanobis_threshold <= 0.0 || temporal_dynamic_reset_delta < 0.0 ||
         temporal_dynamic_variance_bump < 0.0 || !std::isfinite(output_clip_min) ||
@@ -587,11 +725,13 @@ struct PreciseElevationMapping::Impl {
     }
     RCLCPP_INFO(node.get_logger(),
                 "Precise elevation map: %s -> %s (distance below %s) @ %.1f Hz, %ux%u @ %.3fm, "
-                "%s edge-aware filtering (SLAM-reprojected temporal fusion: %s, FOV mask: %s)",
+                "%s edge-aware filtering (SLAM-reprojected temporal fusion: %s, "
+                "reference single-frame path: %s, FOV mask: %s)",
                 input_topic.c_str(), output_topic.c_str(), target_link.c_str(), publish_rate_hz,
                 grid.width(), grid.height(),
                 grid.resolution, temporal_enabled ? "temporal" : "single-frame",
                 temporal_enabled ? "enabled" : "disabled",
+                (!temporal_enabled && single_frame_reference_enabled) ? "enabled" : "disabled",
                 fov_mask.enabled ? fov_mask_file.c_str() : "disabled");
     if (debug_enabled) {
       RCLCPP_INFO(node.get_logger(), "Elevation debug PointCloud2: %s",
@@ -821,6 +961,7 @@ struct PreciseElevationMapping::Impl {
       return;
     }
     std::vector<FrameCell> frame(cells);
+    const bool preserve_obstacles = !temporal_enabled && single_frame_obstacle_preserving;
     std::size_t accepted = 0;
     const auto point_count = static_cast<std::size_t>(cloud->width) * cloud->height;
     for (std::size_t point_index = 0; point_index < point_count; ++point_index) {
@@ -866,6 +1007,28 @@ struct PreciseElevationMapping::Impl {
         cell.lower_weighted_sum += weight * z;
         cell.lower_weight_sum += weight;
       }
+      // The mapper attaches the original depth-ray range only on the direct
+      // camera -> elevation path.  Prefer a coherent cluster of the nearest
+      // returns so an obstacle face remains visible when ground points land in
+      // the same XY grid cell.  Temporal/multi-camera inputs retain their
+      // existing height-based aggregation semantics.
+      if (preserve_obstacles && offsets.has_range) {
+        const float ray_range = readFloat(point, offsets.range);
+        if (finite(ray_range) && ray_range > 0.0F) {
+          if (ray_range + static_cast<float>(single_frame_ray_range_gate) <
+              cell.nearest_range) {
+            cell.nearest_range = ray_range;
+            cell.nearest_support_count = 1U;
+            cell.nearest_weighted_sum = weight * z;
+            cell.nearest_weight_sum = weight;
+          } else if (std::fabs(ray_range - cell.nearest_range) <=
+                     static_cast<float>(single_frame_ray_range_gate)) {
+            ++cell.nearest_support_count;
+            cell.nearest_weighted_sum += weight * z;
+            cell.nearest_weight_sum += weight;
+          }
+        }
+      }
       ++accepted;
     }
 
@@ -894,6 +1057,13 @@ struct PreciseElevationMapping::Impl {
                                     1.0F / cell.lower_weight_sum);
         }
       }
+      if (preserve_obstacles &&
+          cell.nearest_support_count >= static_cast<std::uint32_t>(single_frame_min_ray_support) &&
+          cell.nearest_weight_sum > 1.0e-6F) {
+        value = cell.nearest_weighted_sum / cell.nearest_weight_sum;
+        value_variance = std::max(static_cast<float>(minimum_measurement_variance),
+                                  1.0F / cell.nearest_weight_sum);
+      }
       elevation[cell_index] = value;
       variance[cell_index] = std::clamp(value_variance,
                                         static_cast<float>(minimum_measurement_variance),
@@ -906,15 +1076,21 @@ struct PreciseElevationMapping::Impl {
     }
     std::vector<std::uint8_t> filter_filled(cells, 0U);
 
-    removeIsolatedCellsEdgeAware(
-        elevation, variance, height, width, isolated_radius, isolated_min_support,
-        static_cast<float>(isolated_support_difference),
-        static_cast<float>(isolated_outlier_difference),
-        static_cast<float>(maximum_cell_variance));
-    fillSmallHolesEdgeAware(
-        elevation, variance, filter_filled, height, width, hole_radius, hole_min_neighbours,
-        static_cast<float>(hole_max_difference), static_cast<float>(maximum_cell_variance));
-    if (smooth_enabled) {
+    // Fine foreground objects are often only one or two cells wide.  The
+    // regular terrain clean-up treats those cells as outliers and replaces
+    // them with surrounding floor, so skip it in obstacle-preserving direct
+    // depth mode.  Temporal fusion keeps the original denoising pipeline.
+    if (!preserve_obstacles) {
+      removeIsolatedCellsEdgeAware(
+          elevation, variance, height, width, isolated_radius, isolated_min_support,
+          static_cast<float>(isolated_support_difference),
+          static_cast<float>(isolated_outlier_difference),
+          static_cast<float>(maximum_cell_variance));
+      fillSmallHolesEdgeAware(
+          elevation, variance, filter_filled, height, width, hole_radius, hole_min_neighbours,
+          static_cast<float>(hole_max_difference), static_cast<float>(maximum_cell_variance));
+    }
+    if (!preserve_obstacles && smooth_enabled) {
       smoothObservedSurfacesEdgeAware(
           elevation, variance, height, width, smooth_radius,
           static_cast<float>(smooth_sigma_spatial), static_cast<float>(smooth_sigma_height),
@@ -1046,6 +1222,9 @@ struct PreciseElevationMapping::Impl {
   int smooth_min_support{3};
   double smooth_blend{0.45};
   int smooth_passes{1};
+  bool single_frame_obstacle_preserving{true};
+  double single_frame_ray_range_gate{0.06};
+  int single_frame_min_ray_support{2};
   bool temporal_enabled{true};
   double temporal_tf_timeout_sec{0.02};
   double temporal_variance_rate{0.20};

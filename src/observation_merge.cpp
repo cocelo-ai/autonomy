@@ -19,6 +19,7 @@
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
+#include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -128,10 +129,14 @@ struct ObservationMerge::Impl {
     std::size_t max_points{50000};
     std::size_t queue_size{12};
     std::deque<sensor_msgs::msg::PointCloud2::SharedPtr> queue;
+    std::deque<livox_ros_driver2::msg::CustomMsg::SharedPtr> lidar_queue;
+    double lidar_window_sec{0.040};
+    double lidar_deskew_bin_sec{0.002};
     std::uint64_t received_count{0};
     std::uint64_t stale_drop_count{0};
     std::uint64_t sync_drop_count{0};
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription;
+    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_subscription;
   };
 
   struct SelectedSource {
