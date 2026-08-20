@@ -7,7 +7,7 @@
 namespace autonomy_light {
 
 // Stateless, edge-preserving elevation extraction ported from the project's
-// height_cli_lib algorithm.  One merged observation produces one GridMap.
+// height_cli_lib algorithm. One merged observation produces one HeightMap.
 class PreciseElevationMapping final : public rclcpp::Node {
 public:
   explicit PreciseElevationMapping(

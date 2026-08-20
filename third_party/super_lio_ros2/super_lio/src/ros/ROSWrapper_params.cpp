@@ -211,6 +211,9 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<bool>("lio.output.dense", false);
   node.get_parameter("lio.output.dense", g_visual_dense);
 
+  node.declare_parameter<bool>("lio.output.path", false);
+  node.get_parameter("lio.output.path", g_publish_path);
+
   node.declare_parameter<int>("lio.output.pub_step", 0);
   node.get_parameter("lio.output.pub_step", g_pub_step);
 

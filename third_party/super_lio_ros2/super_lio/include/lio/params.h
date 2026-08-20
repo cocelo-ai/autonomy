@@ -93,6 +93,7 @@ namespace LI2Sup{
   extern bool g_2_ml_map;
   extern bool g_visual_map;
   extern bool g_visual_dense;
+  extern bool g_publish_path;
   extern int  g_pub_step;
   extern double g_tf_publish_rate_hz;
 

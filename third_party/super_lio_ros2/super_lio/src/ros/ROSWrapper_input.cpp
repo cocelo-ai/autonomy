@@ -128,8 +128,10 @@ void ROSWrapper::setupIO(){
   pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>(
       "/lio/odom", 100);
 
-  pub_path_ = this->create_publisher<nav_msgs::msg::Path>(
-      "/lio/path", 10);
+  if (g_publish_path) {
+    pub_path_ = this->create_publisher<nav_msgs::msg::Path>(
+        "/lio/path", 10);
+  }
 
   pub_cloud_world_ =
     this->create_publisher<sensor_msgs::msg::PointCloud2>(

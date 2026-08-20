@@ -170,6 +170,7 @@ struct ObservationMerge::Impl {
     roi_z_max = node.declare_parameter<double>("roi.z_max", 0.80);
     roi_max_range = node.declare_parameter<double>("roi.max_range", 3.0);
     voxel_size = node.declare_parameter<double>("roi.voxel_size", 0.02);
+    diagnostics_enabled = node.declare_parameter<bool>("diagnostics.enabled", false);
     const auto source_names = node.declare_parameter<std::vector<std::string>>(
         "inputs", std::vector<std::string>{"camera"});
 
@@ -229,12 +230,14 @@ struct ObservationMerge::Impl {
   void createIo() {
     output = node.create_publisher<sensor_msgs::msg::PointCloud2>(
         output_topic, rclcpp::SensorDataQoS());
-    heartbeat = node.create_publisher<std_msgs::msg::String>(
-        "/autonomy_light/heartbeat/observation_merge", rclcpp::QoS(10));
-    sync_skew = node.create_publisher<std_msgs::msg::Float32>(
-        "/autonomy_light/observation_sync_skew_ms", rclcpp::SensorDataQoS());
-    processing_time = node.create_publisher<std_msgs::msg::Float32>(
-        "/autonomy_light/observation_processing_ms", rclcpp::SensorDataQoS());
+    if (diagnostics_enabled) {
+      heartbeat = node.create_publisher<std_msgs::msg::String>(
+          "/autonomy_light/heartbeat/observation_merge", rclcpp::QoS(10));
+      sync_skew = node.create_publisher<std_msgs::msg::Float32>(
+          "/autonomy_light/observation_sync_skew_ms", rclcpp::SensorDataQoS());
+      processing_time = node.create_publisher<std_msgs::msg::Float32>(
+          "/autonomy_light/observation_processing_ms", rclcpp::SensorDataQoS());
+    }
     for (auto &source : sources) {
       source.subscription = node.create_subscription<sensor_msgs::msg::PointCloud2>(
           source.topic, rclcpp::SensorDataQoS(),
@@ -277,8 +280,10 @@ struct ObservationMerge::Impl {
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / publish_rate_hz));
     timer = node.create_wall_timer(period, [this]() { publishCurrentObservation(); });
-    heartbeat_timer = node.create_wall_timer(
-        std::chrono::milliseconds(500), [this]() { publishHeartbeat(); });
+    if (diagnostics_enabled) {
+      heartbeat_timer = node.create_wall_timer(
+          std::chrono::milliseconds(500), [this]() { publishHeartbeat(); });
+    }
     RCLCPP_INFO(node.get_logger(),
                 "Observation merge: %s -> %s in %s @ %.1f Hz, strict=%s, single-source=%s, "
                 "complete-window=%s, sync slop %.1fms, ROI x[%.2f, %.2f] y[%.2f, %.2f] z[%.2f, %.2f], voxel %.3fm",
@@ -292,6 +297,9 @@ struct ObservationMerge::Impl {
   }
 
   void publishHeartbeat() {
+    if (!heartbeat) {
+      return;
+    }
     std_msgs::msg::String message;
     if (published_count == 0) {
       message.data = "waiting_for_synchronized_observation";
@@ -698,12 +706,16 @@ struct ObservationMerge::Impl {
     last_sync_skew_sec = sync_skew_sec;
     std_msgs::msg::Float32 skew_message;
     skew_message.data = static_cast<float>(sync_skew_sec * 1000.0);
-    sync_skew->publish(skew_message);
+    if (sync_skew) {
+      sync_skew->publish(skew_message);
+    }
     std_msgs::msg::Float32 processing_message;
     processing_message.data = static_cast<float>(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                    processing_started).count());
-    processing_time->publish(processing_message);
+    if (processing_time) {
+      processing_time->publish(processing_message);
+    }
     RCLCPP_INFO_THROTTLE(node.get_logger(), *node.get_clock(), 2000,
                          "Synchronized epoch: sources=%zu skew=%.2fms raw_roi=%zu voxelized=%zu",
                          sources_used, sync_skew_sec * 1000.0, accepted, points.size());
@@ -729,6 +741,7 @@ struct ObservationMerge::Impl {
   double roi_z_max{0.8};
   double roi_max_range{3.0};
   double voxel_size{0.02};
+  bool diagnostics_enabled{false};
   std::vector<Source> sources;
   std::mutex source_mutex;
   std::uint64_t published_count{0};

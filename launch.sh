@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: ./launch.sh [--real|--sim] [--no-drivers] [--no-nav2] [--rviz] [--map DIRECTORY] [--mapping [DIRECTORY]]
                    [--lidar-type mid360|mid360s] [--lidar-ip IPV4] [--jetson-ip IPV4]
-                   [--vis-rate HZ] [--vis-height] [--no-status]
+                   [--vis-rate HZ] [--status] [--vis-height] [--no-status]
 
 Starts full Super-LIO SLAM, camera-only elevation mapping, and Nav2.
 
@@ -22,8 +22,10 @@ Starts full Super-LIO SLAM, camera-only elevation mapping, and Nav2.
   --jetson-ip IPV4        Override bringup.livox.jetson_ip for this run.
   --mid360|--mid360s      Backward-compatible aliases for --lidar-type.
   --vis-rate HZ           Terminal status-table refresh rate (default: 2.0 Hz).
+  --status                Start the terminal status table and its diagnostic topics.
   --vis-height            Open a 2D color height-map window at
-                          elevation_mapping.publish_rate_hz.
+                          elevation_mapping.publish_rate_hz, with its camera
+                          depth image in the right panel.
   --no-status             Do not start the terminal status table.
   --check                 Validate the three configuration files and exit.
 EOF
@@ -70,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --vis-rate) VIS_RATE="${2:?--vis-rate requires a positive frequency}"; shift ;;
     --vis-rate=*) VIS_RATE="${1#*=}" ;;
     --vis-height) ENABLE_HEIGHT_VISUALIZATION="true" ;;
+    --status) ENABLE_STATUS="true" ;;
     --no-status) ENABLE_STATUS="false" ;;
     --map) MAP_FILE="${2:?--map requires a map-bundle directory}"; shift ;;
     --mapping)
@@ -323,13 +326,12 @@ append_static_transform(lidar_frame, base_frame)
 camera_names = []
 camera_namespaces = []
 camera_ports = []
-camera_driver_frames = []
 camera_profiles = []
 camera_raw_topics = []
+camera_depth_image_topics = []
 camera_mapped_topics = []
+camera_imu_topics = []
 camera_mount_frames = []
-camera_source_to_mount_xyzs = []
-camera_source_to_mount_rpys = []
 camera_noise_stddevs = []
 camera_min_ranges = []
 camera_max_points = []
@@ -356,17 +358,11 @@ for source_name in source_names:
     camera_name = camera_value(source_name, camera, "name")
     camera_namespace = camera_value(source_name, camera, "namespace")
     camera_port = camera_value(source_name, camera, "usb_port_id")
-    camera_driver_frame = camera_value(source_name, camera, "driver_base_frame_id")
     camera_profile = camera_value(source_name, camera, "depth_profile")
     if camera_name != source_name:
         raise SystemExit(
             f"error: bringup.realsense_cameras.{source_name}.name must equal '{source_name}'"
         )
-    if not isinstance(camera_driver_frame, str) or not camera_driver_frame.strip():
-        raise SystemExit(
-            f"error: selected camera '{source_name}' driver_base_frame_id must be a non-empty string"
-        )
-    camera_driver_frame = camera_driver_frame.strip()
     expected_raw_topic = f"/{str(camera_namespace).strip('/')}/{camera_name}/depth/color/points"
     if source_parameter(source_name, "raw_topic") != expected_raw_topic:
         raise SystemExit(
@@ -388,22 +384,16 @@ for source_name in source_names:
     for parameter in ("noise_stddev", "min_range", "max_points"):
         if source_parameter(source_name, parameter) in (None, ""):
             raise SystemExit(f"error: source '{source_name}' requires {parameter}")
-    source_to_mount_xyz = numeric_vector(
-        source_parameter(source_name, "source_to_mount_xyz"),
-        f"source '{source_name}' source_to_mount_xyz")
-    source_to_mount_rpy = numeric_vector(
-        source_parameter(source_name, "source_to_mount_rpy"),
-        f"source '{source_name}' source_to_mount_rpy")
     camera_names.append(camera_name)
     camera_namespaces.append(camera_namespace)
     camera_ports.append(camera_port)
-    camera_driver_frames.append(camera_driver_frame)
     camera_profiles.append(camera_profile)
     camera_raw_topics.append(expected_raw_topic)
+    camera_depth_image_topics.append(
+        f"/{str(camera_namespace).strip('/')}/{camera_name}/depth/image_rect_raw")
     camera_mapped_topics.append(expected_mapped_topic)
+    camera_imu_topics.append(f"/{str(camera_namespace).strip('/')}/{camera_name}/imu")
     camera_mount_frames.append(mount_frame)
-    camera_source_to_mount_xyzs.append(source_to_mount_xyz)
-    camera_source_to_mount_rpys.append(source_to_mount_rpy)
     camera_noise_stddevs.append(source_parameter(source_name, "noise_stddev"))
     camera_min_ranges.append(source_parameter(source_name, "min_range"))
     camera_max_points.append(source_parameter(source_name, "max_points"))
@@ -417,6 +407,11 @@ except (TypeError, ValueError) as error:
     raise SystemExit("error: elevation_mapping.publish_rate_hz must be numeric") from error
 if not math.isfinite(elevation_publish_rate_hz) or elevation_publish_rate_hz <= 0.0:
     raise SystemExit("error: elevation_mapping.publish_rate_hz must be a positive finite number")
+temporal_fusion_enabled = elevation_mapping.get("algorithm.temporal.enabled", True)
+if not isinstance(temporal_fusion_enabled, bool):
+    raise SystemExit("error: elevation_mapping.algorithm.temporal.enabled must be boolean")
+if not temporal_fusion_enabled and len(source_names) != 1:
+    raise SystemExit("error: single-frame D435i IMU mode currently requires exactly one camera")
 
 height_map_fov = config.get("height_map_fov", {})
 height_map_fov = height_map_fov.get("ros__parameters", {})
@@ -442,7 +437,6 @@ if height_map_fov_enabled:
             "error: height_map_fov currently requires one selected camera so its driver depth profile is unambiguous")
     height_map_fov_depth_profile = camera_profiles[0]
     try:
-        height_map_fov_reference_z = float(height_map_fov["reference_z"])
         height_map_fov_outside_value = float(height_map_fov.get("outside_value", 0.0))
         height_map_fov_resolution = float(elevation_mapping["grid.resolution"])
         height_map_fov_x_min = float(elevation_mapping["grid.x_min"])
@@ -451,8 +445,8 @@ if height_map_fov_enabled:
         height_map_fov_y_max = float(elevation_mapping["grid.y_max"])
     except (KeyError, TypeError, ValueError) as error:
         raise SystemExit("error: height_map_fov and elevation grid parameters must be numeric") from error
-    numeric_fov_values = (height_map_fov_reference_z, height_map_fov_outside_value,
-                          height_map_fov_resolution, height_map_fov_x_min,
+    numeric_fov_values = (height_map_fov_outside_value, height_map_fov_resolution,
+                          height_map_fov_x_min,
                           height_map_fov_x_max, height_map_fov_y_min, height_map_fov_y_max)
     if not all(math.isfinite(value) for value in numeric_fov_values) or \
             height_map_fov_resolution <= 0.0 or height_map_fov_x_max <= height_map_fov_x_min or \
@@ -464,7 +458,7 @@ else:
     height_map_fov_camera_frames = []
     height_map_fov_camera_type = ""
     height_map_fov_depth_profile = ""
-    height_map_fov_reference_z = height_map_fov_outside_value = 0.0
+    height_map_fov_outside_value = 0.0
     height_map_fov_resolution = height_map_fov_x_min = height_map_fov_x_max = 0.0
     height_map_fov_y_min = height_map_fov_y_max = 0.0
 
@@ -472,12 +466,12 @@ values = {
     "INTERNAL_ROS_DOMAIN_ID": bringup.get("internal_ros_domain_id", 10),
     "EXTERNAL_ROS_DOMAIN_ID": bringup.get("external_ros_domain_id", 0),
     "ELEVATION_MAPPING_PUBLISH_RATE_HZ": elevation_publish_rate_hz,
+    "TEMPORAL_FUSION_ENABLED": str(temporal_fusion_enabled).lower(),
     "HEIGHT_MAP_FOV_ENABLED": str(height_map_fov_enabled).lower(),
     "HEIGHT_MAP_FOV_URDF": urdf_file,
     "HEIGHT_MAP_FOV_BASE_FRAME": height_map_fov.get("base_frame", base_frame),
     "HEIGHT_MAP_FOV_CAMERA_TYPE": height_map_fov_camera_type,
     "HEIGHT_MAP_FOV_DEPTH_PROFILE": height_map_fov_depth_profile,
-    "HEIGHT_MAP_FOV_REFERENCE_Z": height_map_fov_reference_z,
     "HEIGHT_MAP_FOV_OUTSIDE_VALUE": height_map_fov_outside_value,
     "HEIGHT_MAP_FOV_RESOLUTION": height_map_fov_resolution,
     "HEIGHT_MAP_FOV_X_LENGTH": height_map_fov_x_max - height_map_fov_x_min,
@@ -489,13 +483,12 @@ shell_array("CAMERA_SOURCES", source_names)
 shell_array("CAMERA_NAMES", camera_names)
 shell_array("CAMERA_NAMESPACES", camera_namespaces)
 shell_array("CAMERA_USB_PORTS", camera_ports)
-shell_array("CAMERA_DRIVER_BASE_FRAMES", camera_driver_frames)
 shell_array("CAMERA_DEPTH_PROFILES", camera_profiles)
 shell_array("CAMERA_RAW_TOPICS", camera_raw_topics)
+shell_array("CAMERA_DEPTH_IMAGE_TOPICS", camera_depth_image_topics)
 shell_array("CAMERA_MAPPED_TOPICS", camera_mapped_topics)
+shell_array("CAMERA_IMU_TOPICS", camera_imu_topics)
 shell_array("CAMERA_MOUNT_FRAMES", camera_mount_frames)
-shell_array("CAMERA_SOURCE_TO_MOUNT_XYZS", camera_source_to_mount_xyzs)
-shell_array("CAMERA_SOURCE_TO_MOUNT_RPYS", camera_source_to_mount_rpys)
 shell_array("CAMERA_NOISE_STDDEVS", camera_noise_stddevs)
 shell_array("CAMERA_MIN_RANGES", camera_min_ranges)
 shell_array("CAMERA_MAX_POINTS", camera_max_points)
@@ -639,22 +632,27 @@ PY
   )
 fi
 
-HEIGHT_MAP_FOV_MASK_FILE=""
+ELEVATION_FOV_MASK_FILE=""
 if [[ "${HEIGHT_MAP_FOV_ENABLED}" == "true" ]]; then
-  HEIGHT_MAP_FOV_MASK_FILE="${RUNTIME_LOG_DIR}/height_fov_mask.txt"
   printf -v HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV '%s,' "${HEIGHT_MAP_FOV_CAMERA_FRAMES[@]}"
   HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV="${HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV%,}"
-  /usr/bin/python3 "${ROOT}/scripts/generate_height_fov_mask.py" \
+  HEIGHT_MAP_FOV_GENERATION_OUTPUT="$(/usr/bin/python3 "${ROOT}/scripts/generate_height_fov_mask.py" \
     --urdf "${HEIGHT_MAP_FOV_URDF}" \
     --base-frame "${HEIGHT_MAP_FOV_BASE_FRAME}" \
     --camera-frames "${HEIGHT_MAP_FOV_CAMERA_FRAMES_CSV}" \
     --resolution "${HEIGHT_MAP_FOV_RESOLUTION}" \
     --x-length "${HEIGHT_MAP_FOV_X_LENGTH}" \
     --y-length "${HEIGHT_MAP_FOV_Y_LENGTH}" \
-    --reference-z "${HEIGHT_MAP_FOV_REFERENCE_Z}" \
     --camera-type "${HEIGHT_MAP_FOV_CAMERA_TYPE}" \
     --depth-profile "${HEIGHT_MAP_FOV_DEPTH_PROFILE}" \
-    --output "${HEIGHT_MAP_FOV_MASK_FILE}"
+    --runtime-mask)"
+  printf '%s\n' "${HEIGHT_MAP_FOV_GENERATION_OUTPUT}"
+  ELEVATION_FOV_MASK_FILE="$(printf '%s\n' "${HEIGHT_MAP_FOV_GENERATION_OUTPUT}" | \
+    sed -n 's/^FOV_MASK_FILE=//p' | tail -n 1)"
+  [[ -n "${ELEVATION_FOV_MASK_FILE}" && -f "${ELEVATION_FOV_MASK_FILE}" ]] || {
+    echo "error: elevation FOV mask generator did not report a valid output file" >&2
+    exit 1
+  }
 fi
 
 start() {
@@ -707,7 +705,11 @@ trap 'exit 143' TERM
 echo "autonomy-light: SLAM + camera elevation + Nav2"
 echo "  ROS domains: internal ${INTERNAL_ROS_DOMAIN_ID}; external ${EXTERNAL_ROS_DOMAIN_ID}"
 echo "  LiDAR: Super-LIO -> Nav2 occupancy"
-echo "  camera: observation_merge -> elevation map"
+if [[ "${TEMPORAL_FUSION_ENABLED}" == "true" ]]; then
+  echo "  camera: SLAM-registered temporal elevation fusion"
+else
+  echo "  camera: D435i-IMU levelled single-frame elevation mapping"
+fi
 echo "  command: /nav2/cmd_vel -> internal CommandCore -> external /control_command/autopilot"
 echo "  TF: static sensor extrinsics only"
 if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
@@ -835,59 +837,80 @@ fi
 declare -a CAMERA_PIDS=()
 if [[ "${MODE}" == "real" && "${NO_DRIVERS}" == "false" ]]; then
   for camera_index in "${!CAMERA_SOURCES[@]}"; do
-    start "RealSense ${CAMERA_SOURCES[camera_index]}" ros2 launch realsense2_camera rs_launch.py \
+    CAMERA_DRIVER_ARGS=(
       "camera_name:=${CAMERA_NAMES[camera_index]}" \
       "camera_namespace:=${CAMERA_NAMESPACES[camera_index]}" \
       "usb_port_id:=${CAMERA_USB_PORTS[camera_index]}" \
-      "base_frame_id:=${CAMERA_DRIVER_BASE_FRAMES[camera_index]}" \
       "publish_tf:=false" \
       "enable_depth:=true" "enable_color:=false" \
       "depth_module.depth_profile:=${CAMERA_DEPTH_PROFILES[camera_index]}" \
       "pointcloud.enable:=true" "pointcloud.allow_no_texture_points:=true" \
       "pointcloud.stream_filter:=1" "decimation_filter.enable:=true" \
       "decimation_filter.filter_magnitude:=4"
+    )
+    if [[ "${TEMPORAL_FUSION_ENABLED}" == "false" ]]; then
+      CAMERA_DRIVER_ARGS+=(
+        "enable_gyro:=true" "enable_accel:=true" "unite_imu_method:=2"
+      )
+    fi
+    start "RealSense ${CAMERA_SOURCES[camera_index]}" ros2 launch realsense2_camera rs_launch.py \
+      "${CAMERA_DRIVER_ARGS[@]}"
     CAMERA_PIDS+=("${LAST_PID}")
   done
 fi
 
 ELEVATION_ARGS=(--ros-args --params-file "${ELEVATION_CONFIG}")
 [[ "${MODE}" == "sim" ]] && ELEVATION_ARGS+=(-p use_sim_time:=true)
+[[ "${ENABLE_STATUS}" == "true" ]] && ELEVATION_ARGS+=(-p diagnostics.enabled:=true)
 MAPPER_ARGS=("${ELEVATION_ARGS[@]}")
-if [[ -n "${HEIGHT_MAP_FOV_MASK_FILE}" ]]; then
+if [[ -n "${ELEVATION_FOV_MASK_FILE}" ]]; then
   MAPPER_ARGS+=(
-    -p "fov.mask_file:=${HEIGHT_MAP_FOV_MASK_FILE}"
+    -p "fov.mask_file:=${ELEVATION_FOV_MASK_FILE}"
     -p "fov.outside_value:=${HEIGHT_MAP_FOV_OUTSIDE_VALUE}"
   )
 fi
-start "gravity-frame broadcaster" ros2 run autonomy_light gravity_frame_broadcaster "${ELEVATION_ARGS[@]}"
+GRAVITY_ARGS=("${ELEVATION_ARGS[@]}")
+if [[ "${TEMPORAL_FUSION_ENABLED}" == "false" ]]; then
+  GRAVITY_ARGS+=(
+    -p orientation_source:=d435i_imu
+    -p "imu_topic:=${CAMERA_IMU_TOPICS[0]}"
+    -p "imu_mount_frame:=${CAMERA_MOUNT_FRAMES[0]}"
+  )
+fi
+start "gravity-frame broadcaster" ros2 run autonomy_light gravity_frame_broadcaster "${GRAVITY_ARGS[@]}"
 GRAVITY_PID="${LAST_PID}"
 declare -a CAMERA_MAPPER_PIDS=()
 for camera_index in "${!CAMERA_SOURCES[@]}"; do
+  CAMERA_MAPPER_OUTPUT_TOPIC="${CAMERA_MAPPED_TOPICS[camera_index]}"
+  CAMERA_MAPPER_MODE_ARGS=()
+  if [[ "${TEMPORAL_FUSION_ENABLED}" == "false" ]]; then
+    CAMERA_MAPPER_OUTPUT_TOPIC="/autonomy_light/merged_observations"
+    CAMERA_MAPPER_MODE_ARGS+=(
+      -p local_gravity_mode:=true
+      -p gravity_frame:=base_link_gravity
+    )
+  fi
   start "camera mapper ${CAMERA_SOURCES[camera_index]}" \
     ros2 run autonomy_light camera_frame_mapper "${ELEVATION_ARGS[@]}" \
     -r "__node:=camera_frame_mapper_${CAMERA_SOURCES[camera_index]}" \
     -p "input_topic:=${CAMERA_RAW_TOPICS[camera_index]}" \
-    -p "output_topic:=${CAMERA_MAPPED_TOPICS[camera_index]}" \
+    -p "output_topic:=${CAMERA_MAPPER_OUTPUT_TOPIC}" \
     -p "mount_frame:=${CAMERA_MOUNT_FRAMES[camera_index]}" \
-    -p "source_to_mount_xyz:=${CAMERA_SOURCE_TO_MOUNT_XYZS[camera_index]}" \
-    -p "source_to_mount_rpy:=${CAMERA_SOURCE_TO_MOUNT_RPYS[camera_index]}" \
     -p "noise_stddev:=${CAMERA_NOISE_STDDEVS[camera_index]}" \
     -p "min_range:=${CAMERA_MIN_RANGES[camera_index]}" \
     -p "max_points:=${CAMERA_MAX_POINTS[camera_index]}" \
-    -p tf_timeout_sec:=0.020
+    -p tf_timeout_sec:=0.020 \
+    "${CAMERA_MAPPER_MODE_ARGS[@]}"
   CAMERA_MAPPER_PIDS+=("${LAST_PID}")
 done
-start "camera observation merge" ros2 run autonomy_light observation_merge "${ELEVATION_ARGS[@]}"
-MERGE_PID="${LAST_PID}"
+MERGE_PID=""
+if [[ "${TEMPORAL_FUSION_ENABLED}" == "true" ]]; then
+  start "camera observation merge" ros2 run autonomy_light observation_merge "${ELEVATION_ARGS[@]}"
+  MERGE_PID="${LAST_PID}"
+fi
 start "elevation mapper" ros2 run autonomy_light precise_elevation_mapping "${MAPPER_ARGS[@]}"
 MAPPER_PID="${LAST_PID}"
 HEIGHT_MAP_BRIDGE_ARGS=("${ELEVATION_ARGS[@]}")
-if [[ -n "${HEIGHT_MAP_FOV_MASK_FILE}" ]]; then
-  HEIGHT_MAP_BRIDGE_ARGS+=(
-    -p "fov.mask_file:=${HEIGHT_MAP_FOV_MASK_FILE}"
-    -p "fov.outside_value:=${HEIGHT_MAP_FOV_OUTSIDE_VALUE}"
-  )
-fi
 HEIGHT_VISUALIZATION_TOPIC="/autonomy_light/height_map_visualization"
 if [[ "${ENABLE_HEIGHT_VISUALIZATION}" == "true" ]]; then
   # This private ROS mirror exists only while the local visualization is
@@ -929,7 +952,8 @@ fi
 if [[ "${ENABLE_HEIGHT_VISUALIZATION}" == "true" ]]; then
   start "height-map 2D visualizer (${ELEVATION_MAPPING_PUBLISH_RATE_HZ} Hz)" \
     /usr/bin/python3 "${ROOT}/scripts/visualize_height_map.py" \
-    --rate "${ELEVATION_MAPPING_PUBLISH_RATE_HZ}" --topic "${HEIGHT_VISUALIZATION_TOPIC}"
+    --rate "${ELEVATION_MAPPING_PUBLISH_RATE_HZ}" --topic "${HEIGHT_VISUALIZATION_TOPIC}" \
+    --depth-topic "${CAMERA_DEPTH_IMAGE_TOPICS[0]}"
 fi
 
 declare -a CRITICAL_PIDS=("${STATIC_TF_PIDS[@]}" "${GRAVITY_PID}" "${CAMERA_MAPPER_PIDS[@]}" "${MERGE_PID}" "${MAPPER_PID}" "${BRIDGE_PID}")

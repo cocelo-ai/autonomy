@@ -107,7 +107,7 @@ Useful options:
 ```bash
 ./launch.sh --check
 ./launch.sh --vis-rate 2.0       # clean SLAM/elevation terminal dashboard
-./launch.sh --vis-height         # 18x8 (144-cell) map at elevation_mapping.publish_rate_hz; +x up, +y right
+./launch.sh --vis-height         # left: DDS height map; right: live camera depth image
 ./launch.sh --no-status          # raw node output remains in log/runtime_*/
 ./launch.sh --rviz
 ./launch.sh --no-nav2

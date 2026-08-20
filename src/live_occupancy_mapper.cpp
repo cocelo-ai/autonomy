@@ -58,7 +58,6 @@ struct GroundPlane {
   std::size_t inliers{0U};
   bool valid{false};
 };
-
 }  // namespace
 
 class LiveOccupancyMapper : public rclcpp::Node {

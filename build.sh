@@ -139,9 +139,6 @@ colcon build --packages-up-to "${PACKAGES[@]}" \
     "${WORKSPACE_DIR}/third_party/core" \
     "${WORKSPACE_DIR}/third_party/livox_ros_driver2" \
     "${WORKSPACE_DIR}/third_party/super_lio_ros2" \
-    "${WORKSPACE_DIR}/third_party/kindr" \
-    "${WORKSPACE_DIR}/third_party/kindr_ros" \
-    "${WORKSPACE_DIR}/third_party/elevation_mapping" \
   --cmake-args \
     -DROS_EDITION=ROS2 \
     -DDISTRO_ROS="${ROS_DISTRO_NAME}" \

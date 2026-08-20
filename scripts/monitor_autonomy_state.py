@@ -9,7 +9,6 @@ import sys
 import time
 
 import rclpy
-from grid_map_msgs.msg import GridMap
 from geometry_msgs.msg import Twist
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
@@ -17,6 +16,8 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32, String
+
+from autonomy_light.msg import HeightMap
 
 
 def positive_rate(value: str) -> float:
@@ -51,7 +52,7 @@ class AutonomyStateMonitor(Node):
         self._table_width = max(40, terminal_columns - 2)
         self._odom: Odometry | None = None
         self._odom_received_at: float | None = None
-        self._elevation: GridMap | None = None
+        self._elevation: HeightMap | None = None
         self._elevation_received_at: float | None = None
         self._elevation_heartbeat = "waiting_for_observation"
         self._elevation_heartbeat_received_at: float | None = None
@@ -83,7 +84,7 @@ class AutonomyStateMonitor(Node):
         self._command_received_at: float | None = None
 
         self.create_subscription(Odometry, "/lio/odom", self._on_odom, 10)
-        self.create_subscription(GridMap, "/autonomy_light/elevation_map",
+        self.create_subscription(HeightMap, "/autonomy_light/elevation_map",
                                  self._on_elevation, 1)
         self.create_subscription(String,
                                  "/autonomy_light/heartbeat/precise_elevation_mapping",
@@ -109,7 +110,7 @@ class AutonomyStateMonitor(Node):
         self._odom = message
         self._odom_received_at = time.monotonic()
 
-    def _on_elevation(self, message: GridMap) -> None:
+    def _on_elevation(self, message: HeightMap) -> None:
         self._elevation = message
         self._elevation_received_at = time.monotonic()
 
@@ -247,30 +248,16 @@ class AutonomyStateMonitor(Node):
         if self._elevation is None:
             rows.append(("GRID", "waiting for /autonomy_light/elevation_map", self._DIM, False))
         else:
-            info = self._elevation.info
-            width = max(0, round(info.length_x / info.resolution)) if info.resolution > 0.0 else 0
-            height = max(0, round(info.length_y / info.resolution)) if info.resolution > 0.0 else 0
-            layer_count = len(self._elevation.layers)
-            if layer_count == 0:
-                layer_text = "no layers"
-            elif layer_count == 1:
-                layer_text = self._elevation.layers[0]
-            elif "elevation" in self._elevation.layers:
-                layer_text = f"{layer_count} layers (elevation + {layer_count - 1})"
-            else:
-                layer_text = f"{layer_count} layers"
-            valid = total = 0
-            try:
-                elevation_index = list(self._elevation.layers).index("elevation")
-                values = self._elevation.data[elevation_index].data
-                total = len(values)
-                valid = sum(math.isfinite(value) for value in values)
-            except (ValueError, IndexError):
-                pass
+            resolution = float(self._elevation.resolution)
+            width = max(0, round(float(self._elevation.x_length) / resolution)) if resolution > 0.0 else 0
+            height = max(0, round(float(self._elevation.y_length) / resolution)) if resolution > 0.0 else 0
+            values = self._elevation.data
+            total = len(values)
+            valid = sum(math.isfinite(value) for value in values)
             valid_text = "n/a" if total == 0 else f"{valid}/{total} ({100.0 * valid / total:.1f}%)"
             rows.extend([
                 ("GRID", f"{self._elevation.header.frame_id or 'unknown'} | {width}x{height} @ "
-                 f"{info.resolution:.3f} m | {layer_text}", "", False),
+                 f"{resolution:.3f} m | HeightMap", "", False),
                 ("VALID CELLS", valid_text, self._state_color(self._elevation_received_at, valid > 0), False),
             ])
         merge_age = self._age(self._merge_heartbeat_received_at)

@@ -90,6 +90,8 @@ struct CameraFrameMapper::Impl {
     map_frame = node.declare_parameter<std::string>("map_frame", "map");
     base_frame = node.declare_parameter<std::string>("base_frame", "base_link");
     mount_frame = node.declare_parameter<std::string>("mount_frame", "F_camera_link");
+    gravity_frame = node.declare_parameter<std::string>("gravity_frame", "base_link_gravity");
+    local_gravity_mode = node.declare_parameter<bool>("local_gravity_mode", false);
     frame_override = node.declare_parameter<std::string>("frame_override", "");
     const auto source_to_mount_xyz = node.declare_parameter<std::vector<double>>(
         "source_to_mount_xyz", {0.0, 0.0, 0.0});
@@ -104,8 +106,10 @@ struct CameraFrameMapper::Impl {
       return values.size() == 3U && std::all_of(values.begin(), values.end(),
           [](const double value) { return std::isfinite(value); });
     };
-    if (input_topic.empty() || output_topic.empty() || map_frame.empty() || base_frame.empty() ||
-        mount_frame.empty() || noise_stddev <= 0.0 || min_range < 0.0 ||
+    if (input_topic.empty() || output_topic.empty() || base_frame.empty() || mount_frame.empty() ||
+        (!local_gravity_mode && map_frame.empty()) ||
+        (local_gravity_mode && (gravity_frame.empty() || gravity_frame == base_frame)) ||
+        noise_stddev <= 0.0 || min_range < 0.0 ||
         max_range <= min_range || max_points <= 0 || tf_timeout_sec < 0.0 ||
         !valid_vector3(source_to_mount_xyz) || !valid_vector3(source_to_mount_rpy)) {
       throw std::invalid_argument("camera_frame_mapper parameters are invalid");
@@ -121,10 +125,11 @@ struct CameraFrameMapper::Impl {
     subscription = node.create_subscription<sensor_msgs::msg::PointCloud2>(
         input_topic, rclcpp::SensorDataQoS(),
         [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) { onCloud(std::move(cloud)); });
+    const auto &target_frame = local_gravity_mode ? gravity_frame : map_frame;
     RCLCPP_INFO(node.get_logger(),
                 "Camera frame mapper: %s -> %s (%s via static mount %s, driver TF disabled, "
                 "source optical RPY [%.3f, %.3f, %.3f])",
-                input_topic.c_str(), output_topic.c_str(), map_frame.c_str(), mount_frame.c_str(),
+                input_topic.c_str(), output_topic.c_str(), target_frame.c_str(), mount_frame.c_str(),
                 source_to_mount_rpy[0], source_to_mount_rpy[1], source_to_mount_rpy[2]);
   }
 
@@ -148,19 +153,34 @@ struct CameraFrameMapper::Impl {
       return;
     }
     const rclcpp::Time stamp(cloud->header.stamp);
-    tf2::Transform map_from_mount;
-    tf2::Transform map_from_source;
+    tf2::Transform target_from_source;
+    std::string target_frame;
     try {
-      tf_buffer.lookupTransform(base_frame, mount_frame, stamp,
-                                rclcpp::Duration::from_seconds(tf_timeout_sec));
-      const auto transform = tf_buffer.lookupTransform(
-          map_frame, mount_frame, stamp, rclcpp::Duration::from_seconds(tf_timeout_sec));
-      tf2::fromMsg(transform.transform, map_from_mount);
-      map_from_source = map_from_mount * mount_from_source;
+      if (local_gravity_mode) {
+        const auto base_from_mount_message = tf_buffer.lookupTransform(
+            base_frame, mount_frame, stamp, rclcpp::Duration::from_seconds(tf_timeout_sec));
+        const auto gravity_from_base_message = tf_buffer.lookupTransform(
+            gravity_frame, base_frame, stamp, rclcpp::Duration::from_seconds(tf_timeout_sec));
+        tf2::Transform base_from_mount;
+        tf2::Transform gravity_from_base;
+        tf2::fromMsg(base_from_mount_message.transform, base_from_mount);
+        tf2::fromMsg(gravity_from_base_message.transform, gravity_from_base);
+        target_from_source = gravity_from_base * base_from_mount * mount_from_source;
+        target_frame = gravity_frame;
+      } else {
+        tf_buffer.lookupTransform(base_frame, mount_frame, stamp,
+                                  rclcpp::Duration::from_seconds(tf_timeout_sec));
+        const auto transform = tf_buffer.lookupTransform(
+            map_frame, mount_frame, stamp, rclcpp::Duration::from_seconds(tf_timeout_sec));
+        tf2::Transform map_from_mount;
+        tf2::fromMsg(transform.transform, map_from_mount);
+        target_from_source = map_from_mount * mount_from_source;
+        target_frame = map_frame;
+      }
     } catch (const tf2::TransformException &error) {
       RCLCPP_WARN_THROTTLE(node.get_logger(), *node.get_clock(), 2000,
-                           "Waiting for camera/SLAM TF %s -> %s: %s",
-                           map_frame.c_str(), mount_frame.c_str(), error.what());
+                           "Waiting for camera transform into %s: %s",
+                           (local_gravity_mode ? gravity_frame : map_frame).c_str(), error.what());
       return;
     }
 
@@ -183,7 +203,7 @@ struct CameraFrameMapper::Impl {
       if (range_squared < min_range_squared || range_squared > max_range_squared) {
         continue;
       }
-      const tf2::Vector3 mapped_point = map_from_source * tf2::Vector3(x, y, z);
+      const tf2::Vector3 mapped_point = target_from_source * tf2::Vector3(x, y, z);
       if (!std::isfinite(mapped_point.x()) || !std::isfinite(mapped_point.y()) ||
           !std::isfinite(mapped_point.z())) {
         continue;
@@ -203,7 +223,7 @@ struct CameraFrameMapper::Impl {
     }
     sensor_msgs::msg::PointCloud2 output;
     output.header.stamp = cloud->header.stamp;
-    output.header.frame_id = map_frame;
+    output.header.frame_id = target_frame;
     output.height = 1;
     output.width = static_cast<std::uint32_t>(mapped.size());
     output.is_bigendian = false;
@@ -229,7 +249,9 @@ struct CameraFrameMapper::Impl {
   std::string map_frame;
   std::string base_frame;
   std::string mount_frame;
+  std::string gravity_frame;
   std::string frame_override;
+  bool local_gravity_mode{false};
   tf2::Transform mount_from_source;
   double noise_stddev{0.025};
   double min_range{0.30};

@@ -1,5 +1,6 @@
 #include "autonomy_light/precise_elevation_mapping.hpp"
 #include "autonomy_light/fov_mask.hpp"
+#include "autonomy_light/msg/height_map.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,13 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include <geometry_msgs/msg/pose.hpp>
-#include <grid_map_msgs/msg/grid_map.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
-#include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float32.hpp>
-#include <std_msgs/msg/multi_array_dimension.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2/LinearMath/Vector3.h>
@@ -353,25 +350,101 @@ void smoothObservedSurfacesEdgeAware(std::vector<float> &height,
   variance.swap(source_variance);
 }
 
-std_msgs::msg::Float32MultiArray layer(
-    const std::vector<float> &row_major, const std::uint32_t width,
-    const std::uint32_t height) {
-  std_msgs::msg::Float32MultiArray output;
-  output.layout.dim.resize(2);
-  output.layout.dim[0].label = "column_index";
-  output.layout.dim[0].size = width;
-  output.layout.dim[0].stride = width * height;
-  output.layout.dim[1].label = "row_index";
-  output.layout.dim[1].size = height;
-  output.layout.dim[1].stride = height;
-  output.data.resize(static_cast<std::size_t>(width) * height, kNan);
-  for (std::uint32_t row = 0; row < height; ++row) {
-    for (std::uint32_t column = 0; column < width; ++column) {
-      output.data[static_cast<std::size_t>(column) * height + row] =
-          row_major[indexOf(row, column, width)];
+// NaN is useful as an internal "not observed" sentinel while filtering, but
+// it is not a valid value on the DDS height-map interface.  Propagate nearby
+// terrain into each hole first; if an entire map has no observation, use the
+// explicit finite fallback required by the interface.
+void fillRemainingHolesStrict(std::vector<float> &height,
+                              std::vector<float> &variance,
+                              const std::uint32_t rows,
+                              const std::uint32_t columns,
+                              const float fallback_variance,
+                              const float fully_unknown_value) {
+  if (height.empty() || rows == 0U || columns == 0U) {
+    return;
+  }
+
+  auto source = height;
+  auto destination = height;
+  auto source_variance = variance;
+  auto destination_variance = variance;
+  const auto max_iterations = std::max(rows, columns);
+  for (std::uint32_t iteration = 0; iteration < max_iterations; ++iteration) {
+    bool filled_any = false;
+    destination = source;
+    destination_variance = source_variance;
+    for (std::uint32_t row = 0; row < rows; ++row) {
+      for (std::uint32_t column = 0; column < columns; ++column) {
+        const auto index = indexOf(row, column, columns);
+        if (finite(source[index])) {
+          continue;
+        }
+        float weighted_sum = 0.0F;
+        float weight_sum = 0.0F;
+        float variance_sum = 0.0F;
+        std::uint32_t support = 0U;
+        for (int delta_row = -1; delta_row <= 1; ++delta_row) {
+          const int next_row = static_cast<int>(row) + delta_row;
+          if (next_row < 0 || next_row >= static_cast<int>(rows)) {
+            continue;
+          }
+          for (int delta_column = -1; delta_column <= 1; ++delta_column) {
+            const int next_column = static_cast<int>(column) + delta_column;
+            if (next_column < 0 || next_column >= static_cast<int>(columns) ||
+                (delta_row == 0 && delta_column == 0)) {
+              continue;
+            }
+            const auto neighbour_index = indexOf(
+                static_cast<std::uint32_t>(next_row),
+                static_cast<std::uint32_t>(next_column), columns);
+            if (!finite(source[neighbour_index])) {
+              continue;
+            }
+            const float distance_squared = static_cast<float>(
+                delta_row * delta_row + delta_column * delta_column);
+            const float weight = 1.0F / (1.0F + distance_squared);
+            weighted_sum += weight * source[neighbour_index];
+            weight_sum += weight;
+            variance_sum += source_variance[neighbour_index];
+            ++support;
+          }
+        }
+        if (weight_sum > 1.0e-6F) {
+          destination[index] = weighted_sum / weight_sum;
+          destination_variance[index] = variance_sum / static_cast<float>(support);
+          filled_any = true;
+        }
+      }
+    }
+    source.swap(destination);
+    source_variance.swap(destination_variance);
+    if (!filled_any) {
+      break;
     }
   }
-  return output;
+
+  std::vector<float> finite_values;
+  finite_values.reserve(source.size());
+  for (const float value : source) {
+    if (finite(value)) {
+      finite_values.push_back(value);
+    }
+  }
+  float fallback_value = fully_unknown_value;
+  if (!finite_values.empty()) {
+    const auto middle = finite_values.begin() +
+                        static_cast<std::ptrdiff_t>(finite_values.size() / 2U);
+    std::nth_element(finite_values.begin(), middle, finite_values.end());
+    fallback_value = *middle;
+  }
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    if (!finite(source[index])) {
+      source[index] = fallback_value;
+      source_variance[index] = fallback_variance;
+    }
+  }
+  height.swap(source);
+  variance.swap(source_variance);
 }
 
 }  // namespace
@@ -389,11 +462,10 @@ struct PreciseElevationMapping::Impl {
     output_topic = node.declare_parameter<std::string>(
         "output_topic", "/autonomy_light/elevation_map");
     output_frame = node.declare_parameter<std::string>("output_frame", "base_link_gravity");
+    target_link = node.declare_parameter<std::string>("output.target_link", "base_link");
     publish_rate_hz = node.declare_parameter<double>("publish_rate_hz", 50.0);
     map_frame = node.declare_parameter<std::string>("slam.map_frame", "map");
     temporal_enabled = node.declare_parameter<bool>("algorithm.temporal.enabled", true);
-    temporal_require_slam_tf = node.declare_parameter<bool>(
-        "algorithm.temporal.require_slam_tf", true);
     temporal_tf_timeout_sec = node.declare_parameter<double>(
         "algorithm.temporal.tf_timeout_sec", 0.02);
     temporal_variance_rate = node.declare_parameter<double>(
@@ -411,6 +483,8 @@ struct PreciseElevationMapping::Impl {
     grid.y_max = node.declare_parameter<double>("grid.y_max", grid.y_max);
     grid.z_min = node.declare_parameter<double>("grid.z_min", grid.z_min);
     grid.z_max = node.declare_parameter<double>("grid.z_max", grid.z_max);
+    output_clip_min = node.declare_parameter<double>("output.clip_min", grid.z_min);
+    output_clip_max = node.declare_parameter<double>("output.clip_max", grid.z_max);
     noise_alpha = node.declare_parameter<double>("algorithm.uncertainty.noise_alpha", 0.001);
     minimum_measurement_variance = node.declare_parameter<double>(
         "algorithm.uncertainty.min_meas_var", 0.0004);
@@ -450,12 +524,14 @@ struct PreciseElevationMapping::Impl {
     smooth_blend = node.declare_parameter<double>("algorithm.surface_smoothing.blend", 0.45);
     smooth_passes = node.declare_parameter<int>("algorithm.surface_smoothing.passes", 1);
     debug_enabled = node.declare_parameter<bool>("debug.enabled", false);
+    diagnostics_enabled = node.declare_parameter<bool>("diagnostics.enabled", false);
     debug_pointcloud_topic = node.declare_parameter<std::string>(
         "debug.pointcloud_topic", "/autonomy_light/elevation_map/debug_points");
     fov_mask_file = node.declare_parameter<std::string>("fov.mask_file", "");
     fov_outside_value = node.declare_parameter<double>("fov.outside_value", 0.0);
 
-    if (input_topic.empty() || output_topic.empty() || output_frame.empty() || map_frame.empty() ||
+    if (input_topic.empty() || output_topic.empty() || output_frame.empty() || target_link.empty() ||
+        map_frame.empty() ||
         publish_rate_hz <= 0.0 || grid.resolution <= 0.0 ||
         grid.x_max <= grid.x_min || grid.y_max <= grid.y_min ||
         grid.z_max <= grid.z_min || grid.width() == 0 || grid.height() == 0 ||
@@ -464,9 +540,13 @@ struct PreciseElevationMapping::Impl {
         edge_mix_height_difference <= 0.0 || smooth_blend < 0.0 || smooth_blend > 1.0 ||
         temporal_tf_timeout_sec < 0.0 || temporal_variance_rate < 0.0 ||
         temporal_mahalanobis_threshold <= 0.0 || temporal_dynamic_reset_delta < 0.0 ||
-        temporal_dynamic_variance_bump < 0.0 || !std::isfinite(fov_outside_value) ||
+        temporal_dynamic_variance_bump < 0.0 || !std::isfinite(output_clip_min) ||
+        !std::isfinite(output_clip_max) || !std::isfinite(fov_outside_value) ||
         (debug_enabled && debug_pointcloud_topic.empty())) {
       throw std::invalid_argument("precise_elevation_mapping parameters are invalid");
+    }
+    if (output_clip_min > output_clip_max) {
+      std::swap(output_clip_min, output_clip_max);
     }
     fov_mask = loadFovMask(fov_mask_file, grid.width(), grid.height(), grid.resolution,
                            static_cast<double>(grid.width()) * grid.resolution,
@@ -485,26 +565,31 @@ struct PreciseElevationMapping::Impl {
         [this](sensor_msgs::msg::PointCloud2::SharedPtr message) {
           onCloud(std::move(message));
         }, input_options);
-    output = node.create_publisher<grid_map_msgs::msg::GridMap>(
+    output = node.create_publisher<autonomy_light::msg::HeightMap>(
         output_topic, rclcpp::QoS(1).reliable());
     if (debug_enabled) {
       debug_pointcloud = node.create_publisher<sensor_msgs::msg::PointCloud2>(
           debug_pointcloud_topic, rclcpp::SensorDataQoS());
     }
-    heartbeat = node.create_publisher<std_msgs::msg::String>(
-        "/autonomy_light/heartbeat/precise_elevation_mapping", rclcpp::QoS(10));
-    processing_time = node.create_publisher<std_msgs::msg::Float32>(
-        "/autonomy_light/elevation_processing_ms", rclcpp::SensorDataQoS());
+    if (diagnostics_enabled) {
+      heartbeat = node.create_publisher<std_msgs::msg::String>(
+          "/autonomy_light/heartbeat/precise_elevation_mapping", rclcpp::QoS(10));
+      processing_time = node.create_publisher<std_msgs::msg::Float32>(
+          "/autonomy_light/elevation_processing_ms", rclcpp::SensorDataQoS());
+    }
     const auto publish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / publish_rate_hz));
     publish_timer = node.create_wall_timer(
         publish_period, [this]() { publishLatestMap(); }, output_callback_group);
-    heartbeat_timer = node.create_wall_timer(
-        std::chrono::milliseconds(500), [this]() { publishHeartbeat(); }, output_callback_group);
+    if (diagnostics_enabled) {
+      heartbeat_timer = node.create_wall_timer(
+          std::chrono::milliseconds(500), [this]() { publishHeartbeat(); }, output_callback_group);
+    }
     RCLCPP_INFO(node.get_logger(),
-                "Precise elevation map: %s -> %s @ %.1f Hz, %ux%u @ %.3fm, "
+                "Precise elevation map: %s -> %s (distance below %s) @ %.1f Hz, %ux%u @ %.3fm, "
                 "%s edge-aware filtering (SLAM-reprojected temporal fusion: %s, FOV mask: %s)",
-                input_topic.c_str(), output_topic.c_str(), publish_rate_hz, grid.width(), grid.height(),
+                input_topic.c_str(), output_topic.c_str(), target_link.c_str(), publish_rate_hz,
+                grid.width(), grid.height(),
                 grid.resolution, temporal_enabled ? "temporal" : "single-frame",
                 temporal_enabled ? "enabled" : "disabled",
                 fov_mask.enabled ? fov_mask_file.c_str() : "disabled");
@@ -696,13 +781,16 @@ struct PreciseElevationMapping::Impl {
   }
 
   void publishHeartbeat() {
+    if (!heartbeat) {
+      return;
+    }
     std_msgs::msg::String message;
     message.data = frame_count.load() == 0 ? "waiting_for_observation" : "ready";
     heartbeat->publish(message);
   }
 
   void publishLatestMap() {
-    std::shared_ptr<grid_map_msgs::msg::GridMap> map;
+    std::shared_ptr<autonomy_light::msg::HeightMap> map;
     {
       std::lock_guard<std::mutex> lock(latest_map_mutex);
       map = latest_map;
@@ -729,7 +817,7 @@ struct PreciseElevationMapping::Impl {
     const auto cells = static_cast<std::size_t>(width) * height;
     const rclcpp::Time cloud_stamp(cloud->header.stamp);
     const bool temporal_ready = prepareTemporalPrior(cloud_stamp, width, height);
-    if (temporal_enabled && !temporal_ready && temporal_require_slam_tf) {
+    if (temporal_enabled && !temporal_ready) {
       return;
     }
     std::vector<FrameCell> frame(cells);
@@ -833,13 +921,41 @@ struct PreciseElevationMapping::Impl {
           static_cast<float>(smooth_max_difference), smooth_min_support,
           static_cast<float>(smooth_blend), smooth_passes);
     }
+    double target_z = 0.0;
+    try {
+      const auto target_transform = tf_buffer.lookupTransform(
+          output_frame, target_link, cloud_stamp,
+          rclcpp::Duration::from_seconds(temporal_tf_timeout_sec));
+      target_z = target_transform.transform.translation.z;
+    } catch (const tf2::TransformException &error) {
+      RCLCPP_WARN_THROTTLE(node.get_logger(), *node.get_clock(), 2000,
+                           "Waiting for target-link TF %s -> %s: %s",
+                           output_frame.c_str(), target_link.c_str(), error.what());
+      return;
+    }
+    // Temporal state stays in gravity-frame z coordinates so it can be
+    // reprojected geometrically on the next frame. DDS uses the project
+    // convention instead: vertical distance below output.target_link.
+    // Therefore, when target_link=base_link, z=-0.50m is emitted as +0.50m.
     if (temporal_enabled && temporal_ready) {
       commitTemporalState(cloud_stamp, elevation, variance);
     }
+    for (auto &value : elevation) {
+      if (finite(value)) {
+        value = std::clamp(static_cast<float>(target_z) - value,
+                           static_cast<float>(output_clip_min),
+                           static_cast<float>(output_clip_max));
+      }
+    }
 
-    // Preserve temporal state, but never expose terrain outside the
-    // URDF-derived camera FOV. The DDS bridge repeats this at its final output.
-    std::vector<float> fov_mask_layer(cells, 1.0F);
+    // The internal filter deliberately preserves holes as NaN to avoid
+    // smoothing across edges.  Before publishing, however, the HeightMap/DDS
+    // contract is finite-only, so fill every remaining cell deterministically.
+    fillRemainingHolesStrict(elevation, variance, height, width,
+                             static_cast<float>(maximum_cell_variance),
+                             static_cast<float>(output_clip_min));
+
+    // Never expose terrain outside the URDF-derived camera FOV.
     if (fov_mask.enabled) {
       for (std::size_t cell_index = 0; cell_index < cells; ++cell_index) {
         if (fov_mask.inside(cell_index)) {
@@ -849,90 +965,47 @@ struct PreciseElevationMapping::Impl {
         raw_elevation[cell_index] = static_cast<float>(fov_outside_value);
         variance[cell_index] = 0.0F;
         filter_filled[cell_index] = 0U;
-        fov_mask_layer[cell_index] = 0.0F;
       }
     }
 
-    std::vector<float> lower(cells, kNan);
-    std::vector<float> upper(cells, kNan);
-    std::vector<float> uncertainty(cells, kNan);
-    std::vector<float> current_observation(cells, kNan);
-    std::vector<float> filter_filled_layer(cells, kNan);
     std::size_t valid = 0;
     std::size_t raw_observed = 0;
     std::size_t filled = 0;
     for (std::size_t cell_index = 0; cell_index < cells; ++cell_index) {
-      if (fov_mask.enabled && !fov_mask.inside(cell_index)) {
-        // Debug layers must not retain pre-mask terrain samples either.
-        current_observation[cell_index] = 0.0F;
-        filter_filled_layer[cell_index] = 0.0F;
-      } else if (finite(raw_elevation[cell_index])) {
-        current_observation[cell_index] = 1.0F;
+      if ((!fov_mask.enabled || fov_mask.inside(cell_index)) &&
+          finite(raw_elevation[cell_index])) {
         ++raw_observed;
       }
       if (!finite(elevation[cell_index])) {
         continue;
       }
       if (filter_filled[cell_index] != 0U) {
-        filter_filled_layer[cell_index] = 1.0F;
         ++filled;
       }
-      const float sigma = std::sqrt(std::max(variance[cell_index], 0.0F));
-      lower[cell_index] = elevation[cell_index] - 2.0F * sigma;
-      upper[cell_index] = elevation[cell_index] + 2.0F * sigma;
-      uncertainty[cell_index] = 4.0F * sigma;
       ++valid;
     }
     if (debug_enabled) {
       publishDebugCloud(elevation, rclcpp::Time(cloud->header.stamp), debug_pointcloud);
     }
 
-    grid_map_msgs::msg::GridMap message;
+    autonomy_light::msg::HeightMap message;
     message.header = cloud->header;
     message.header.frame_id = output_frame;
-    message.info.resolution = grid.resolution;
-    message.info.length_x = static_cast<double>(width) * grid.resolution;
-    message.info.length_y = static_cast<double>(height) * grid.resolution;
-    message.info.pose.position.x = grid.x_min + message.info.length_x / 2.0;
-    message.info.pose.position.y = grid.y_min + message.info.length_y / 2.0;
-    message.info.pose.position.z = 0.0;
-    message.info.pose.orientation.w = 1.0;
-    message.layers = {"elevation", "lower_bound", "upper_bound", "uncertainty_range"};
-    if (fov_mask.enabled) {
-      message.layers.push_back("fov_mask");
-    }
-    if (debug_enabled) {
-      // raw_elevation and current_observation contain only this cloud's
-      // measurements. The final elevation may additionally contain a
-      // Super-LIO-reprojected temporal estimate; filter_filled marks the
-      // current local interpolation exception.
-      message.layers.insert(message.layers.end(), {
-          "raw_elevation", "current_observation", "filter_filled"});
-    }
-    message.data.reserve(message.layers.size());
-    message.data.push_back(layer(elevation, width, height));
-    message.data.push_back(layer(lower, width, height));
-    message.data.push_back(layer(upper, width, height));
-    message.data.push_back(layer(uncertainty, width, height));
-    if (fov_mask.enabled) {
-      message.data.push_back(layer(fov_mask_layer, width, height));
-    }
-    if (debug_enabled) {
-      message.data.push_back(layer(raw_elevation, width, height));
-      message.data.push_back(layer(current_observation, width, height));
-      message.data.push_back(layer(filter_filled_layer, width, height));
-    }
-    message.outer_start_index = 0;
-    message.inner_start_index = 0;
+    message.data = std::move(elevation);
+    message.resolution = static_cast<float>(grid.resolution);
+    message.x_length = static_cast<float>(static_cast<double>(width) * grid.resolution);
+    message.y_length = static_cast<float>(static_cast<double>(height) * grid.resolution);
     {
       std::lock_guard<std::mutex> lock(latest_map_mutex);
-      latest_map = std::make_shared<grid_map_msgs::msg::GridMap>(std::move(message));
+      latest_map = std::make_shared<autonomy_light::msg::HeightMap>(std::move(message));
     }
     std_msgs::msg::Float32 processing_message;
     processing_message.data = static_cast<float>(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                    processing_started).count());
-    processing_time->publish(processing_message);
+    if (processing_time) {
+      processing_time->publish(processing_message);
+    }
     ++frame_count;
     RCLCPP_INFO_THROTTLE(node.get_logger(), *node.get_clock(), 2000,
                          "Precise frame: input=%zu ROI=%zu raw=%zu filter_fill=%zu valid=%zu/%zu (%.1f%%)",
@@ -944,10 +1017,13 @@ struct PreciseElevationMapping::Impl {
   std::string input_topic;
   std::string output_topic;
   std::string output_frame;
+  std::string target_link;
   std::string map_frame;
   double publish_rate_hz{50.0};
   GridGeometry grid;
   double noise_alpha{0.001};
+  double output_clip_min{-1.20};
+  double output_clip_max{0.80};
   double minimum_measurement_variance{0.0004};
   double maximum_cell_variance{0.01};
   double robust_height_gate{0.04};
@@ -971,13 +1047,13 @@ struct PreciseElevationMapping::Impl {
   double smooth_blend{0.45};
   int smooth_passes{1};
   bool temporal_enabled{true};
-  bool temporal_require_slam_tf{true};
   double temporal_tf_timeout_sec{0.02};
   double temporal_variance_rate{0.20};
   double temporal_mahalanobis_threshold{3.0};
   double temporal_dynamic_reset_delta{0.10};
   double temporal_dynamic_variance_bump{0.0225};
   bool debug_enabled{false};
+  bool diagnostics_enabled{false};
   std::string debug_pointcloud_topic;
   std::string fov_mask_file;
   double fov_outside_value{0.0};
@@ -994,14 +1070,14 @@ struct PreciseElevationMapping::Impl {
   std::vector<float> temporal_elevation;
   std::vector<float> temporal_variance;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr input;
-  rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr output;
+  rclcpp::Publisher<autonomy_light::msg::HeightMap>::SharedPtr output;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pointcloud;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr processing_time;
   rclcpp::CallbackGroup::SharedPtr input_callback_group;
   rclcpp::CallbackGroup::SharedPtr output_callback_group;
   std::mutex latest_map_mutex;
-  std::shared_ptr<grid_map_msgs::msg::GridMap> latest_map;
+  std::shared_ptr<autonomy_light::msg::HeightMap> latest_map;
   rclcpp::TimerBase::SharedPtr publish_timer;
   rclcpp::TimerBase::SharedPtr heartbeat_timer;
 };

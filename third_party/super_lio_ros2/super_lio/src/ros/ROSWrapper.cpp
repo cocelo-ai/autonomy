@@ -100,7 +100,7 @@ void ROSWrapper::pub_odom(const NavState& state){
     pub_msg2uav_->publish(msg2uav_);
   }
 
-  if((last_path_point_ - robo_position).norm() > 0.1)
+  if(g_publish_path && (last_path_point_ - robo_position).norm() > 0.1)
   {
     path_.header.stamp = odom.header.stamp;
     geometry_msgs::msg::PoseStamped point;

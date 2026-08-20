@@ -76,6 +76,7 @@ namespace LI2Sup{
   bool g_2_ml_map = false;
   bool g_visual_map = true;
   bool g_visual_dense = false;
+  bool g_publish_path = false;
   int  g_pub_step;
   double g_tf_publish_rate_hz = 50.0;
 

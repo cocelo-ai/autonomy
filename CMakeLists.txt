@@ -9,7 +9,6 @@ find_package(ament_cmake REQUIRED)
 find_package(CycloneDDS REQUIRED CONFIG)
 find_package(core REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(grid_map_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -30,14 +29,7 @@ add_executable(height_map_bridge
   src/height_map_bridge_main.cpp
 )
 ament_target_dependencies(height_map_bridge
-  geometry_msgs
-  grid_map_msgs
   rclcpp
-  sensor_msgs
-  std_msgs
-  tf2
-  tf2_geometry_msgs
-  tf2_ros
 )
 rosidl_get_typesupport_target(height_map_bridge_typesupport
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
@@ -90,6 +82,7 @@ add_executable(gravity_frame_broadcaster
 ament_target_dependencies(gravity_frame_broadcaster
   geometry_msgs
   rclcpp
+  sensor_msgs
   tf2
   tf2_geometry_msgs
   tf2_ros
@@ -134,8 +127,6 @@ add_executable(precise_elevation_mapping
   src/precise_elevation_mapping_main.cpp
 )
 ament_target_dependencies(precise_elevation_mapping
-  geometry_msgs
-  grid_map_msgs
   rclcpp
   sensor_msgs
   std_msgs
@@ -143,6 +134,7 @@ ament_target_dependencies(precise_elevation_mapping
   tf2_geometry_msgs
   tf2_ros
 )
+target_link_libraries(precise_elevation_mapping ${height_map_bridge_typesupport})
 target_include_directories(precise_elevation_mapping PRIVATE include)
 
 install(TARGETS

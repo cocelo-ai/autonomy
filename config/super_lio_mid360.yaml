@@ -82,9 +82,13 @@ bringup:
     lio.output.plan_env_body: false
     lio.output.ml_map: false
     lio.output.planner: false
+    # /lio/cloud_world is consumed only by the occupancy mapper. It does not
+    # need the dense 60 Hz visualization cloud; 5 Hz of the LIO-downsampled
+    # cloud is sufficient for the rolling local-obstacle map.
     lio.output.map: true
-    lio.output.dense: true
-    lio.output.pub_step: 1
+    lio.output.dense: false
+    lio.output.path: false
+    lio.output.pub_step: 12
     # Re-broadcast map -> odom -> lidar_link and the latest /lio/odom state at 50 Hz.
     # This does not fabricate a faster estimator update; reissued odometry
     # retains its original measurement timestamp.

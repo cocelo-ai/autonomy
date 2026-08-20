@@ -9,7 +9,7 @@ bringup:
     # The launcher parses this URDF and publishes only the fixed paths needed
     # for LiDAR -> base and the cameras selected below; it never starts a
     # robot model or joint-state publisher.
-    urdf: resources/urdf/f4/f4.urdf
+    urdf: resources/urdf/f16/f16.urdf
     lidar_frame: lidar_link
     base_frame: base_link
     # A camera key is also the mapper/merge source name. launch.sh starts only
@@ -20,11 +20,9 @@ bringup:
         namespace: front_d435
         # Observed by show_realsense_usb_ports.py (D435i, serial 243522073112).
         usb_port_id: 2-1.2
-        # This name is private to realsense2_camera. Its TF publishing is
-        # disabled: elevation uses the static F_camera_link TF plus the fixed
-        # source_to_mount_* conversion below, so no driver-specific frames
-        # appear in the global TF graph.
-        driver_base_frame_id: link
+        # This PointCloud2 stream is the source measurement for the elevation
+        # map.  Keep it above the 50 Hz elevation/DDS update rate so each map
+        # publication can use a fresh depth observation.
         depth_profile: 640x480x60
 
 camera_frame_mapper:
@@ -39,21 +37,35 @@ camera_frame_mapper:
     max_range: 3.00
     max_points: 60000
     tf_timeout_sec: 0.020
+    # launch.sh switches this on only when temporal fusion is disabled.
+    local_gravity_mode: false
+    gravity_frame: base_link_gravity
 
 gravity_frame_broadcaster:
   ros__parameters:
-    # Owns the dynamic base_link -> base_link_gravity edge.  Its rotation is
-    # the inverse of the instantaneous Super-LIO roll/pitch correction so
-    # map -> base_link_gravity retains yaw while remaining level. Translation
-    # is zero because the gravity frame shares base_link's local origin.
+    # temporal fusion selects "slam" in launch.sh; single-frame mode selects
+    # "d435i_imu" and never looks up map -> base_link.
+    orientation_source: slam
     map_frame: map
     base_frame: base_link
     gravity_frame: base_link_gravity
     publish_rate_hz: 50.0
     tf_timeout_sec: 0.020
+    # The RealSense driver TF is intentionally disabled. This is the only
+    # non-URDF transform: motion-module axes relative to F_camera_link.
+    imu_topic: /front_d435/front_d435/imu
+    imu_mount_frame: F_camera_link
+    imu_to_mount_rpy: [0.0, 0.0, 0.0]
+    imu.timeout_sec: 0.25
+    imu.accel_correction_gain: 0.02
+    imu.accel_norm_tolerance: 3.0
+    imu.roll_offset: 0.0
+    imu.pitch_offset: 0.0
 
 observation_merge:
   ros__parameters:
+    # Heartbeats and timing telemetry are opt-in with launch.sh --status.
+    diagnostics.enabled: false
     base_frame: base_link
     map_frame: map
     target_frame: base_link_gravity
@@ -71,10 +83,10 @@ observation_merge:
     sync.wait_for_complete_window: true
     sync.single_source_passthrough: true
     tf_timeout_sec: 0.020
-    roi.x_min: -1.50
-    roi.x_max: 1.50
-    roi.y_min: -1.00
-    roi.y_max: 1.00
+    roi.x_min: -1.0
+    roi.x_max: 1.0
+    roi.y_min: -0.5
+    roi.y_max: 0.5
     roi.z_min: -1.20
     roi.z_max: 0.80
     roi.max_range: 3.00
@@ -89,57 +101,63 @@ observation_merge:
     sources.front_d435.topic: /autonomy_light/camera_observations/front_d435_map
     sources.front_d435.frame_override: map
     sources.front_d435.validate_mount_tf: false
-    # F_camera_link is already the D435 optical frame at its
-    # calibrated physical mounting angle.  The raw D435 PointCloud2 uses that
-    # same optical-axis convention, so this conversion must stay identity.
-    # Applying the standard optical-frame rotation here would rotate it twice
-    # and bend the merged observation.
-    sources.front_d435.source_to_mount_xyz: [0.0, 0.0, 0.0]
-    sources.front_d435.source_to_mount_rpy: [0.0, 0.0, 0.0]
     sources.front_d435.noise_stddev: 0.025
     sources.front_d435.min_range: 0.30
     sources.front_d435.max_points: 60000
 
 elevation_mapping:
   ros__parameters:
+    # Heartbeats and timing telemetry are opt-in with launch.sh --status.
+    diagnostics.enabled: true
     input_topic: /autonomy_light/merged_observations
     output_topic: /autonomy_light/elevation_map
     output_frame: base_link_gravity
+    # DDS values are vertical distances below this URDF link. The gravity
+    # frame remains the coordinate frame, but base_link is the distance zero.
+    output.target_link: base_link
     # Processing consumes every merged observation.  The most recent complete
     # grid is published at 50 Hz for DDS consumers without throttling input.
     publish_rate_hz: 50.0
-    # Temporal state is reprojected through map -> base_link_gravity. Never
-    # fuse unregistered history when the SLAM attitude transform is unavailable.
+    # true: SLAM pose reprojects/fuses history. false: a D435i IMU-levelled,
+    # direct camera -> base_link_gravity single-frame pipeline is used.
     slam.map_frame: map
-    grid.resolution: 0.1
+    grid.resolution: 0.025
     grid.x_min: -0.90
     grid.x_max: 0.90
     grid.y_min: -0.40
     grid.y_max: 0.40
     grid.z_min: -1.20
     grid.z_max: 0.80
+    # Final target-link distance policy. These are applied once here; the DDS
+    # bridge copies the resulting finite values without reinterpretation.
+    output.clip_min: -1.20
+    output.clip_max: 0.75
     algorithm.uncertainty.noise_alpha: 0.001
     algorithm.uncertainty.min_meas_var: 0.0004
     algorithm.uncertainty.max_cell_var: 0.0100
-    algorithm.temporal.enabled: true
-    algorithm.temporal.require_slam_tf: true
+
+    algorithm.temporal.enabled: false
     algorithm.temporal.tf_timeout_sec: 0.020
     algorithm.temporal.time_variance_rate: 0.20
     algorithm.temporal.mahalanobis_threshold: 3.0
     algorithm.temporal.dynamic_reset_delta: 0.10
     algorithm.temporal.dynamic_variance_bump: 0.0225
+
     algorithm.frame_aggregation.robust_height_gate: 0.04
     algorithm.frame_aggregation.intra_cell_min_support_gap: 0.025
     algorithm.frame_aggregation.intra_cell_min_support_count: 3
     algorithm.frame_aggregation.edge_mix_height_diff: 0.035
     algorithm.frame_aggregation.edge_prefer_prev_support_count: 2
+
     algorithm.isolated_filter.radius: 1
     algorithm.isolated_filter.min_support_neighbors: 2
     algorithm.isolated_filter.support_height_diff: 0.025
     algorithm.isolated_filter.outlier_height_diff: 0.050
+
     algorithm.hole_fill.radius: 1
     algorithm.hole_fill.min_neighbors: 3
     algorithm.hole_fill.max_height_diff: 0.030
+
     algorithm.surface_smoothing.enabled: true
     algorithm.surface_smoothing.radius: 1
     algorithm.surface_smoothing.sigma_spatial: 1.1
@@ -148,52 +166,39 @@ elevation_mapping:
     algorithm.surface_smoothing.min_support_neighbors: 3
     algorithm.surface_smoothing.blend: 0.60
     algorithm.surface_smoothing.passes: 2
-    # Debug data stays in base_link_gravity, therefore RViz can render it
-    # without interpreting GridMap's column-major circular-buffer layout.
     # Final filtered/temporal height map for RViz PointCloud2 inspection.
+    # PointCloud2 is the only ROS debugging output for the elevation result;
+    # it is separate from the DDS height-map delivery path.
     debug.enabled: true
     debug.pointcloud_topic: /autonomy_light/elevation_map/debug_points
 
-# A single static mask is generated from the selected camera's fixed URDF
-# transform before launch. It is injected into both elevation_mapping and
-# height_map_bridge, so FOV-outside cells are exactly 0.0 in GridMap, DDS, and
-# the optional --vis-height ROS mirror.
+# A single static horizontal-FOV mask is generated from the selected camera's
+# fixed URDF transform before launch. It is a 2-D XY fan, not a ground-plane
+# visibility calculation, so it makes no fixed-height assumption. It is
+# injected into elevation_mapping, so FOV-outside cells are exactly 0.0 in
+# the internal HeightMap payload, DDS, and the optional --vis-height mirror.
 height_map_fov:
   ros__parameters:
     enabled: true
     base_frame: base_link
     camera_frames: [F_camera_link]
-    # Supported: d435, d435i, d455. FOV and depth bounds are selected from
-    # this model; depth_profile is inherited from the selected driver camera.
+    # Supported: d435, d435i, d455. Horizontal FOV and conservative planar
+    # range are selected from this model; depth_profile comes from the driver.
     camera_type: d435i
-    # Mirrors generate_height_filter_from_urdf.py / real mapper semantics:
-    # test grid-cell centers on the ground plane measured from base_link.
-    reference_z: -0.48
     outside_value: 0.0
 
 height_map_bridge:
   ros__parameters:
     input_topic: /autonomy_light/elevation_map
-    base_frame: base_link_gravity
+    # Geometry and cell values are copied directly from the internal HeightMap;
+    # the bridge has no separate resolution, extent, FOV, or terrain parameters.
     publish_rate_hz: 50.0
-    fallback.resolution: 0.05
-    fallback.x_length: 3.0
-    fallback.y_length: 2.0
-    output.resolution: 0.10
-    output.x_length: 1.80
-    output.y_length: 0.80
     dds.domain_id: 1
     dds.topic: height_map
-    dds.history_depth: 128
+    dds.history_depth: 32
     # The F16 DDS consumer is on USB Ethernet (192.168.20.1).  Pin Cyclone
     # DDS to this local NIC instead of letting multi-NIC auto-selection choose
     # the unrelated 192.168.1.50 Ethernet interface.
     dds.network_interface: 192.168.20.2
     # Send Cyclone DDS discovery directly to the F16 as well as multicast.
     dds.peer_address: 192.168.20.1
-    distance.reference_height: 0.48
-    distance.min: 0.0
-    distance.max: 0.75
-    distance.unknown: 0.48
-    floor.radius_m: 0.60
-    floor.percentile: 0.20
