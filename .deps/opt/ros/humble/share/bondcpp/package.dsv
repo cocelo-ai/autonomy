@@ -1,0 +1,4 @@
+source;share/bondcpp/local_setup.bash
+source;share/bondcpp/local_setup.dsv
+source;share/bondcpp/local_setup.sh
+source;share/bondcpp/local_setup.zsh

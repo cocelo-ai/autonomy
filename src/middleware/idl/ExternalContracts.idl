@@ -1,0 +1,31 @@
+// Legacy control-SBC elevation-map transport contract. It intentionally
+// remains type-compatible with autonomy_v2.
+module core_dds {
+  struct HeightMap {
+    sequence<float> data;
+  };
+};
+
+// ROS 2-compatible control-SBC command contract. The type name and CDR layout
+// match the SBC's core/msg/CommandCore message exactly.
+module core {
+  module msg {
+    module dds_ {
+      @extensibility(FINAL)
+      struct EventCore_ {
+        boolean estop;
+        boolean wake;
+        boolean sleep;
+        boolean rough_drive_toggle;
+        boolean custom_drive_toggle;
+      };
+
+      @extensibility(FINAL)
+      struct CommandCore_ {
+        float motion_command[8];
+        EventCore_ event;
+        octet custom_drive_id;
+      };
+    };
+  };
+};

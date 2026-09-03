@@ -1,0 +1,4 @@
+source;share/smclib/local_setup.bash
+source;share/smclib/local_setup.dsv
+source;share/smclib/local_setup.sh
+source;share/smclib/local_setup.zsh

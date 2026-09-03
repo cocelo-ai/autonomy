@@ -1,0 +1,4 @@
+source;share/bond/local_setup.bash
+source;share/bond/local_setup.dsv
+source;share/bond/local_setup.sh
+source;share/bond/local_setup.zsh

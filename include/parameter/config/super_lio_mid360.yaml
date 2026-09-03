@@ -1,0 +1,119 @@
+bringup:
+  ros__parameters:
+    # Livox transport configuration. launch.sh converts this into the exact
+    # JSON schema required by Livox-SDK2; do not edit the vendor JSON files.
+    # Valid model values: MID360, MID360S.
+    #
+    # Replace interface, lidar_ip, and jetson_ip with the values assigned on
+    # the physical LiDAR Ethernet network. Matching CLI values intentionally
+    # override these YAML defaults for a one-off run.
+    livox:
+      model: "MID360" # 연결할 Livox 센서 모델.
+      interface: "enP8p1s0" # LiDAR망에 연결된 Jetson NIC 이름.
+      # Verified from the LiDAR NIC neighbour table (Livox OUI E4:7A:2C).
+      # launch.sh re-checks this and selects the uniquely observed device if
+      # a stale image/configuration contains a different address.
+      lidar_ip: "192.168.1.166" # LiDAR Ethernet IP 주소.
+      jetson_ip: "192.168.1.50" # 위 NIC에 할당된 Jetson IPv4 주소.
+      publish_frequency_hz: 60.0 # Livox 드라이버 PointCloud 발행 주파수 [Hz].
+      frame_id: "lidar_link" # Livox PointCloud의 센서 좌표 프레임.
+
+/**:
+  ros__parameters:
+    # Native Super-LIO configuration for one Livox MID360/MID360s CustomMsg stream.
+    lio.map.save_map: false
+    lio.map.if_filter: true # 저장 map에 voxel downsampling을 적용할지 여부.
+    lio.map.save_map_dir: "map" # save_map 사용 시 PCD를 저장할 디렉터리.
+    lio.map.map_name: "map.pcd" # 저장할 전역 PCD 파일 이름.
+    lio.map.ds_size: 0.05 # 전역 map 저장용 voxel 크기 [m].
+    lio.map.save_interval: -1 # 자동 map 저장 간격; 음수는 자동 저장 비활성.
+
+    lio.ros.lidar_topic: "/livox/lidar" # 입력 Livox CustomMsg 토픽.
+    lio.ros.imu_topic: "/livox/imu" # 입력 IMU 토픽.
+    # Super-LIO owns map -> odom -> lidar_link. launch.sh parses the URDF and
+    # publishes only the required fixed lidar_link -> base_link and sensor edges.
+    # full SLAM and relocation update only that correction.
+    lio.ros.global_frame: "map" # 전역 SLAM 좌표 프레임.
+    lio.ros.odom_frame: "odom" # 연속적인 local odometry 프레임.
+    lio.ros.body_frame: "lidar_link" # Super-LIO가 추정하는 본체(라이다) 프레임.
+
+    # Full SLAM is the normal launch mode: keyframes + Scan Context + GICP +
+    # iSAM2. The correction is recomputed slowly, but TF is broadcast at
+    # LiDAR rate. Map-file relocation disables this in launch.sh.
+    lio.slam.enable: true
+    lio.slam.keyframe_distance: 1.0 # 새 keyframe을 추가할 이동 거리 [m].
+    lio.slam.keyframe_yaw_deg: 10.0 # 새 keyframe을 추가할 회전량 [deg].
+    lio.slam.keyframe_leaf_size: 0.05 # 누적 keyframe surface 저장/loop 정합 voxel 크기 [m].
+    # 키프레임 사이 scan을 버리지 않고 최신 keyframe 좌표로 변환해 voxel 누적한다.
+    # 60 Hz 모든 scan을 매번 재필터링하지 않도록 10 Hz로 map storage를 갱신한다.
+    lio.slam.accumulation_interval_sec: 0.10
+    lio.slam.loop_descriptor_threshold: 0.25 # Scan Context loop 후보 매칭 임계값.
+    lio.slam.loop_fitness_threshold: 0.35 # loop GICP fitness 허용 최대값.
+    lio.slam.loop_max_correspondence: 2.5 # loop GICP 최대 대응점 거리 [m].
+    lio.slam.loop_min_keyframes: 30 # loop closure를 시작하기 전 최소 keyframe 수.
+    lio.slam.correction_update_sec: 1.0 # pose-graph 보정 계산 최소 주기 [s].
+
+    # Keep the complete pose-graph map inside Super-LIO. Only this small,
+    # robot-neighbourhood PointCloud2 is emitted for elevation mapping.
+    lio.elevation.enable: true
+    # A 4.5 m circular crop covers the corners of the mapper's [-3, 3] m
+    # robot-relative input-debug box, including the lidar/base origin offset.
+    lio.elevation.radius: 3.5 # 로봇 주변 전역 map crop 반경 [m].
+    lio.elevation.leaf_size: 0.05 # 누적 map의 바닥/표면을 보존하는 crop voxel 크기 [m].
+    lio.elevation.publish_rate_hz: 5.0 # elevation mapper용 local crop 발행 주파수 [Hz].
+
+    lio.sensor.lidar_type: 1 # Livox CustomMsg
+    lio.sensor.blind: 0.5 # 이 거리 안쪽 LiDAR 점을 무시 [m].
+    lio.sensor.maxrange: 100.0 # LIO에 사용할 최대 LiDAR 거리 [m].
+    lio.sensor.filter_rate: 1 # 입력 point filter 간격; 1은 모든 프레임 사용.
+    lio.sensor.enable_downsample: true # LIO 입력 pointcloud voxel downsampling 사용 여부.
+    lio.sensor.voxel_fliter_size: 0.05 # 입력 voxel 크기 [m]; upstream 파라미터 철자를 유지.
+    lio.sensor.gravity_norm: 9.81 # IMU 중력 크기 [m/s^2].
+    lio.sensor.imu_type: 1 # Super-LIO IMU 메시지 형식 식별자.
+    lio.sensor.imu_na: 0.1 # IMU 가속도 white-noise 밀도.
+    lio.sensor.imu_ng: 0.1 # IMU 자이로 white-noise 밀도.
+    lio.sensor.imu_nba: 0.0001 # IMU 가속도 bias random-walk 밀도.
+    lio.sensor.imu_nbg: 0.0001 # IMU 자이로 bias random-walk 밀도.
+
+    # LiDAR in IMU frame: translation followed by row-major rotation matrix.
+    # launch.sh overrides this from autonomy_light.imu_from_lidar_*.
+    lio.extrinsic.lidar_imu: [-0.011, -0.02329, 0.04412,
+                              1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+    # base_link is related to lidar_link by the static sensor TF configuration.
+    lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    lio.hash_map.hash_capacity: 2000000 # LIO hash-map의 최대 voxel 버킷 수.
+    lio.hash_map.vox_resolution: 0.5 # LIO hash-map voxel 해상도 [m].
+
+    lio.kf.kf_type: 0 # Super-LIO 내부 Kalman filter 유형.
+    lio.kf.kf_max_iterations: 4 # scan-to-map update의 최대 반복 횟수.
+    lio.kf.kf_align_gravity: true # IMU 중력 방향으로 자세를 정렬할지 여부.
+    lio.kf.kf_quit_eps: 0.001 # 반복 update 종료 변화량 임계값.
+
+    # /lio/odom exports the map-frame robot pose used to crop the internal map.
+    lio.output.robot: false
+    lio.output.plan_env_world: false # world-frame planning cloud 발행 여부.
+    lio.output.plan_env_body: false # body-frame planning cloud 발행 여부.
+    lio.output.ml_map: false # ML용 map pointcloud 발행 여부.
+    lio.output.planner: false
+    # /lio/cloud_world is consumed only by the occupancy mapper. It does not
+    # need the dense 60 Hz visualization cloud; 5 Hz of the LIO-downsampled
+    # cloud is sufficient for the rolling local-obstacle map.
+    lio.output.map: true
+    lio.output.dense: false # 고밀도 시각화 cloud 발행 여부.
+    lio.output.path: false # SLAM path 메시지 발행 여부.
+    lio.output.pub_step: 12
+    # Re-broadcast map -> odom -> lidar_link and the latest /lio/odom state at 50 Hz.
+    # This does not fabricate a faster estimator update; reissued odometry
+    # retains its original measurement timestamp.
+    lio.output.tf_publish_rate_hz: 50.0
+
+    lio.eva.timer: false # Super-LIO 내부 성능 타이머 로그 출력 여부.
+
+    # Saved-map localization keeps a local LIO map and aligns it to the PCD at 1 Hz.
+    lio.relocation.global_update_sec: 1.0
+    lio.relocation.global_search_radius: 40.0 # 저장 map 재정합 시 전역 탐색 반경 [m].
+    lio.relocation.global_fitness_threshold: 0.5 # 재정합 결과를 수용할 최대 fitness 값.
+    lio.relocation.correction_alpha: 0.2 # 재정합 보정값의 저역통과 필터 비율.

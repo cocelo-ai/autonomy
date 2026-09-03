@@ -1,0 +1,123 @@
+# LiDAR-only elevation path. Super-LIO retains the global keyframe map and
+# publishes only a robot-neighbourhood crop on /lio/elevation_cloud.
+
+bringup:
+  ros__parameters:
+    internal_ros_domain_id: 42  # Super-LIO, mapper, Nav2가 통신하는 내부 ROS domain ID.
+    external_ros_domain_id: 0  # 외부 SBC ROS 2 autopilot command domain ID.
+    debug_local_map_ros_domain_id: 42  # 디버그 PointCloud2 domain; internal_ros_domain_id와 같아야 함.
+    external_dds.interface: enxc0a125babe56  # SBC 유선 USB Ethernet interface.
+    external_dds.local_ip: 192.168.20.2  # Jetson의 SBC-facing IPv4 address.
+    external_dds.peer_ip: 192.168.20.1  # control SBC IPv4 address.
+    lidar_frame: lidar_link  # Super-LIO가 발행하는 LiDAR sensor frame 이름.
+    base_frame: base_link  # 로봇 body frame 이름.
+    # base_link -> lidar_link, copied from the robot URDF. Keeping this one
+    # static edge is sufficient for Super-LIO, Nav2, and elevation mapping.
+    # launch.sh derives the lidar_link -> base_link TF from these values.
+    base_to_lidar.xyz: [0.234, 0.0, 0.077]  # base_link -> lidar_link 평행이동 [m].
+    base_to_lidar.rpy: [0.0, 0.7854, 0.0]  # base_link -> lidar_link 회전 [roll, pitch, yaw, rad].
+
+gravity_frame_broadcaster:
+  ros__parameters:
+    map_frame: map  # Super-LIO 전역 pose가 표현되는 frame.
+    base_frame: base_link  # roll/pitch를 제거할 원본 robot frame.
+    gravity_frame: base_link_gravity  # yaw만 보존해 elevation grid가 사용하는 level frame.
+    publish_rate_hz: 50.0  # base_link -> gravity_frame TF publish 주파수 [Hz].
+    tf_timeout_sec: 0.020  # Super-LIO TF lookup 최대 대기 시간 [s].
+
+external_dds_bridge:
+  ros__parameters:
+    # The node stays on the process-wide internal ROS domain. HeightMap uses
+    # the control SBC's raw DDS domain, while the ROS 2 autopilot command
+    # stays on its external ROS-compatible domain.
+    internal_domain_id: 42
+    external_domain_id: 0
+    height_map_external_domain_id: 1
+    height_map_input_topic: /autonomy_light/elevation_map
+    command_input_topic: /autonomy_light/autopilot_command
+
+elevation_mapping:
+  ros__parameters:
+    diagnostics.enabled: true  # heartbeat와 mapper 처리 시간 diagnostic topic publish 여부.
+    # This is the only point-cloud input. It is already cropped from the
+    # Super-LIO global map around the robot, not a continuously sent full map.
+    input_topic: /lio/elevation_cloud  # Super-LIO 전역 map에서 잘라낸 local PointCloud2 입력.
+    output_topic: /autonomy_light/elevation_map/raw_input  # selector에 넣는 내부 raw HeightMap staging topic.
+    output_frame: base_link_gravity  # target 위치와 yaw를 따르고 roll/pitch는 제거한 robot-attached frame.
+    output.target_link: base_link  # HeightMap 거리의 기준 높이와 grid 중심을 잡는 target frame.
+    # Before gridding, remove points from 0.2 m below target_link upward. These
+    # are robot body/hanging-obstacle returns rather than traversable surfaces.
+    input_filter.target_relative_z.enabled: true  # target-link 기준 입력 z 상한 필터 사용.
+    input_filter.target_relative_z.max: -0.20  # relative_z >= -0.20 m인 point 제거; 이보다 아래만 유지.
+    # The latest local-map grid is re-published at the external 50 Hz contract.
+    # It is recomputed only when Super-LIO sends a new local crop.
+    publish_rate_hz: 50.0  # 최신 5 Hz local crop을 재publish하는 외부 HeightMap rate [Hz].
+    slam.map_frame: map  # input cloud를 output_frame으로 변환할 때 사용하는 SLAM global frame.
+    grid.resolution: 0.10  # HeightMap cell 한 변 길이 [m].
+    grid.x_min: -0.90  # target 기준 yaw-aligned robot x 최소 offset [m].
+    grid.x_max: 0.90  # target 기준 yaw-aligned robot x 최대 offset [m].
+    grid.y_min: -0.40  # target 기준 yaw-aligned robot y 최소 offset [m].
+    grid.y_max: 0.40  # target 기준 yaw-aligned robot y 최대 offset [m].
+    grid.z_min: -1.20  # target 기준 global-vertical z 최소 offset [m].
+    grid.z_max: 0.80  # target 기준 global-vertical z 최대 offset [m].
+    output.clip_min: 0.0  # target link 아래 방향 거리이므로 관측값은 0 이상 [m].
+    output.clip_max: 0.75  # 관측 HeightMap target-link 거리의 최대 허용값 [m].
+    output.unobserved_value: 0.5  # 현재 global-map crop에 point가 없는 cell에 직접 넣을 값 [m]; clip 범위 안이어야 함.
+    algorithm.temporal.enabled: false  # map-frame temporal fusion 사용 여부; 현재는 local crop의 단일 관측 경로 사용.
+    algorithm.uncertainty.noise_alpha: 0.0005  # range²에 곱하는 LiDAR 측정 분산 계수.
+    algorithm.uncertainty.min_meas_var: 0.000225  # 한 cell 관측 분산의 하한 [m²].
+    algorithm.uncertainty.max_cell_var: 0.0100  # reference/temporal state 분산의 상한 [m²].
+    # A cell uses its highest z cluster with enough support. Unsupported upper
+    # clusters are discarded as isolated noise before the next cluster is tried.
+    algorithm.frame_aggregation.intra_cell_max_support_gap: 0.012  # upper cluster를 묶는 z 폭 [m].
+    algorithm.frame_aggregation.intra_cell_max_support_count: 2  # upper cluster 채택에 필요한 최소 point 수.
+    algorithm.isolated_filter.radius: 0  # isolated outlier filter 반경 [cell]; 0이면 비활성.
+    algorithm.hole_fill.radius: 1  # 내부 reference hole filter 반경 [cell]. 외부 미관측값은 unobserved_value를 사용.
+    algorithm.hole_fill.min_neighbors: 4  # 내부 hole filter가 요구하는 최소 이웃 cell 수.
+    algorithm.hole_fill.max_height_diff: 0.012  # 내부 hole filter가 surface 연속으로 인정하는 최대 z 차이 [m].
+    algorithm.surface_smoothing.enabled: false  # 관측 surface bilateral smoothing 사용 여부.
+    algorithm.single_frame.reference.enabled: true  # temporal off일 때 robust reference aggregation 경로 사용 여부.
+    algorithm.single_frame.reference.isolated_filter_every_n_frames: 1000000  # reference isolated filter 실행 간격 [frame]; 큰 값은 사실상 비활성.
+    algorithm.single_frame.reference.bilateral_every_n_frames: 1000000  # reference bilateral fill 실행 간격 [frame]; 큰 값은 사실상 비활성.
+    algorithm.single_frame.reference.minimum_runtime_fps: 1  # reference 후처리를 허용할 최소 처리 성능 기준 [Hz].
+    debug.enabled: true  # 최종 HeightMap을 PointCloud2로 변환해 내부 debug topic에 publish할지 여부.
+    debug.pointcloud_topic: /autonomy_light/elevation_map/raw_input/debug_points  # selector 전 raw HeightMap debug topic.
+    # Global-map input after map -> base_link_gravity and target-relative z
+    # filtering, before HeightMap ROI/aggregation/clipping. Domain 42 only.
+    debug.input_cloud.enabled: true  # 변환된 실제 global-map 입력 point를 별도 debug cloud로 발행.
+    debug.input_cloud.topic: /autonomy_light/elevation_map/input_points  # Reliable PointCloud2 debug topic.
+    debug.input_cloud.x_min: -3.0  # robot-relative x debug 범위 [m].
+    debug.input_cloud.x_max: 3.0
+    debug.input_cloud.y_min: -3.0  # robot-relative y debug 범위 [m].
+    debug.input_cloud.y_max: 3.0
+    debug.input_cloud.z_min: -3.0  # gravity-aligned robot-relative z debug 범위 [m].
+    debug.input_cloud.z_max: 3.0
+    # Surface visualization derived from the filtered input cloud. The point
+    # topic works well with RViz Squares; the Marker topic is a colored mesh.
+    debug.input_surface.enabled: true
+    debug.input_surface.points_topic: /autonomy_light/elevation_map/input_surface_points
+    debug.input_surface.mesh_topic: /autonomy_light/elevation_map/input_surface_mesh
+    debug.input_surface.resolution: 0.10  # 2.5D surface cell size [m].
+    debug.input_surface.min_points_per_cell: 2  # 단일점 upper noise를 제외할 최소 support.
+    debug.input_surface.highest_cluster_gap: 0.08  # 셀의 최고 supported surface cluster 허용 z 폭 [m].
+    debug.input_surface.hole_fill_radius: 1  # 연속 surface 내부의 한-cell hole만 보간.
+    debug.input_surface.hole_fill_min_neighbors: 3
+    debug.input_surface.hole_fill_max_height_difference: 0.12  # step/edge를 가로질러 보간하지 않음 [m].
+    debug.input_surface.smoothing_enabled: true  # 작은 scan noise만 edge-aware smoothing.
+    debug.input_surface.mesh_max_height_difference: 0.20  # 이보다 큰 높이차의 셀은 삼각형으로 연결하지 않음 [m].
+
+elevation_restorer:
+  ros__parameters:
+    enabled: true  # raw/restored 중 선택된 HeightMap을 기존 공개 토픽으로 발행.
+    output_mode: raw  # 선택값: raw 또는 restored. 공개 토픽 이름은 어느 경우든 동일함.
+    model_path: elevation_restorer.onnx  # install share/autonomy_light/parameter/models 아래 모델 파일.
+    input_topic: /autonomy_light/elevation_map/raw_input  # mapper의 내부 raw staging 입력.
+    output_topic: /autonomy_light/elevation_map  # 선택된 18x8 HeightMap의 고정 공개 토픽.
+    inference.intra_op_threads: 1  # 144-cell 소형 네트워크 CPU thread 수.
+    # 기본은 네트워크 원출력을 보존한다. 물리 범위 제한이 필요할 때만 활성화한다.
+    output.clip_enabled: false
+    output.clip_min: 0.0
+    output.clip_max: 0.75
+    debug.enabled: true  # 선택된 raw/restored 결과를 내부 RViz용 PointCloud2로 함께 발행.
+    debug.pointcloud_topic: /autonomy_light/elevation_map/debug_points
+    debug.frame_id: base_link_gravity  # 셀 중심 XY, z=-선택거리, intensity=선택거리.
